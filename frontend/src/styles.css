@@ -435,6 +435,87 @@ h1 {
   gap: 10px;
 }
 
+.image-question-page,
+.image-question-form {
+  display: grid;
+  gap: 18px;
+  margin-top: 24px;
+}
+
+.image-question-form {
+  margin-top: 0;
+}
+
+.image-upload,
+.image-question-grid label {
+  display: grid;
+  gap: 6px;
+  color: #2b372f;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.image-upload input,
+.image-question-grid input {
+  min-height: 38px;
+  border: 1px solid #b9c5b7;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #f8faf6;
+  color: #17211a;
+}
+
+.image-preview {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  border-top: 1px solid #cbd6c8;
+  border-bottom: 1px solid #d6ded3;
+  padding: 14px 0;
+}
+
+.image-preview img {
+  width: 160px;
+  aspect-ratio: 4 / 3;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #dfe7dc;
+}
+
+.image-preview div {
+  display: grid;
+  gap: 5px;
+}
+
+.image-preview span {
+  color: #536058;
+  font-size: 13px;
+}
+
+.image-question-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.image-question-form button {
+  width: fit-content;
+  min-height: 38px;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #244a32;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.image-question-form button:disabled {
+  background: #9eaaa0;
+  cursor: not-allowed;
+}
+
 @media (max-width: 720px) {
   .workspace-shell {
     grid-template-columns: 1fr;
@@ -448,6 +529,8 @@ h1 {
   .library-filters,
   .upload-strip,
   .qa-filters,
+  .image-question-grid,
+  .image-preview,
   .document-row {
     grid-template-columns: 1fr;
   }

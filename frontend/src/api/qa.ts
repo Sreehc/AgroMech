@@ -30,6 +30,21 @@ export interface QaResponse {
   safety_warnings: string[];
 }
 
+export interface ImageQaResponse extends QaResponse {
+  visual_observation: string;
+  ocr_text: string;
+  detected_entities: {
+    possible_models: string[];
+    visible_parts: string[];
+    warning_lights: string[];
+    part_numbers: string[];
+  };
+  visual_confidence: {
+    confidence: number;
+    low_confidence: boolean;
+  };
+}
+
 export interface RetrievalTrace {
   trace_id: string;
   query: string;
@@ -65,6 +80,33 @@ export async function askTextQuestion(token: string, question: string, filters: 
     throw await parseError(response);
   }
   return (await response.json()) as QaResponse;
+}
+
+export async function askImageQuestion(
+  token: string,
+  file: File,
+  values: { question: string; brand: string; model: string }
+): Promise<ImageQaResponse> {
+  const formData = new FormData();
+  formData.append("image", file);
+  if (values.question.trim()) {
+    formData.append("question", values.question.trim());
+  }
+  if (values.brand.trim()) {
+    formData.append("brand", values.brand.trim());
+  }
+  if (values.model.trim()) {
+    formData.append("model", values.model.trim());
+  }
+  const response = await fetch(`${API_BASE_URL}/qa/image`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData
+  });
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+  return (await response.json()) as ImageQaResponse;
 }
 
 export async function getRetrievalTrace(token: string, traceId: string): Promise<RetrievalTrace> {

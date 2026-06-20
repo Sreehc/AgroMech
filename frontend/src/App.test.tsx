@@ -419,3 +419,121 @@ describe("Question answering page", () => {
     expect(screen.getByText("chunk-m7040 2 -> 1")).toBeInTheDocument();
   });
 });
+
+describe("Image question page", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem(
+      "agromech.session",
+      JSON.stringify({ token: "token-admin", username: "admin", role: "admin" })
+    );
+    window.history.pushState({}, "", "/image-question");
+    vi.stubGlobal("URL", { createObjectURL: () => "blob:preview", revokeObjectURL: () => undefined });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  test("disables image question submit before an image is selected", async () => {
+    mockFetch((input) => {
+      const url = String(input);
+      if (url.endsWith("/auth/me")) {
+        return jsonResponse({ username: "admin", role: "admin" });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "图片提问" });
+    expect(screen.getByRole("button", { name: "提交图片问题" })).toBeDisabled();
+  });
+
+  test("shows preview metadata and renders visual answer with citations", async () => {
+    mockFetch((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/auth/me")) {
+        return jsonResponse({ username: "admin", role: "admin" });
+      }
+      if (url.endsWith("/qa/image") && init?.method === "POST") {
+        return jsonResponse({
+          visual_observation: "possible model M7040; warning E01",
+          ocr_text: "E01",
+          detected_entities: {
+            possible_models: ["M7040"],
+            visible_parts: ["hydraulic"],
+            warning_lights: ["E01"],
+            part_numbers: []
+          },
+          visual_confidence: { confidence: 0.8, low_confidence: false },
+          answer: "根据资料检查液压泵压力。",
+          sections: { conclusion: "检查液压泵压力。" },
+          citations: [
+            {
+              document_id: "doc-m7040",
+              document_title: "M7040 Manual",
+              chunk_id: "chunk-m7040",
+              source_locator: { page: 4 },
+              evidence_snippet: "Hydraulic warning.",
+              evidence_type: "image",
+              accessible: true
+            }
+          ],
+          trace_id: "trace-image",
+          uncertainty: { level: "low", reasons: [] },
+          safety_warnings: []
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "图片提问" });
+    await user.upload(
+      screen.getByLabelText("上传图片"),
+      new File(["image"], "m7040.png", { type: "image/png" })
+    );
+
+    expect(screen.getByAltText("图片预览")).toBeInTheDocument();
+    expect(screen.getByText("m7040.png")).toBeInTheDocument();
+    expect(screen.getByText("image/png")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("图片问题"), "这是什么告警？");
+    await user.click(screen.getByRole("button", { name: "提交图片问题" }));
+
+    expect(await screen.findByText("possible model M7040; warning E01")).toBeInTheDocument();
+    expect(screen.getByText("M7040")).toBeInTheDocument();
+    expect(screen.getByText("根据资料检查液压泵压力。")).toBeInTheDocument();
+    expect(screen.getByText("M7040 Manual")).toBeInTheDocument();
+  });
+
+  test("shows errors for unsupported or multiple image files", async () => {
+    mockFetch((input) => {
+      const url = String(input);
+      if (url.endsWith("/auth/me")) {
+        return jsonResponse({ username: "admin", role: "admin" });
+      }
+      return jsonResponse({}, 404);
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "图片提问" });
+    await user.upload(
+      screen.getByLabelText("上传图片"),
+      new File(["image"], "bad.gif", { type: "image/gif" })
+    );
+    expect(screen.getByText("仅支持 PNG、JPG、JPEG、WEBP。")).toBeInTheDocument();
+
+    await user.upload(screen.getByLabelText("上传图片"), [
+      new File(["one"], "one.png", { type: "image/png" }),
+      new File(["two"], "two.png", { type: "image/png" })
+    ]);
+    expect(screen.getByText("一次只能上传一张图片。")).toBeInTheDocument();
+  });
+});

@@ -12,9 +12,11 @@ import {
 } from "./api/documents";
 import { errorMessage } from "./api/errors";
 import {
+  askImageQuestion,
   askTextQuestion,
   getRetrievalTrace,
   type Citation,
+  type ImageQaResponse,
   type QaFilters,
   type QaResponse,
   type RetrievalTrace
@@ -593,6 +595,133 @@ function formatValue(value: unknown): string {
   return String(value ?? "");
 }
 
+const supportedImageTypes = ["image/png", "image/jpeg", "image/jpg", "image/webp"];
+
+function ImageQuestionPage({ session }: { session: Session }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [question, setQuestion] = useState("");
+  const [brand, setBrand] = useState("");
+  const [model, setModel] = useState("");
+  const [answer, setAnswer] = useState<ImageQaResponse | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const disabled = !file || submitting;
+
+  function selectFiles(files: FileList | null) {
+    setAnswer(null);
+    setError(null);
+    if (!files || files.length === 0) {
+      setFile(null);
+      setPreviewUrl(null);
+      return;
+    }
+    if (files.length > 1) {
+      setFile(null);
+      setPreviewUrl(null);
+      setError("一次只能上传一张图片。");
+      return;
+    }
+    const nextFile = files[0];
+    if (!supportedImageTypes.includes(nextFile.type)) {
+      setFile(null);
+      setPreviewUrl(null);
+      setError("仅支持 PNG、JPG、JPEG、WEBP。");
+      return;
+    }
+    setFile(nextFile);
+    setPreviewUrl(globalThis.URL?.createObjectURL ? globalThis.URL.createObjectURL(nextFile) : "");
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!file || submitting) {
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      setAnswer(await askImageQuestion(session.token, file, { question, brand, model }));
+    } catch (caught) {
+      setError(caught instanceof ApiRequestError ? errorMessage(caught.response) : "图片问答请求失败。");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <section className="image-question-page" aria-label="图片提问工作区">
+      <form className="image-question-form" onSubmit={submit}>
+        <label className="image-upload">
+          <span>上传图片</span>
+          <input
+            type="file"
+            multiple
+            onChange={(event) => selectFiles(event.target.files)}
+          />
+        </label>
+
+        {file ? (
+          <div className="image-preview">
+            <img src={previewUrl ?? ""} alt="图片预览" />
+            <div>
+              <strong>{file.name}</strong>
+              <span>{file.type}</span>
+              <span>{Math.max(1, Math.round(file.size / 1024))} KB</span>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="image-question-grid">
+          <label>
+            <span>品牌</span>
+            <input value={brand} onChange={(event) => setBrand(event.target.value)} />
+          </label>
+          <label>
+            <span>型号</span>
+            <input value={model} onChange={(event) => setModel(event.target.value)} />
+          </label>
+        </div>
+
+        <label className="question-box">
+          <span>图片问题</span>
+          <textarea value={question} onChange={(event) => setQuestion(event.target.value)} rows={4} />
+        </label>
+
+        <button type="submit" disabled={disabled}>
+          {submitting ? "提交中" : "提交图片问题"}
+        </button>
+      </form>
+
+      {error ? <p className="form-error">{error}</p> : null}
+
+      {answer ? (
+        <section className="answer-layout">
+          <div className="answer-panel">
+            <h2>视觉观察</h2>
+            <p>{answer.visual_observation}</p>
+            <p>{answer.ocr_text || "无 OCR 文本"}</p>
+            <p>{answer.detected_entities.possible_models.join(", ") || "未识别型号"}</p>
+            <p>{answer.detected_entities.visible_parts.join(", ") || "未识别部件"}</p>
+            <p>{answer.visual_confidence.low_confidence ? "低置信" : `置信度 ${answer.visual_confidence.confidence}`}</p>
+          </div>
+          <div className="answer-panel">
+            <h2>回答</h2>
+            <p>{answer.answer}</p>
+            <StructuredSections sections={answer.sections} />
+          </div>
+          <div className="citations-panel">
+            <h2>引用</h2>
+            {answer.citations.map((citation) => (
+              <CitationItem citation={citation} key={`${citation.document_id}-${citation.chunk_id}`} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </section>
+  );
+}
+
 function Workspace({
   session,
   path,
@@ -655,6 +784,8 @@ function Workspace({
           <LibraryPage session={session} />
         ) : path === "/qa" ? (
           <QaPage session={session} />
+        ) : path === "/image-question" ? (
+          <ImageQuestionPage session={session} />
         ) : (
           <section className="placeholder-panel">
             <p>当前页面已受登录态保护。</p>
