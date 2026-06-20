@@ -1,6 +1,15 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { ApiRequestError, currentUser, login } from "./api/auth";
+import {
+  canMutateLibrary,
+  deleteDocument,
+  listDocuments,
+  reprocessDocument,
+  uploadDocument,
+  type DocumentFilters,
+  type DocumentSummary
+} from "./api/documents";
 import { errorMessage } from "./api/errors";
 import {
   canMaintainLibrary,
@@ -105,6 +114,262 @@ function LoginPage({
   );
 }
 
+const emptyFilters: DocumentFilters = {
+  brand: "",
+  model: "",
+  document_type: "",
+  language: "",
+  status: ""
+};
+
+function LibraryPage({ session }: { session: Session }) {
+  const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+  const [total, setTotal] = useState(0);
+  const [filters, setFilters] = useState<DocumentFilters>(emptyFilters);
+  const [draftFilters, setDraftFilters] = useState<DocumentFilters>(emptyFilters);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [duplicateDocumentId, setDuplicateDocumentId] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<{
+    action: "reprocess" | "delete";
+    document: DocumentSummary;
+  } | null>(null);
+  const canMutate = canMutateLibrary(session.role);
+
+  async function loadDocuments(nextFilters = filters) {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await listDocuments(session.token, nextFilters);
+      setDocuments(response.items);
+      setTotal(response.total);
+    } catch (caught) {
+      setError(caught instanceof ApiRequestError ? errorMessage(caught.response) : "资料列表加载失败。");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadDocuments();
+  }, [session.token]);
+
+  function submitFilters(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setFilters(draftFilters);
+    loadDocuments(draftFilters);
+  }
+
+  async function submitUpload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedFile || uploading) {
+      return;
+    }
+    setUploading(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await uploadDocument(session.token, selectedFile);
+      setMessage(`document_id: ${result.document_id}\ntask_id: ${result.task_id}`);
+      setSelectedFile(null);
+      await loadDocuments();
+    } catch (caught) {
+      if (caught instanceof ApiRequestError && caught.response.error.code === "duplicate_of") {
+        setDuplicateDocumentId(duplicateDocumentIdFrom(caught.response.error.details));
+      } else {
+        setError(caught instanceof ApiRequestError ? errorMessage(caught.response) : "上传失败。");
+      }
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function confirmAction() {
+    if (!confirmation) {
+      return;
+    }
+    setError(null);
+    setMessage(null);
+    try {
+      if (confirmation.action === "reprocess") {
+        const result = await reprocessDocument(session.token, confirmation.document.id);
+        setMessage(`document_id: ${result.document_id}\ntask_id: ${result.task_id}`);
+      } else {
+        const result = await deleteDocument(session.token, confirmation.document.id);
+        setMessage(`document_id: ${result.document_id}\nstatus: ${result.status}`);
+      }
+      setConfirmation(null);
+      await loadDocuments();
+    } catch (caught) {
+      setError(caught instanceof ApiRequestError ? errorMessage(caught.response) : "操作失败。");
+    }
+  }
+
+  return (
+    <section className="library-page" aria-label="资料库工作区">
+      <form className="library-filters" onSubmit={submitFilters}>
+        {(["brand", "model", "document_type", "language", "status"] as const).map((field) => (
+          <label key={field}>
+            <span>{filterLabel(field)}</span>
+            <input
+              value={draftFilters[field]}
+              onChange={(event) => setDraftFilters({ ...draftFilters, [field]: event.target.value })}
+            />
+          </label>
+        ))}
+        <button type="submit">筛选</button>
+      </form>
+
+      {canMutate ? (
+        <form className="upload-strip" onSubmit={submitUpload}>
+          <label>
+            <span>选择资料文件</span>
+            <input
+              type="file"
+              onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
+            />
+          </label>
+          <button type="submit" disabled={!selectedFile || uploading}>
+            {uploading ? "上传中" : "上传资料"}
+          </button>
+        </form>
+      ) : null}
+
+      {message ? (
+        <div className="result-message">
+          {message.split("\n").map((line) => (
+            <span key={line}>{line}</span>
+          ))}
+        </div>
+      ) : null}
+      {error ? <p className="form-error">{error}</p> : null}
+
+      <div className="library-summary">
+        <span>共 {total} 份资料</span>
+        {loading ? <span>加载中</span> : null}
+      </div>
+
+      <div className="document-table" role="table" aria-label="资料列表">
+        <div className="document-row document-header" role="row">
+          <span role="columnheader">资料</span>
+          <span role="columnheader">元数据</span>
+          <span role="columnheader">状态</span>
+          <span role="columnheader">操作</span>
+        </div>
+        {documents.length === 0 && !loading ? (
+          <p className="empty-state">暂无资料。</p>
+        ) : null}
+        {documents.map((document) => (
+          <div className="document-row" role="row" key={document.id}>
+            <div role="cell">
+              <strong>{document.title}</strong>
+              <span>{document.original_file_name}</span>
+            </div>
+            <div role="cell">
+              <span>{metadataText(document)}</span>
+              <span>{[document.document_type, document.language].filter(Boolean).join(" / ") || "未标注"}</span>
+            </div>
+            <div role="cell">
+              <span className={`status-pill status-${document.status}`}>{document.status}</span>
+              <span>{document.updated_at ?? "未更新"}</span>
+            </div>
+            <div className="row-actions" role="cell">
+              {canMutate ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmation({ action: "reprocess", document })}
+                    aria-label={`重新处理 ${document.title}`}
+                  >
+                    重新处理
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmation({ action: "delete", document })}
+                    aria-label={`删除 ${document.title}`}
+                  >
+                    删除
+                  </button>
+                </>
+              ) : (
+                <span>只读</span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {duplicateDocumentId !== null ? (
+        <div className="modal-backdrop">
+          <section className="modal" role="dialog" aria-modal="true" aria-label="重复资料">
+            <h2>重复资料</h2>
+            <p>系统检测到相同文件，已存在资料 {duplicateDocumentId || "未知"}。</p>
+            <div className="modal-actions">
+              <button type="button" onClick={() => setDuplicateDocumentId(null)}>
+                取消
+              </button>
+              <button type="button" onClick={() => setDuplicateDocumentId(null)}>
+                继续上传为新版本
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {confirmation ? (
+        <div className="modal-backdrop">
+          <section
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={confirmation.action === "reprocess" ? "确认重新处理" : "确认删除"}
+          >
+            <h2>{confirmation.action === "reprocess" ? "确认重新处理" : "确认删除"}</h2>
+            <p>
+              {confirmation.action === "reprocess"
+                ? `重新处理 ${confirmation.document.title} 会创建新的处理任务。`
+                : `删除 ${confirmation.document.title} 会影响资料、chunk、索引和后续检索。`}
+            </p>
+            <div className="modal-actions">
+              <button type="button" onClick={() => setConfirmation(null)}>
+                取消
+              </button>
+              <button type="button" onClick={confirmAction}>
+                {confirmation.action === "reprocess" ? "确认重新处理" : "确认删除"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function filterLabel(field: keyof DocumentFilters): string {
+  return {
+    brand: "品牌",
+    model: "型号",
+    document_type: "类型",
+    language: "语言",
+    status: "状态"
+  }[field];
+}
+
+function metadataText(document: DocumentSummary): string {
+  const brandModel = [document.brand, document.model].filter(Boolean).join(" / ");
+  return brandModel || "未标注品牌型号";
+}
+
+function duplicateDocumentIdFrom(details: unknown): string {
+  if (typeof details === "object" && details !== null && "document_id" in details) {
+    return String((details as { document_id?: unknown }).document_id ?? "");
+  }
+  return "";
+}
+
 function Workspace({
   session,
   path,
@@ -163,9 +428,13 @@ function Workspace({
         <header>
           <h1>{title}</h1>
         </header>
-        <section className="placeholder-panel">
-          <p>当前页面已受登录态保护。</p>
-        </section>
+        {path === "/library" ? (
+          <LibraryPage session={session} />
+        ) : (
+          <section className="placeholder-panel">
+            <p>当前页面已受登录态保护。</p>
+          </section>
+        )}
       </main>
     </div>
   );

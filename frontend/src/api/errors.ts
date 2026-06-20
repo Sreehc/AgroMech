@@ -6,6 +6,9 @@ export type ApiErrorCode =
   | "duplicate_of"
   | "timeout"
   | "not_found"
+  | "question_required"
+  | "question_too_long"
+  | "too_many_images"
   | "validation_error"
   | "internal_error";
 
@@ -26,6 +29,9 @@ const messages: Record<ApiErrorCode, string> = {
   duplicate_of: "已存在相同文件。",
   timeout: "请求超时，请稍后重试。",
   not_found: "请求的资源不存在。",
+  question_required: "请输入问题。",
+  question_too_long: "问题长度超过限制。",
+  too_many_images: "一次只能上传一张图片。",
   validation_error: "提交内容有误，请检查后重试。",
   internal_error: "服务暂时不可用，请稍后重试。"
 };

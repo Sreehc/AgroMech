@@ -148,3 +148,176 @@ describe("App authentication", () => {
     expect(screen.getByRole("heading", { name: "登录" })).toBeInTheDocument();
   });
 });
+
+describe("Document library", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem(
+      "agromech.session",
+      JSON.stringify({ token: "token-admin", username: "admin", role: "admin" })
+    );
+    window.history.pushState({}, "", "/library");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  test("lists documents with status metadata and row actions", async () => {
+    mockFetch((input) => {
+      const url = String(input);
+      if (url.endsWith("/auth/me")) {
+        return jsonResponse({ username: "admin", role: "admin" });
+      }
+      if (url.includes("/documents")) {
+        return jsonResponse({
+          total: 1,
+          items: [
+            {
+              id: "doc-1",
+              title: "M7040 Manual",
+              original_file_name: "m7040.pdf",
+              brand: "Kubota",
+              model: "M7040",
+              document_type: "manual",
+              language: "zh-CN",
+              status: "indexed",
+              updated_at: "2026-06-20T08:00:00"
+            }
+          ]
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "资料库" })).toBeInTheDocument();
+    expect(await screen.findByText("M7040 Manual")).toBeInTheDocument();
+    expect(screen.getByText("Kubota / M7040")).toBeInTheDocument();
+    expect(screen.getByText("indexed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新处理 M7040 Manual" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "删除 M7040 Manual" })).toBeInTheDocument();
+  });
+
+  test("uploads a document and shows document and task ids", async () => {
+    mockFetch((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/auth/me")) {
+        return jsonResponse({ username: "admin", role: "admin" });
+      }
+      if (url.endsWith("/documents") && init?.method === "POST") {
+        return jsonResponse({ document_id: "doc-new", task_id: "task-new", status: "queued" }, 201);
+      }
+      if (url.includes("/documents")) {
+        return jsonResponse({ total: 0, items: [] });
+      }
+      return jsonResponse({}, 404);
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "资料库" });
+    await user.upload(
+      screen.getByLabelText("选择资料文件"),
+      new File(["manual"], "manual.txt", { type: "text/plain" })
+    );
+    await user.click(screen.getByRole("button", { name: "上传资料" }));
+
+    expect(await screen.findByText("document_id: doc-new")).toBeInTheDocument();
+    expect(screen.getByText("task_id: task-new")).toBeInTheDocument();
+  });
+
+  test("shows duplicate upload dialog with cancel and continue actions", async () => {
+    mockFetch((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/auth/me")) {
+        return jsonResponse({ username: "admin", role: "admin" });
+      }
+      if (url.endsWith("/documents") && init?.method === "POST") {
+        return jsonResponse(
+          {
+            error: {
+              code: "duplicate_of",
+              message: "Duplicate file",
+              details: { document_id: "doc-existing" },
+              trace_id: "trace"
+            }
+          },
+          409
+        );
+      }
+      if (url.includes("/documents")) {
+        return jsonResponse({ total: 0, items: [] });
+      }
+      return jsonResponse({}, 404);
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "资料库" });
+    await user.upload(
+      screen.getByLabelText("选择资料文件"),
+      new File(["manual"], "manual.txt", { type: "text/plain" })
+    );
+    await user.click(screen.getByRole("button", { name: "上传资料" }));
+
+    expect(await screen.findByRole("dialog", { name: "重复资料" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "取消" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "继续上传为新版本" })).toBeInTheDocument();
+  });
+
+  test("confirms reprocess and delete actions", async () => {
+    const calls: string[] = [];
+    mockFetch((input, init) => {
+      const url = String(input);
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      if (url.endsWith("/auth/me")) {
+        return jsonResponse({ username: "admin", role: "admin" });
+      }
+      if (url.endsWith("/documents/doc-1/reprocess")) {
+        return jsonResponse({ document_id: "doc-1", task_id: "task-reprocess", status: "queued" }, 201);
+      }
+      if (url.endsWith("/documents/doc-1") && init?.method === "DELETE") {
+        return jsonResponse({ document_id: "doc-1", status: "deleted" });
+      }
+      if (url.includes("/documents")) {
+        return jsonResponse({
+          total: 1,
+          items: [
+            {
+              id: "doc-1",
+              title: "M7040 Manual",
+              original_file_name: "m7040.pdf",
+              brand: "Kubota",
+              model: "M7040",
+              document_type: "manual",
+              language: "zh-CN",
+              status: "indexed",
+              updated_at: "2026-06-20T08:00:00"
+            }
+          ]
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await screen.findByText("M7040 Manual");
+    await user.click(screen.getByRole("button", { name: "重新处理 M7040 Manual" }));
+    expect(await screen.findByRole("dialog", { name: "确认重新处理" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认重新处理" }));
+    expect(await screen.findByText("task_id: task-reprocess")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "删除 M7040 Manual" }));
+    expect(await screen.findByRole("dialog", { name: "确认删除" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => expect(calls.some((call) => call.includes("DELETE") && call.includes("/documents/doc-1"))).toBe(true));
+  });
+});
