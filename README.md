@@ -233,7 +233,21 @@ npm run dev --prefix frontend
 运行当前测试：
 
 ```bash
+.venv/bin/python -m compileall -q backend worker
 .venv/bin/python -m pytest
+npm run lint --prefix frontend
 npm run test --prefix frontend
 npm run build --prefix frontend
 ```
+
+统一测试入口：
+
+```bash
+scripts/lint.sh
+scripts/test-unit.sh
+scripts/test-integration.sh
+scripts/e2e-smoke.sh
+scripts/test-all.sh
+```
+
+GitHub Actions 会执行 `scripts/test-all.sh`，覆盖 lint、后端/worker/前端测试、基础集成测试、E2E smoke 和前端构建。
