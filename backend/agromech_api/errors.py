@@ -19,6 +19,7 @@ class ErrorCode(StrEnum):
     NOT_FOUND = "not_found"
     QUESTION_REQUIRED = "question_required"
     QUESTION_TOO_LONG = "question_too_long"
+    TOO_MANY_IMAGES = "too_many_images"
     VALIDATION_ERROR = "validation_error"
     INTERNAL_ERROR = "internal_error"
 

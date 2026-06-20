@@ -210,6 +210,9 @@ embedding 或索引失败时任务失败，文档不会进入 `indexed`。
 文本问答 API 为 `POST /qa/text`，输入 `question` 和可选 `filters`，返回 `answer`、`sections`、
 `citations`、`trace_id`、`uncertainty` 和 `safety_warnings`；问题为空或超长会返回统一错误，
 要求忽略引用或编造维修步骤的请求会被拒绝。
+图片问答 API 为 `POST /qa/image`，使用单个 `image` 表单文件和可选 `question`、`brand`、`model`；
+系统抽取视觉线索后复用混合检索和带引用问答链路，返回 `visual_observation`、`detected_entities`、
+`answer`、`citations` 和 `trace_id`。多图上传返回 `too_many_images`，低置信且缺少文字问题时提示补充信息。
 
 初始化并启动前端：
 
