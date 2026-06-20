@@ -219,6 +219,29 @@ def create_reprocess_task(engine: Engine, document_id: str) -> TaskResult:
     return TaskResult(document_id=document_id, task_id=task_id, status=IngestTaskStatus.QUEUED.value)
 
 
+def create_delete_task(engine: Engine, document_id: str) -> TaskResult:
+    get_document_or_404(engine, document_id)
+    task_id = str(uuid4())
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(ingest_tasks).values(
+                id=task_id,
+                document_id=document_id,
+                task_type=TaskType.DELETE.value,
+                status=IngestTaskStatus.QUEUED.value,
+                attempt_count=0,
+                stage="queued",
+            )
+        )
+        connection.execute(
+            update(documents)
+            .where(documents.c.id == document_id)
+            .values(status=DocumentStatus.DELETING.value, updated_at=now)
+        )
+    return TaskResult(document_id=document_id, task_id=task_id, status=IngestTaskStatus.QUEUED.value)
+
+
 def mark_document_deleted(engine: Engine, document_id: str) -> dict[str, str]:
     get_document_or_404(engine, document_id)
     with engine.begin() as connection:

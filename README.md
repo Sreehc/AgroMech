@@ -191,6 +191,10 @@ API 错误响应统一为：
 .venv/bin/python -m agromech_worker.main
 ```
 
+当前 worker 每次启动会执行一次导入队列调度，将最早的 `queued` 任务推进到
+`processing`，再根据处理结果标记为 `indexed` 或 `failed`。`reprocess` 和
+`delete` 类型任务已接入状态机；实际解析、chunk 生成和索引写入在后续任务中实现。
+
 初始化并启动前端：
 
 ```bash
