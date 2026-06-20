@@ -132,6 +132,12 @@ curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/health/dependencies
 ```
 
+运行数据库迁移：
+
+```bash
+.venv/bin/python -m alembic upgrade head
+```
+
 启动 worker：
 
 ```bash
