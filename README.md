@@ -176,9 +176,12 @@ npm install --prefix frontend
 npm run dev --prefix frontend
 ```
 
+前端开发服务器会把 `/auth/*` 代理到本地后端 `http://127.0.0.1:8000`。
+
 运行当前测试：
 
 ```bash
 .venv/bin/python -m pytest
+npm run test --prefix frontend
 npm run build --prefix frontend
 ```
