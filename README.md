@@ -193,8 +193,9 @@ API 错误响应统一为：
 
 当前 worker 每次启动会执行一次导入队列调度，将最早的 `queued` 任务推进到
 `processing`，并从 PDF、DOCX、Markdown、TXT 生成带来源定位的 `text_chunk`，
-从 Excel / CSV 生成带工作表和行号定位的 `table_chunk`。`reprocess` 和 `delete`
-类型任务已接入状态机；OCR 和索引写入在后续任务中实现。
+从 Excel / CSV 生成带工作表和行号定位的 `table_chunk`，为图片和 PDF 页面生成
+`document_assets` 与 OCR `image_chunk`。`reprocess` 和 `delete` 类型任务已接入状态机；
+OCR 依赖不可用或识别失败时会记录失败状态，不伪装为成功；索引写入在后续任务中实现。
 
 初始化并启动前端：
 

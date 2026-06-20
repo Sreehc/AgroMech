@@ -7,7 +7,8 @@ from sqlalchemy import select
 
 from agromech_api.database import get_engine
 from agromech_api.db.models import documents
-from agromech_api.ingestion import IngestTaskRunner, QueuedTask
+from agromech_api.image_ingestion import is_image_document, is_pdf_document, process_image_document
+from agromech_api.ingestion import IngestFailure, IngestTaskRunner, QueuedTask
 from agromech_api.table_ingestion import is_table_document, process_table_document
 from agromech_api.text_ingestion import process_text_document
 
@@ -19,7 +20,7 @@ def health_status() -> dict[str, str]:
     return {"status": "ok", "service": "worker"}
 
 
-def process_ingest_task(engine: Engine, task: QueuedTask) -> None:
+def process_ingest_task(engine: Engine, task: QueuedTask, *, ocr_reader=None) -> None:
     with engine.connect() as connection:
         document = connection.execute(
             select(documents.c.original_file_name, documents.c.mime_type).where(
@@ -30,6 +31,25 @@ def process_ingest_task(engine: Engine, task: QueuedTask) -> None:
     if is_table_document(document["original_file_name"], document["mime_type"]):
         chunk_count = process_table_document(engine, task.document_id)
         chunk_kind = "table"
+    elif is_image_document(document["original_file_name"], document["mime_type"]):
+        result = process_image_document(engine, task.document_id, ocr_reader=ocr_reader)
+        chunk_count = result.chunk_count
+        chunk_kind = "image"
+    elif is_pdf_document(document["original_file_name"], document["mime_type"]):
+        chunk_count = 0
+        try:
+            chunk_count += process_text_document(engine, task.document_id)
+        except IngestFailure as exc:
+            if exc.code != "no_text_extracted":
+                raise
+        result = process_image_document(
+            engine,
+            task.document_id,
+            ocr_reader=ocr_reader,
+            fail_on_all_ocr_failure=chunk_count == 0,
+        )
+        chunk_count += result.chunk_count
+        chunk_kind = "pdf"
     else:
         chunk_count = process_text_document(engine, task.document_id)
         chunk_kind = "text"
