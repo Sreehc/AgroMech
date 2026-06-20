@@ -189,6 +189,38 @@ document_entity_extractions = Table(
 )
 Index("ix_document_entity_extractions_document_id", document_entity_extractions.c.document_id)
 
+graph_nodes = Table(
+    "graph_nodes",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("entity_type", String(80), nullable=False),
+    Column("entity_value", String(255), nullable=False),
+    Column("normalized_value", String(255), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+Index("ix_graph_nodes_lookup", graph_nodes.c.entity_type, graph_nodes.c.normalized_value, unique=True)
+
+graph_edges = Table(
+    "graph_edges",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("source_node_id", ForeignKey("graph_nodes.id", ondelete="CASCADE"), nullable=False),
+    Column("target_node_id", ForeignKey("graph_nodes.id", ondelete="CASCADE"), nullable=False),
+    Column("source_entity_type", String(80), nullable=False),
+    Column("source_entity_value", String(255), nullable=False),
+    Column("target_entity_type", String(80), nullable=False),
+    Column("target_entity_value", String(255), nullable=False),
+    Column("relationship_type", String(80), nullable=False),
+    Column("source_document_id", ForeignKey("documents.id", ondelete="CASCADE"), nullable=False),
+    Column("source_chunk_id", ForeignKey("document_chunks.id", ondelete="CASCADE"), nullable=False),
+    Column("confidence", Float, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+Index("ix_graph_edges_source", graph_edges.c.source_node_id)
+Index("ix_graph_edges_target", graph_edges.c.target_node_id)
+Index("ix_graph_edges_document", graph_edges.c.source_document_id)
+Index("ix_graph_edges_chunk", graph_edges.c.source_chunk_id)
+
 retrieval_logs = Table(
     "retrieval_logs",
     metadata,

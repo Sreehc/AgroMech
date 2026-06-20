@@ -196,7 +196,8 @@ API 错误响应统一为：
 从 Excel / CSV 生成带工作表和行号定位的 `table_chunk`，为图片和 PDF 页面生成
 `document_assets`、OCR `image_chunk` 和视觉观察线索。`reprocess` 和 `delete` 类型任务已接入状态机；
 OCR 或视觉模型不可用时会记录失败状态，不伪装为成功；chunk 会抽取品牌、型号、系统、
-部件、故障码和配件号等实体，写入结构化过滤链接、本地全文索引和 Milvus 向量引用记录。
+部件、故障码和配件号等实体，写入结构化过滤链接、Graph RAG 关系、本地全文索引和 Milvus 向量引用记录。
+图谱扩展只返回带来源 chunk 的 1-2 跳候选，不能单独作为最终事实依据。
 embedding 或索引失败时任务失败，文档不会进入 `indexed`。
 
 初始化并启动前端：
