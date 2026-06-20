@@ -132,6 +132,22 @@ curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/health/dependencies
 ```
 
+API 错误响应统一为：
+
+```json
+{
+  "error": {
+    "code": "timeout",
+    "message": "Request timed out",
+    "details": null,
+    "trace_id": "..."
+  }
+}
+```
+
+基础错误码包括 `unauthorized`、`forbidden`、`unsupported_file_type`、`file_too_large` 和 `timeout`。
+外部服务连接、检索和 LLM 超时通过 `.env.example` 中的超时配置调整。
+
 运行数据库迁移：
 
 ```bash

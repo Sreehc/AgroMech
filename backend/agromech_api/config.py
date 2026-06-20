@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = "agromech"
     local_file_storage_path: str = "./storage/files"
+    api_request_timeout_seconds: float = 60.0
+    upload_timeout_seconds: float = 300.0
+    ingestion_task_timeout_seconds: float = 1800.0
+    retrieval_timeout_seconds: float = 30.0
+    llm_request_timeout_seconds: float = 120.0
+    evaluation_task_timeout_seconds: float = 3600.0
     dependency_connect_timeout_seconds: float = 2.0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
