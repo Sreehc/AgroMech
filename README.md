@@ -113,10 +113,23 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 ```
 
+启动本地依赖服务：
+
+```bash
+docker compose up -d postgres milvus neo4j
+```
+
 启动后端 API：
 
 ```bash
 .venv/bin/python -m uvicorn agromech_api.main:app --app-dir backend --host 0.0.0.0 --port 8000
+```
+
+检查后端和依赖连通性：
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/health/dependencies
 ```
 
 启动 worker：

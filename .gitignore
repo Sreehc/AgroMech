@@ -14,5 +14,8 @@ frontend/dist/
 frontend/vite.config.d.ts
 frontend/vite.config.js
 
-storage/
+storage/*
+!storage/.gitkeep
+!storage/files/
+!storage/files/.gitkeep
 *.log
