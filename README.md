@@ -192,8 +192,8 @@ API 错误响应统一为：
 ```
 
 当前 worker 每次启动会执行一次导入队列调度，将最早的 `queued` 任务推进到
-`processing`，再根据处理结果标记为 `indexed` 或 `failed`。`reprocess` 和
-`delete` 类型任务已接入状态机；实际解析、chunk 生成和索引写入在后续任务中实现。
+`processing`，并从 PDF、DOCX、Markdown、TXT 生成带来源定位的 `text_chunk`。
+`reprocess` 和 `delete` 类型任务已接入状态机；表格解析、OCR 和索引写入在后续任务中实现。
 
 初始化并启动前端：
 

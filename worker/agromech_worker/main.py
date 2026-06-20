@@ -6,6 +6,7 @@ from sqlalchemy import Engine
 
 from agromech_api.database import get_engine
 from agromech_api.ingestion import IngestTaskRunner, QueuedTask
+from agromech_api.text_ingestion import process_text_document
 
 
 LOGGER = logging.getLogger("agromech.worker")
@@ -15,18 +16,22 @@ def health_status() -> dict[str, str]:
     return {"status": "ok", "service": "worker"}
 
 
-def default_processor(task: QueuedTask) -> None:
+def process_ingest_task(engine: Engine, task: QueuedTask) -> None:
+    chunk_count = process_text_document(engine, task.document_id)
     LOGGER.info(
-        "Processed ingest task placeholder: task_id=%s document_id=%s task_type=%s",
+        "Processed ingest task: task_id=%s document_id=%s task_type=%s text_chunks=%s",
         task.id,
         task.document_id,
         task.task_type,
+        chunk_count,
     )
 
 
-def run_once(*, engine: Engine | None = None, processor=default_processor) -> str:
-    runner = IngestTaskRunner(engine or get_engine())
-    result = runner.run_next(processor)
+def run_once(*, engine: Engine | None = None, processor=None) -> str:
+    active_engine = engine or get_engine()
+    active_processor = processor or (lambda task: process_ingest_task(active_engine, task))
+    runner = IngestTaskRunner(active_engine)
+    result = runner.run_next(active_processor)
     LOGGER.info("AgroMech worker run_once result: %s", result)
     return result
 
