@@ -185,6 +185,8 @@ def evidence_payload(candidates: list[dict[str, object]]) -> list[dict[str, obje
             "source_locator": candidate["source_locator"],
             "channels": list(candidate["channels"]),
             "score": round(float(candidate.get("rerank_score", candidate["score"])), 6),
+            "not_applicable": bool(candidate.get("not_applicable", False)),
+            "applicability_reason": candidate.get("applicability_reason"),
         }
         for candidate in candidates
     ]

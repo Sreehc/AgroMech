@@ -207,6 +207,9 @@ embedding 或索引失败时任务失败，文档不会进入 `indexed`。
 最终证据和降级通道写入 `retrieval_logs`；评估员和管理员可通过
 `GET /retrieval-traces/{trace_id}` 查看完整链路，普通用户只看到基础通道和最终证据摘要。
 无候选时返回证据不足状态并保留 trace。
+文本问答 API 为 `POST /qa/text`，输入 `question` 和可选 `filters`，返回 `answer`、`sections`、
+`citations`、`trace_id`、`uncertainty` 和 `safety_warnings`；问题为空或超长会返回统一错误，
+要求忽略引用或编造维修步骤的请求会被拒绝。
 
 初始化并启动前端：
 
