@@ -195,7 +195,8 @@ API 错误响应统一为：
 `processing`，并从 PDF、DOCX、Markdown、TXT 生成带来源定位的 `text_chunk`，
 从 Excel / CSV 生成带工作表和行号定位的 `table_chunk`，为图片和 PDF 页面生成
 `document_assets`、OCR `image_chunk` 和视觉观察线索。`reprocess` 和 `delete` 类型任务已接入状态机；
-OCR 或视觉模型不可用时会记录失败状态，不伪装为成功；索引写入在后续任务中实现。
+OCR 或视觉模型不可用时会记录失败状态，不伪装为成功；chunk 会写入本地全文索引和
+Milvus 向量引用记录，embedding 或索引失败时任务失败，文档不会进入 `indexed`。
 
 初始化并启动前端：
 

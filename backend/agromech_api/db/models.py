@@ -143,6 +143,22 @@ embedding_references = Table(
 Index("ix_embedding_references_chunk_id", embedding_references.c.chunk_id)
 Index("ix_embedding_references_vector", embedding_references.c.vector_store, embedding_references.c.vector_id)
 
+chunk_search_index = Table(
+    "chunk_search_index",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("chunk_id", ForeignKey("document_chunks.id", ondelete="CASCADE"), nullable=False),
+    Column("document_id", ForeignKey("documents.id", ondelete="CASCADE"), nullable=False),
+    Column("chunk_type", String(32), nullable=False),
+    Column("search_text", Text, nullable=False),
+    Column("embedding", JSON, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint(enum_check("chunk_type", ChunkType), name="search_chunk_type"),
+)
+Index("ix_chunk_search_index_chunk_id", chunk_search_index.c.chunk_id, unique=True)
+Index("ix_chunk_search_index_document_id", chunk_search_index.c.document_id)
+Index("ix_chunk_search_index_type", chunk_search_index.c.chunk_type)
+
 retrieval_logs = Table(
     "retrieval_logs",
     metadata,
