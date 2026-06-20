@@ -58,6 +58,24 @@ describe("assistant workbench layout", () => {
     expect(assistant).toContain("prepareSendMessagesRequest");
   });
 
+  it("passes context filters and session id through the assistant transport", () => {
+    const assistant = readProjectFile("src/app/assistant.tsx");
+
+    expect(assistant).toContain("filters: filters ?? {}");
+    expect(assistant).toContain("session_id: sessionId");
+    expect(assistant).toContain("[filters, sessionId]");
+  });
+
+  it("persists and clears context filters with the active chat session", () => {
+    const workbench = readProjectFile("src/components/assistant-workbench.tsx");
+
+    expect(workbench).toContain("normalizeContextFilters(activeFilters)");
+    expect(workbench).toContain("persistFilters(nextFilters)");
+    expect(workbench).toContain("history.update(activeSessionId, { filters })");
+    expect(workbench).toContain("onActiveFiltersChange({})");
+    expect(workbench).toContain("persistFilters({})");
+  });
+
   it("wires citation selection to evidence panel open, switch, and close state", () => {
     const page = readProjectFile("src/app/page.tsx");
     const workbench = readProjectFile("src/components/assistant-workbench.tsx");
