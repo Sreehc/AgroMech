@@ -46,9 +46,9 @@ def test_frontend_exposes_lint_test_and_build_commands() -> None:
     package_json = json.loads((REPO_ROOT / "frontend/package.json").read_text())
     scripts = package_json["scripts"]
 
-    assert scripts["lint"] == "tsc --noEmit"
+    assert scripts["lint"] == "eslint"
     assert scripts["test"] == "vitest run"
-    assert scripts["build"] == "tsc -b && vite build"
+    assert scripts["build"] == "next build"
 
 
 def test_e2e_smoke_test_entry_exists() -> None:
