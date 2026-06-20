@@ -321,3 +321,101 @@ describe("Document library", () => {
     await waitFor(() => expect(calls.some((call) => call.includes("DELETE") && call.includes("/documents/doc-1"))).toBe(true));
   });
 });
+
+describe("Question answering page", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem(
+      "agromech.session",
+      JSON.stringify({ token: "token-admin", username: "admin", role: "admin" })
+    );
+    window.history.pushState({}, "", "/qa");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  test("disables submit while question is empty", async () => {
+    mockFetch((input) => {
+      const url = String(input);
+      if (url.endsWith("/auth/me")) {
+        return jsonResponse({ username: "admin", role: "admin" });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "问答" });
+    expect(screen.getByRole("button", { name: "提交问题" })).toBeDisabled();
+  });
+
+  test("submits text question and renders answer citations and trace", async () => {
+    mockFetch((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/auth/me")) {
+        return jsonResponse({ username: "admin", role: "admin" });
+      }
+      if (url.endsWith("/qa/text") && init?.method === "POST") {
+        return jsonResponse({
+          answer: "根据证据，检查液压泵压力。",
+          sections: {
+            conclusion: "检查液压泵压力。",
+            applicability: "适用 M7040。",
+            possible_causes: ["液压泵压力不足"],
+            inspection_steps: ["核对压力表"],
+            safety_reminder: ["停机并释放液压压力"],
+            citations: ["M7040 Manual / chunk-m7040"],
+            uncertainty: { level: "low", reasons: [] }
+          },
+          citations: [
+            {
+              document_id: "doc-m7040",
+              document_title: "M7040 Manual",
+              chunk_id: "chunk-m7040",
+              source_locator: { page: 3 },
+              evidence_snippet: "Hydraulic pump pressure.",
+              evidence_type: "text",
+              accessible: true
+            }
+          ],
+          trace_id: "trace-answer",
+          uncertainty: { level: "low", reasons: [] },
+          safety_warnings: ["停机并释放液压压力"]
+        });
+      }
+      if (url.endsWith("/retrieval-traces/trace-answer")) {
+        return jsonResponse({
+          trace_id: "trace-answer",
+          query: "M7040 E01",
+          filters: { model: "M7040" },
+          channels: { used: ["keyword", "vector"], degraded: [{ channel: "graph", reason: "timeout" }] },
+          candidates: [{ chunk_id: "chunk-m7040", score: 4.2, channels: ["keyword"] }],
+          rerank: { items: [{ chunk_id: "chunk-m7040", before_rank: 2, after_rank: 1 }] },
+          final_evidence: [{ chunk_id: "chunk-m7040", document_id: "doc-m7040" }]
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "问答" });
+    await user.type(screen.getByLabelText("问题"), "M7040 E01 怎么排查？");
+    await user.click(screen.getByRole("button", { name: "提交问题" }));
+
+    expect(await screen.findByText("retrieving/generating")).toBeInTheDocument();
+    expect(await screen.findByText("检查液压泵压力。")).toBeInTheDocument();
+    expect(screen.getByText("M7040 Manual")).toBeInTheDocument();
+    expect(screen.getByText("page: 3")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "查看检索链路" }));
+    expect(await screen.findByText("trace-answer")).toBeInTheDocument();
+    expect(screen.getByText("keyword, vector")).toBeInTheDocument();
+    expect(screen.getByText("graph: timeout")).toBeInTheDocument();
+    expect(screen.getByText("chunk-m7040 2 -> 1")).toBeInTheDocument();
+  });
+});

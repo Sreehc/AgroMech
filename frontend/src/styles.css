@@ -322,6 +322,119 @@ h1 {
   gap: 10px;
 }
 
+.qa-page {
+  display: grid;
+  gap: 20px;
+  margin-top: 24px;
+}
+
+.qa-form {
+  display: grid;
+  gap: 14px;
+}
+
+.qa-filters {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.qa-filters label,
+.question-box {
+  display: grid;
+  gap: 6px;
+  color: #2b372f;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.qa-filters input,
+.question-box textarea {
+  border: 1px solid #b9c5b7;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #f8faf6;
+  color: #17211a;
+}
+
+.question-box textarea {
+  resize: vertical;
+}
+
+.qa-form button,
+.trace-panel button {
+  width: fit-content;
+  min-height: 38px;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #244a32;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.qa-form button:disabled {
+  background: #9eaaa0;
+  cursor: not-allowed;
+}
+
+.status-line {
+  margin: 0;
+  color: #47624d;
+  font-weight: 800;
+}
+
+.answer-layout {
+  display: grid;
+  gap: 18px;
+}
+
+.answer-panel,
+.citations-panel,
+.trace-content {
+  border-top: 1px solid #cbd6c8;
+  padding-top: 16px;
+}
+
+.answer-panel h2,
+.citations-panel h2,
+.trace-view h3,
+.structured-sections h3 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.structured-sections {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.structured-sections section,
+.citation-item {
+  display: grid;
+  gap: 5px;
+}
+
+.citation-item {
+  border-left: 3px solid #47624d;
+  padding: 8px 10px;
+  background: #f7faf3;
+}
+
+.citation-item span,
+.trace-view p {
+  margin: 0;
+  color: #536058;
+  font-size: 13px;
+}
+
+.trace-view {
+  display: grid;
+  gap: 10px;
+}
+
 @media (max-width: 720px) {
   .workspace-shell {
     grid-template-columns: 1fr;
@@ -334,6 +447,7 @@ h1 {
 
   .library-filters,
   .upload-strip,
+  .qa-filters,
   .document-row {
     grid-template-columns: 1fr;
   }

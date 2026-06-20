@@ -12,6 +12,14 @@ import {
 } from "./api/documents";
 import { errorMessage } from "./api/errors";
 import {
+  askTextQuestion,
+  getRetrievalTrace,
+  type Citation,
+  type QaFilters,
+  type QaResponse,
+  type RetrievalTrace
+} from "./api/qa";
+import {
   canMaintainLibrary,
   clearSession,
   loadSession,
@@ -120,6 +128,14 @@ const emptyFilters: DocumentFilters = {
   document_type: "",
   language: "",
   status: ""
+};
+
+const emptyQaFilters: QaFilters = {
+  brand: "",
+  model: "",
+  document_type: "",
+  subsystem: "",
+  language: ""
 };
 
 function LibraryPage({ session }: { session: Session }) {
@@ -370,6 +386,213 @@ function duplicateDocumentIdFrom(details: unknown): string {
   return "";
 }
 
+function QaPage({ session }: { session: Session }) {
+  const [question, setQuestion] = useState("");
+  const [filters, setFilters] = useState<QaFilters>(emptyQaFilters);
+  const [answer, setAnswer] = useState<QaResponse | null>(null);
+  const [trace, setTrace] = useState<RetrievalTrace | null>(null);
+  const [traceOpen, setTraceOpen] = useState(false);
+  const [statusText, setStatusText] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [loadingTrace, setLoadingTrace] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const disabled = question.trim() === "" || submitting;
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (disabled) {
+      return;
+    }
+    setSubmitting(true);
+    setStatusText("retrieving/generating");
+    setError(null);
+    setTrace(null);
+    setTraceOpen(false);
+    try {
+      const response = await askTextQuestion(session.token, question.trim(), filters);
+      setAnswer(response);
+    } catch (caught) {
+      setError(caught instanceof ApiRequestError ? errorMessage(caught.response) : "问答请求失败。");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function toggleTrace() {
+    if (!answer) {
+      return;
+    }
+    if (traceOpen) {
+      setTraceOpen(false);
+      return;
+    }
+    setTraceOpen(true);
+    if (trace) {
+      return;
+    }
+    setLoadingTrace(true);
+    try {
+      setTrace(await getRetrievalTrace(session.token, answer.trace_id));
+    } catch (caught) {
+      setError(caught instanceof ApiRequestError ? errorMessage(caught.response) : "检索链路加载失败。");
+    } finally {
+      setLoadingTrace(false);
+    }
+  }
+
+  return (
+    <section className="qa-page" aria-label="问答工作区">
+      <form className="qa-form" onSubmit={submit}>
+        <div className="qa-filters">
+          {(["brand", "model", "document_type", "subsystem", "language"] as const).map((field) => (
+            <label key={field}>
+              <span>{qaFilterLabel(field)}</span>
+              <input
+                value={filters[field]}
+                onChange={(event) => setFilters({ ...filters, [field]: event.target.value })}
+              />
+            </label>
+          ))}
+        </div>
+        <label className="question-box">
+          <span>问题</span>
+          <textarea
+            value={question}
+            onChange={(event) => setQuestion(event.target.value)}
+            rows={5}
+          />
+        </label>
+        <button type="submit" disabled={disabled}>
+          提交问题
+        </button>
+      </form>
+
+      {statusText ? <p className="status-line">{statusText}</p> : null}
+      {error ? <p className="form-error">{error}</p> : null}
+
+      {answer ? (
+        <section className="answer-layout">
+          <div className="answer-panel">
+            <h2>回答</h2>
+            <p>{answer.answer}</p>
+            <StructuredSections sections={answer.sections} />
+          </div>
+          <div className="citations-panel">
+            <h2>引用</h2>
+            {answer.citations.length === 0 ? <p>暂无引用。</p> : null}
+            {answer.citations.map((citation) => (
+              <CitationItem citation={citation} key={`${citation.document_id}-${citation.chunk_id}`} />
+            ))}
+          </div>
+          <div className="trace-panel">
+            <button type="button" onClick={toggleTrace}>
+              查看检索链路
+            </button>
+            {traceOpen ? (
+              <div className="trace-content">
+                {loadingTrace ? <p>加载中</p> : null}
+                {trace ? <TraceView trace={trace} /> : null}
+              </div>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+    </section>
+  );
+}
+
+function qaFilterLabel(field: keyof QaFilters): string {
+  return {
+    brand: "品牌",
+    model: "型号",
+    document_type: "类型",
+    subsystem: "系统",
+    language: "语言"
+  }[field];
+}
+
+function StructuredSections({ sections }: { sections: Record<string, unknown> }) {
+  return (
+    <div className="structured-sections">
+      {Object.entries(sections).map(([key, value]) => (
+        <section key={key}>
+          <h3>{sectionLabel(key)}</h3>
+          <p>{formatValue(value)}</p>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function sectionLabel(key: string): string {
+  return {
+    conclusion: "结论",
+    applicability: "适用范围",
+    possible_causes: "可能原因",
+    inspection_steps: "检查步骤",
+    safety_reminder: "安全提醒",
+    citations: "引用来源",
+    uncertainty: "不确定性"
+  }[key] ?? key;
+}
+
+function CitationItem({ citation }: { citation: Citation }) {
+  return (
+    <article className="citation-item">
+      <strong>{citation.document_title}</strong>
+      <span>{sourceLocatorText(citation.source_locator)}</span>
+      <span>{citation.evidence_type} / {citation.chunk_id}</span>
+      <p>{citation.evidence_snippet}</p>
+    </article>
+  );
+}
+
+function sourceLocatorText(sourceLocator: Record<string, unknown>): string {
+  return Object.entries(sourceLocator)
+    .map(([key, value]) => `${key}: ${String(value)}`)
+    .join(" / ");
+}
+
+function TraceView({ trace }: { trace: RetrievalTrace }) {
+  return (
+    <div className="trace-view">
+      <p>{trace.trace_id}</p>
+      <p>{trace.channels.used.join(", ")}</p>
+      {trace.channels.degraded.map((item) => (
+        <p key={`${item.channel}-${item.reason}`}>{item.channel}: {item.reason}</p>
+      ))}
+      <div>
+        <h3>候选</h3>
+        {(trace.candidates ?? []).map((candidate) => (
+          <p key={candidate.chunk_id}>{candidate.chunk_id}</p>
+        ))}
+      </div>
+      <div>
+        <h3>Rerank</h3>
+        {(trace.rerank?.items ?? []).map((item) => (
+          <p key={item.chunk_id}>{item.chunk_id} {item.before_rank} -&gt; {item.after_rank}</p>
+        ))}
+      </div>
+      <div>
+        <h3>最终证据</h3>
+        {(trace.final_evidence ?? []).map((item) => (
+          <p key={item.chunk_id}>{item.chunk_id}</p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map((item) => formatValue(item)).join("；");
+  }
+  if (typeof value === "object" && value !== null) {
+    return JSON.stringify(value);
+  }
+  return String(value ?? "");
+}
+
 function Workspace({
   session,
   path,
@@ -430,6 +653,8 @@ function Workspace({
         </header>
         {path === "/library" ? (
           <LibraryPage session={session} />
+        ) : path === "/qa" ? (
+          <QaPage session={session} />
         ) : (
           <section className="placeholder-panel">
             <p>当前页面已受登录态保护。</p>
