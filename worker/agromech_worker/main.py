@@ -3,9 +3,12 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy import Engine
+from sqlalchemy import select
 
 from agromech_api.database import get_engine
+from agromech_api.db.models import documents
 from agromech_api.ingestion import IngestTaskRunner, QueuedTask
+from agromech_api.table_ingestion import is_table_document, process_table_document
 from agromech_api.text_ingestion import process_text_document
 
 
@@ -17,12 +20,26 @@ def health_status() -> dict[str, str]:
 
 
 def process_ingest_task(engine: Engine, task: QueuedTask) -> None:
-    chunk_count = process_text_document(engine, task.document_id)
+    with engine.connect() as connection:
+        document = connection.execute(
+            select(documents.c.original_file_name, documents.c.mime_type).where(
+                documents.c.id == task.document_id
+            )
+        ).mappings().one()
+
+    if is_table_document(document["original_file_name"], document["mime_type"]):
+        chunk_count = process_table_document(engine, task.document_id)
+        chunk_kind = "table"
+    else:
+        chunk_count = process_text_document(engine, task.document_id)
+        chunk_kind = "text"
+
     LOGGER.info(
-        "Processed ingest task: task_id=%s document_id=%s task_type=%s text_chunks=%s",
+        "Processed ingest task: task_id=%s document_id=%s task_type=%s chunk_kind=%s chunks=%s",
         task.id,
         task.document_id,
         task.task_type,
+        chunk_kind,
         chunk_count,
     )
 
