@@ -23,7 +23,9 @@ describe("AppFrame navigation shell", () => {
   it("redirects unauthenticated business page visits to login", () => {
     const appFrame = readAppFrame();
 
-    expect(appFrame).toContain('if (!session && pathname !== "/login")');
+    expect(appFrame).toContain("const [hydrated, setHydrated]");
+    expect(appFrame).toContain("setSession(loadSession())");
+    expect(appFrame).toContain('if (hydrated && !session && pathname !== "/login")');
     expect(appFrame).toContain('router.replace("/login")');
     expect(appFrame).toContain("请先登录");
   });

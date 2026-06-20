@@ -47,18 +47,25 @@ export function AppFrame({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { theme, toggleTheme } = useTheme();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [session] = useState<Session | null>(() => {
-    if (typeof window === "undefined") return null;
-    return loadSession();
-  });
+  const [session, setSession] = useState<Session | null>(null);
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    if (!session && pathname !== "/login") {
+    setSession(loadSession());
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (hydrated && !session && pathname !== "/login") {
       router.replace("/login");
     }
-  }, [pathname, router, session]);
+  }, [hydrated, pathname, router, session]);
 
-  if (!session && pathname !== "/login") {
+  if (!hydrated && pathname !== "/login") {
+    return <main className="grid min-h-dvh place-items-center bg-surface-canvas text-sm text-text-muted">正在加载</main>;
+  }
+
+  if (hydrated && !session && pathname !== "/login") {
     return <main className="grid min-h-dvh place-items-center bg-surface-canvas text-sm text-text-muted">请先登录</main>;
   }
 
@@ -70,6 +77,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
 
   function handleSignOut() {
     clearSession();
+    setSession(null);
     router.replace("/login");
   }
 
