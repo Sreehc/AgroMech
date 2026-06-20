@@ -5,10 +5,21 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import status
-from sqlalchemy import Engine, asc, insert, select, update
+from sqlalchemy import Engine, asc, delete, insert, select, update
 
 from agromech_api.db.enums import DocumentStatus, IngestTaskStatus, TaskType
-from agromech_api.db.models import documents, ingest_tasks
+from agromech_api.db.models import (
+    answer_citations,
+    chunk_entity_links,
+    chunk_search_index,
+    document_assets,
+    document_chunks,
+    document_entity_extractions,
+    documents,
+    embedding_references,
+    graph_edges,
+    ingest_tasks,
+)
 from agromech_api.documents import TaskResult, get_document_or_404
 from agromech_api.errors import AppError, ErrorCode
 
@@ -111,6 +122,8 @@ class IngestTaskRunner:
             else DocumentStatus.INDEXED.value
         )
         with self.engine.begin() as connection:
+            if task.task_type == TaskType.DELETE.value:
+                cleanup_deleted_document(connection, task.document_id)
             connection.execute(
                 update(ingest_tasks)
                 .where(ingest_tasks.c.id == task.id)
@@ -138,6 +151,9 @@ class IngestTaskRunner:
     def mark_failed(self, task: QueuedTask, failure: IngestFailure) -> None:
         now = datetime.now(UTC)
         with self.engine.begin() as connection:
+            document_status = DocumentStatus.FAILED.value
+            if task.task_type == TaskType.REPROCESS.value and has_searchable_index(connection, task.document_id):
+                document_status = DocumentStatus.INDEXED.value
             connection.execute(
                 update(ingest_tasks)
                 .where(ingest_tasks.c.id == task.id)
@@ -154,13 +170,43 @@ class IngestTaskRunner:
                 update(documents)
                 .where(documents.c.id == task.document_id)
                 .values(
-                    status=DocumentStatus.FAILED.value,
+                    status=document_status,
                     failure_stage=failure.stage,
                     failure_code=failure.code,
                     failure_message=failure.message,
                     updated_at=now,
                 )
             )
+
+
+def has_searchable_index(connection, document_id: str) -> bool:
+    return (
+        connection.execute(
+            select(chunk_search_index.c.id)
+            .where(chunk_search_index.c.document_id == document_id)
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
+def cleanup_deleted_document(connection, document_id: str) -> None:
+    chunk_ids = connection.execute(
+        select(document_chunks.c.id).where(document_chunks.c.document_id == document_id)
+    ).scalars().all()
+    connection.execute(
+        update(answer_citations)
+        .where(answer_citations.c.document_id == document_id)
+        .values(document_id=None, chunk_id=None, accessible=False)
+    )
+    if chunk_ids:
+        connection.execute(delete(chunk_search_index).where(chunk_search_index.c.chunk_id.in_(chunk_ids)))
+        connection.execute(delete(embedding_references).where(embedding_references.c.chunk_id.in_(chunk_ids)))
+        connection.execute(delete(chunk_entity_links).where(chunk_entity_links.c.chunk_id.in_(chunk_ids)))
+        connection.execute(delete(graph_edges).where(graph_edges.c.source_chunk_id.in_(chunk_ids)))
+    connection.execute(delete(document_entity_extractions).where(document_entity_extractions.c.document_id == document_id))
+    connection.execute(delete(document_assets).where(document_assets.c.document_id == document_id))
+    connection.execute(delete(document_chunks).where(document_chunks.c.document_id == document_id))
 
 
 def retry_failed_task(engine: Engine, task_id: str) -> TaskResult:

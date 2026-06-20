@@ -1,8 +1,16 @@
 import pytest
 from sqlalchemy import create_engine, insert, select
 
-from agromech_api.db.enums import DocumentStatus, IngestTaskStatus, TaskType
-from agromech_api.db.models import documents, ingest_tasks, metadata
+from agromech_api.db.enums import ChunkType, DocumentStatus, IngestTaskStatus, TaskType
+from agromech_api.db.models import (
+    answer_citations,
+    chunk_search_index,
+    document_chunks,
+    documents,
+    ingest_tasks,
+    metadata,
+    qa_records,
+)
 from agromech_api.errors import AppError, ErrorCode
 from agromech_api.ingestion import IngestFailure, IngestTaskRunner, retry_failed_task
 
@@ -142,6 +150,112 @@ def test_delete_task_moves_document_to_deleted(tmp_path) -> None:
     assert document["status"] == "deleted"
     assert task["status"] == "succeeded"
     assert task["stage"] == "deleted"
+
+
+def test_delete_task_cleans_searchable_data_and_marks_historical_citations_inaccessible(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_task(
+        engine,
+        document_status=DocumentStatus.DELETING.value,
+        task_type=TaskType.DELETE.value,
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            insert(document_chunks).values(
+                id="chunk-1",
+                document_id="doc-1",
+                chunk_type=ChunkType.TEXT.value,
+                content="Hydraulic pump pressure",
+                source_locator={"page": 3},
+            )
+        )
+        connection.execute(
+            insert(chunk_search_index).values(
+                id="search-1",
+                chunk_id="chunk-1",
+                document_id="doc-1",
+                chunk_type=ChunkType.TEXT.value,
+                search_text="Hydraulic pump pressure",
+                embedding=[1.0],
+            )
+        )
+        connection.execute(
+            insert(qa_records).values(
+                id="qa-1",
+                trace_id="trace-1",
+                question="question",
+                answer="answer",
+                uncertainty={"level": "low", "reasons": []},
+            )
+        )
+        connection.execute(
+            insert(answer_citations).values(
+                id="citation-1",
+                qa_record_id="qa-1",
+                document_id="doc-1",
+                chunk_id="chunk-1",
+                citation_payload={"document_id": "doc-1", "chunk_id": "chunk-1"},
+                accessible=True,
+            )
+        )
+    runner = IngestTaskRunner(engine)
+
+    result = runner.run_next(lambda _task: None)
+
+    assert result == "succeeded"
+    with engine.connect() as connection:
+        chunk_count = len(connection.execute(select(document_chunks)).all())
+        index_count = len(connection.execute(select(chunk_search_index)).all())
+        citation = connection.execute(select(answer_citations)).mappings().one()
+    assert chunk_count == 0
+    assert index_count == 0
+    assert citation["document_id"] is None
+    assert citation["chunk_id"] is None
+    assert citation["accessible"] is False
+
+
+def test_failed_reprocess_keeps_indexed_document_when_old_index_exists(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_task(
+        engine,
+        document_status=DocumentStatus.INDEXED.value,
+        task_type=TaskType.REPROCESS.value,
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            insert(document_chunks).values(
+                id="chunk-1",
+                document_id="doc-1",
+                chunk_type=ChunkType.TEXT.value,
+                content="Hydraulic pump pressure",
+                source_locator={"page": 3},
+            )
+        )
+        connection.execute(
+            insert(chunk_search_index).values(
+                id="search-1",
+                chunk_id="chunk-1",
+                document_id="doc-1",
+                chunk_type=ChunkType.TEXT.value,
+                search_text="Hydraulic pump pressure",
+                embedding=[1.0],
+            )
+        )
+    runner = IngestTaskRunner(engine)
+
+    result = runner.run_next(
+        lambda _task: (_ for _ in ()).throw(
+            IngestFailure("parse_failed", "Parser could not read file", stage="parse")
+        )
+    )
+
+    assert result == "failed"
+    with engine.connect() as connection:
+        document = connection.execute(select(documents)).mappings().one()
+        index_count = len(connection.execute(select(chunk_search_index)).all())
+    assert document["status"] == "indexed"
+    assert document["failure_code"] == "parse_failed"
+    assert index_count == 1
 
 
 def test_runner_returns_idle_when_no_queued_task(tmp_path) -> None:
