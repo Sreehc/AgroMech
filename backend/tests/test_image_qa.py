@@ -1,12 +1,13 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 
 from agromech_api.auth import create_access_token
 from agromech_api.config import Settings
 from agromech_api.db.enums import UserRole
-from agromech_api.db.models import metadata
+from agromech_api.db.models import metadata, retrieval_logs
+from agromech_api.image_qa import visual_annotation_status
 from agromech_api.main import create_app
 from test_hybrid_retrieval import seed_retrieval_corpus
 
@@ -50,8 +51,54 @@ def test_image_qa_returns_visual_observation_detected_entities_answer_and_citati
     assert payload["detected_entities"]["possible_models"] == ["M7040"]
     assert "hydraulic" in payload["detected_entities"]["visible_parts"]
     assert payload["visual_confidence"]["low_confidence"] is False
+    assert payload["visual_annotation_status"] == {
+        "status": "available",
+        "coordinate_format": "normalized_xywh",
+        "missing_reason": None,
+    }
+    model_annotation = next(
+        annotation for annotation in payload["visual_annotations"] if annotation["type"] == "possible_model"
+    )
+    assert model_annotation["label"] == "M7040"
+    assert model_annotation["confidence"] == 0.8
+    assert model_annotation["bbox"]["format"] == "normalized_xywh"
+    assert 0 <= model_annotation["bbox"]["x"] <= 1
+    assert 0 <= model_annotation["bbox"]["y"] <= 1
+    assert 0 < model_annotation["bbox"]["width"] <= 1
+    assert 0 < model_annotation["bbox"]["height"] <= 1
+    assert model_annotation["bbox"]["x"] + model_annotation["bbox"]["width"] <= 1
+    assert model_annotation["bbox"]["y"] + model_annotation["bbox"]["height"] <= 1
     assert payload["answer"]
     assert payload["citations"][0]["document_id"] == "doc-m7040"
+
+
+def test_image_qa_forwards_context_filters_to_retrieval_query(tmp_path: Path) -> None:
+    client, engine, token = image_qa_client(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    response = client.post(
+        "/qa/image",
+        headers=auth_header(token, "trace-image-filters"),
+        data={
+            "question": "E01 液压告警怎么排查？",
+            "brand": "Kubota",
+            "model": "M7040",
+            "document_type": "manual",
+            "language": "zh-CN",
+        },
+        files={"image": ("dashboard-e01.png", b"fake-image", "image/png")},
+    )
+
+    assert response.status_code == 200
+    with engine.connect() as connection:
+        retrieval_log = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-image-filters")
+        ).mappings().one()
+
+    assert "Kubota" in retrieval_log["query"]
+    assert "M7040" in retrieval_log["query"]
+    assert "manual" in retrieval_log["query"]
+    assert "zh-CN" in retrieval_log["query"]
 
 
 def test_image_qa_rejects_multiple_images(tmp_path: Path) -> None:
@@ -91,4 +138,20 @@ def test_image_qa_low_confidence_without_question_asks_for_more_information(tmp_
         "visible_parts": [],
         "warning_lights": [],
         "part_numbers": [],
+    }
+    assert payload["visual_annotations"] == []
+    assert payload["visual_annotation_status"] == {
+        "status": "missing",
+        "coordinate_format": "normalized_xywh",
+        "missing_reason": "no_detected_entities",
+    }
+
+
+def test_visual_annotation_status_reports_missing_when_annotations_have_no_bbox() -> None:
+    status = visual_annotation_status([{"id": "warning-1", "type": "warning_light", "label": "E01"}])
+
+    assert status == {
+        "status": "missing",
+        "coordinate_format": "normalized_xywh",
+        "missing_reason": "no_bbox",
     }

@@ -31,11 +31,13 @@ INJECTION_PATTERNS = (
     "make up",
 )
 SAFETY_WARNING = "涉及液压、电气、发动机、制动或旋转部件时，维修前请停机、断电、释放压力，并按厂家安全规程操作。"
+QA_FILTER_KEYS = ("brand", "model", "document_type", "subsystem", "language")
 
 
 class TextQaRequest(BaseModel):
     question: str = Field(...)
     filters: dict[str, str | None] = Field(default_factory=dict)
+    session_id: str | None = None
     mode: str = "standard"
 
 
@@ -109,11 +111,18 @@ def should_refuse_prompt(question: str) -> bool:
 
 def query_with_filters(question: str, filters: dict[str, str | None]) -> str:
     terms = [question]
-    for key in ["brand", "model", "document_type", "subsystem", "language"]:
-        value = filters.get(key)
+    for key in QA_FILTER_KEYS:
+        value = normalized_filter_value(filters.get(key))
         if value and value not in question:
             terms.insert(0, value)
     return " ".join(terms)
+
+
+def normalized_filter_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
 
 
 def refused_answer(engine: Engine, *, question: str, trace_id: str) -> dict[str, object]:

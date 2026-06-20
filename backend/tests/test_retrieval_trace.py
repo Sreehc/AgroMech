@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -126,3 +127,82 @@ def test_trace_api_hides_full_candidates_from_standard_user(tmp_path: Path) -> N
     assert payload["channels"] == {"used": ["keyword"], "degraded": []}
     assert "candidates" not in payload
     assert payload["final_evidence"] == [{"chunk_id": "chunk-a"}]
+
+
+def test_trace_api_returns_summary_to_maintainer_without_debug_details(tmp_path: Path) -> None:
+    client, engine, token = trace_client(tmp_path, role=UserRole.MAINTAINER)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(retrieval_logs).values(
+                id="log-3",
+                trace_id="trace-maintainer",
+                query="M7040 E01",
+                filters={"model": "M7040"},
+                channels={"used": ["keyword"], "degraded": []},
+                candidates=[{"chunk_id": "chunk-a", "content": "full evidence", "score": 4.2}],
+                rerank={"items": [{"chunk_id": "chunk-a", "before_rank": 1, "after_rank": 1}]},
+                final_evidence=[{"chunk_id": "chunk-a", "content": "full evidence"}],
+            )
+        )
+
+    response = client.get("/retrieval-traces/trace-maintainer", headers=auth_header(token))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["trace_id"] == "trace-maintainer"
+    assert "candidates" not in payload
+    assert "rerank" not in payload
+    assert payload["final_evidence"] == [{"chunk_id": "chunk-a"}]
+
+
+def test_trace_api_redacts_sensitive_details_from_full_trace_roles(tmp_path: Path) -> None:
+    client, engine, token = trace_client(tmp_path, role=UserRole.ADMIN)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(retrieval_logs).values(
+                id="log-4",
+                trace_id="trace-sensitive",
+                query="M7040 E01",
+                filters={
+                    "model": "M7040",
+                    "api_key": "sk-test-secret",
+                    "internal_path": "/Users/agromech/.env",
+                },
+                channels={
+                    "used": ["keyword"],
+                    "degraded": [{"channel": "rerank", "reason": "Traceback at /var/log/agromech/rerank.log"}],
+                },
+                candidates=[
+                    {
+                        "chunk_id": "chunk-a",
+                        "content": "full evidence",
+                        "access_token": "token-value",
+                        "metadata": {"source_path": "/srv/agromech/private/manual.pdf"},
+                    }
+                ],
+                rerank={
+                    "items": [{"chunk_id": "chunk-a", "before_rank": 1, "after_rank": 1}],
+                    "stack_trace": "Traceback (most recent call last):\n  File \"/srv/app/rerank.py\", line 1",
+                },
+                final_evidence=[
+                    {"chunk_id": "chunk-a", "content": "full evidence", "password": "plain-secret"}
+                ],
+            )
+        )
+
+    response = client.get("/retrieval-traces/trace-sensitive", headers=auth_header(token))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["filters"]["model"] == "M7040"
+    assert payload["candidates"][0]["content"] == "full evidence"
+    serialized_payload = json.dumps(payload, ensure_ascii=False)
+    assert "sk-test-secret" not in serialized_payload
+    assert "token-value" not in serialized_payload
+    assert "plain-secret" not in serialized_payload
+    assert "/Users/agromech" not in serialized_payload
+    assert "/srv/agromech" not in serialized_payload
+    assert "Traceback" not in serialized_payload
+    assert payload["filters"]["api_key"] == "[redacted]"
+    assert payload["candidates"][0]["access_token"] == "[redacted]"
+    assert payload["final_evidence"][0]["password"] == "[redacted]"
