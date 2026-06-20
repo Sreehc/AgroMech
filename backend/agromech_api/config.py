@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     llm_request_timeout_seconds: float = 120.0
     evaluation_task_timeout_seconds: float = 3600.0
     dependency_connect_timeout_seconds: float = 2.0
+    vision_model: str = ""
+    vision_confidence_threshold: float = 0.55
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
