@@ -3,6 +3,7 @@ export type ApiErrorCode =
   | "forbidden"
   | "unsupported_file_type"
   | "file_too_large"
+  | "duplicate_of"
   | "timeout"
   | "not_found"
   | "validation_error"
@@ -22,6 +23,7 @@ const messages: Record<ApiErrorCode, string> = {
   forbidden: "当前账号无权执行此操作。",
   unsupported_file_type: "不支持该文件类型。",
   file_too_large: "文件大小超过限制。",
+  duplicate_of: "已存在相同文件。",
   timeout: "请求超时，请稍后重试。",
   not_found: "请求的资源不存在。",
   validation_error: "提交内容有误，请检查后重试。",

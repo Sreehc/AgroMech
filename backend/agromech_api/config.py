@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     admin_password: str = "change-me"
     auth_token_secret: str = "change-me"
     session_ttl_minutes: int = 720
+    upload_max_file_size_mb: int = 100
+    upload_max_image_size_mb: int = 20
+    upload_max_concurrent: int = 2
+    document_library_max_size_gb: int = 5
     database_url: str = "postgresql+psycopg://agromech:agromech@localhost:5432/agromech"
     postgres_host: str = "localhost"
     postgres_port: int = 5432

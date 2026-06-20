@@ -14,6 +14,7 @@ class ErrorCode(StrEnum):
     FORBIDDEN = "forbidden"
     UNSUPPORTED_FILE_TYPE = "unsupported_file_type"
     FILE_TOO_LARGE = "file_too_large"
+    DUPLICATE_OF = "duplicate_of"
     TIMEOUT = "timeout"
     NOT_FOUND = "not_found"
     VALIDATION_ERROR = "validation_error"

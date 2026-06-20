@@ -2,6 +2,7 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Request
 from pydantic import BaseModel
+from sqlalchemy import Engine
 
 from agromech_api.auth import (
     UserContext,
@@ -11,6 +12,8 @@ from agromech_api.auth import (
     require_authenticated_write,
 )
 from agromech_api.config import Settings, get_settings
+from agromech_api.database import get_engine
+from agromech_api.documents import register_document_routes
 from agromech_api.errors import register_error_handlers
 from agromech_api.infrastructure import DependencyCheck, check_infrastructure
 
@@ -26,11 +29,18 @@ class LoginResponse(BaseModel):
     expires_in: int
 
 
-def create_app(dependency_checker=None, settings: Settings | None = None) -> FastAPI:
+def create_app(
+    dependency_checker=None,
+    settings: Settings | None = None,
+    database_engine: Engine | None = None,
+) -> FastAPI:
     settings = settings or get_settings()
+    database_engine = database_engine or get_engine()
     app = FastAPI(title="AgroMech RAG API", version="0.1.0")
     app.state.settings = settings
+    app.state.database_engine = database_engine
     register_error_handlers(app)
+    register_document_routes(app, settings=settings, engine=database_engine)
     checker = dependency_checker or (lambda: check_infrastructure(settings))
 
     @app.middleware("http")

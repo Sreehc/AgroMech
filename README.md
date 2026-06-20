@@ -141,6 +141,18 @@ curl -X POST http://127.0.0.1:8000/auth/login \
 curl http://127.0.0.1:8000/auth/me -H "Authorization: Bearer <token>"
 ```
 
+上传资料会创建 document 记录和导入任务：
+
+```bash
+curl -X POST http://127.0.0.1:8000/documents \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@manual.txt" \
+  -F "brand=Kubota" \
+  -F "model=M7040"
+```
+
+重复文件会返回 `duplicate_of`，不支持类型返回 `unsupported_file_type`，超出配置大小返回 `file_too_large`。
+
 API 错误响应统一为：
 
 ```json
