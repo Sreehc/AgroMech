@@ -153,6 +153,16 @@ curl -X POST http://127.0.0.1:8000/documents \
 
 重复文件会返回 `duplicate_of`，不支持类型返回 `unsupported_file_type`，超出配置大小返回 `file_too_large`。
 
+资料库后端 API：
+
+```bash
+curl "http://127.0.0.1:8000/documents?brand=Kubota&model=M7040" -H "Authorization: Bearer <token>"
+curl http://127.0.0.1:8000/documents/<document_id> -H "Authorization: Bearer <token>"
+curl http://127.0.0.1:8000/tasks/<task_id> -H "Authorization: Bearer <token>"
+curl -X POST http://127.0.0.1:8000/documents/<document_id>/reprocess -H "Authorization: Bearer <token>"
+curl -X DELETE http://127.0.0.1:8000/documents/<document_id> -H "Authorization: Bearer <token>"
+```
+
 API 错误响应统一为：
 
 ```json
