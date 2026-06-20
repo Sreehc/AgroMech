@@ -8,6 +8,7 @@ from sqlalchemy import select
 from agromech_api.config import get_settings
 from agromech_api.database import get_engine
 from agromech_api.db.models import documents
+from agromech_api.entity_extraction import process_document_entities
 from agromech_api.image_ingestion import is_image_document, is_pdf_document, process_image_document
 from agromech_api.ingestion import IngestFailure, IngestTaskRunner, QueuedTask
 from agromech_api.search_indexing import SearchIndexer
@@ -94,14 +95,16 @@ def process_ingest_task(
         chunk_count = process_text_document(engine, task.document_id)
         chunk_kind = "text"
 
+    entity_result = process_document_entities(engine, task.document_id)
     index_result = (indexer or SearchIndexer(engine)).index_document(task.document_id)
     LOGGER.info(
-        "Processed ingest task: task_id=%s document_id=%s task_type=%s chunk_kind=%s chunks=%s indexed_chunks=%s",
+        "Processed ingest task: task_id=%s document_id=%s task_type=%s chunk_kind=%s chunks=%s entity_links=%s indexed_chunks=%s",
         task.id,
         task.document_id,
         task.task_type,
         chunk_kind,
         chunk_count,
+        entity_result.link_count,
         index_result.chunk_count,
     )
 

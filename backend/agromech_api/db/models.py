@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -158,6 +159,35 @@ chunk_search_index = Table(
 Index("ix_chunk_search_index_chunk_id", chunk_search_index.c.chunk_id, unique=True)
 Index("ix_chunk_search_index_document_id", chunk_search_index.c.document_id)
 Index("ix_chunk_search_index_type", chunk_search_index.c.chunk_type)
+
+chunk_entity_links = Table(
+    "chunk_entity_links",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("chunk_id", ForeignKey("document_chunks.id", ondelete="CASCADE"), nullable=False),
+    Column("document_id", ForeignKey("documents.id", ondelete="CASCADE"), nullable=False),
+    Column("entity_type", String(80), nullable=False),
+    Column("entity_value", String(255), nullable=False),
+    Column("normalized_value", String(255), nullable=False),
+    Column("confidence", Float, nullable=False),
+    Column("source", String(80), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+Index("ix_chunk_entity_links_chunk_id", chunk_entity_links.c.chunk_id)
+Index("ix_chunk_entity_links_document_type", chunk_entity_links.c.document_id, chunk_entity_links.c.entity_type)
+Index("ix_chunk_entity_links_lookup", chunk_entity_links.c.entity_type, chunk_entity_links.c.normalized_value)
+
+document_entity_extractions = Table(
+    "document_entity_extractions",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("document_id", ForeignKey("documents.id", ondelete="CASCADE"), nullable=False),
+    Column("extracted_entities", JSON, nullable=False),
+    Column("confidence", Float, nullable=False),
+    Column("low_confidence", Boolean, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+Index("ix_document_entity_extractions_document_id", document_entity_extractions.c.document_id)
 
 retrieval_logs = Table(
     "retrieval_logs",

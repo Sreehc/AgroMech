@@ -10,6 +10,8 @@ def test_core_tables_are_declared() -> None:
         "ingest_tasks",
         "embedding_references",
         "chunk_search_index",
+        "chunk_entity_links",
+        "document_entity_extractions",
         "retrieval_logs",
         "qa_records",
         "answer_citations",
@@ -24,11 +26,12 @@ def test_key_indexes_are_declared() -> None:
     chunks = metadata.tables["document_chunks"]
     tasks = metadata.tables["ingest_tasks"]
     search_index = metadata.tables["chunk_search_index"]
+    entity_links = metadata.tables["chunk_entity_links"]
     retrieval_logs = metadata.tables["retrieval_logs"]
 
     index_names = {
         index.name
-        for table in [documents, chunks, tasks, search_index, retrieval_logs]
+        for table in [documents, chunks, tasks, search_index, entity_links, retrieval_logs]
         for index in table.indexes
     }
 
@@ -37,6 +40,7 @@ def test_key_indexes_are_declared() -> None:
         "ix_documents_brand_model",
         "ix_document_chunks_document_id",
         "ix_chunk_search_index_chunk_id",
+        "ix_chunk_entity_links_lookup",
         "ix_ingest_tasks_document_id_status",
         "ix_retrieval_logs_trace_id",
     }.issubset(index_names)
