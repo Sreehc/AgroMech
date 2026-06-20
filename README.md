@@ -215,6 +215,8 @@ embedding 或索引失败时任务失败，文档不会进入 `indexed`。
 图片问答 API 为 `POST /qa/image`，使用单个 `image` 表单文件和可选 `question`、`brand`、`model`；
 系统抽取视觉线索后复用混合检索和带引用问答链路，返回 `visual_observation`、`detected_entities`、
 `answer`、`citations` 和 `trace_id`。多图上传返回 `too_many_images`，低置信且缺少文字问题时提示补充信息。
+基础评估 runner 可复用固定问题集运行文本问答，记录 `evaluation_runs` 的运行 ID、数据集版本、
+模型配置、prompt 版本、指标摘要和失败类型。
 
 初始化并启动前端：
 
