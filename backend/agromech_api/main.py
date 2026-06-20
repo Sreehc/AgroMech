@@ -1,15 +1,35 @@
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
+from pydantic import BaseModel
 
-from agromech_api.config import get_settings
+from agromech_api.auth import (
+    UserContext,
+    authenticate_single_admin,
+    create_access_token,
+    current_user_dependency,
+    require_authenticated_write,
+)
+from agromech_api.config import Settings, get_settings
 from agromech_api.errors import register_error_handlers
 from agromech_api.infrastructure import DependencyCheck, check_infrastructure
 
 
-def create_app(dependency_checker=None) -> FastAPI:
-    settings = get_settings()
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+def create_app(dependency_checker=None, settings: Settings | None = None) -> FastAPI:
+    settings = settings or get_settings()
     app = FastAPI(title="AgroMech RAG API", version="0.1.0")
+    app.state.settings = settings
     register_error_handlers(app)
     checker = dependency_checker or (lambda: check_infrastructure(settings))
 
@@ -19,6 +39,21 @@ def create_app(dependency_checker=None) -> FastAPI:
         response = await call_next(request)
         response.headers["X-Trace-Id"] = request.state.trace_id
         return response
+
+    app.middleware("http")(require_authenticated_write)
+
+    @app.post("/auth/login", response_model=LoginResponse, tags=["auth"])
+    def login(payload: LoginRequest) -> LoginResponse:
+        user = authenticate_single_admin(payload.username, payload.password, settings)
+        token = create_access_token(username=user.username, role=user.role, settings=settings)
+        return LoginResponse(
+            access_token=token,
+            expires_in=settings.session_ttl_minutes * 60,
+        )
+
+    @app.get("/auth/me", tags=["auth"])
+    def me(user: UserContext = Depends(current_user_dependency())) -> dict[str, str]:
+        return {"username": user.username, "role": user.role.value}
 
     @app.get("/health", tags=["system"])
     def health() -> dict[str, str]:

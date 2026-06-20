@@ -132,6 +132,15 @@ curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/health/dependencies
 ```
 
+后端认证使用 MVP 默认的单管理员模式。登录后把 `access_token` 作为 bearer token 传给需要登录或写权限的 API：
+
+```bash
+curl -X POST http://127.0.0.1:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"change-me"}'
+curl http://127.0.0.1:8000/auth/me -H "Authorization: Bearer <token>"
+```
+
 API 错误响应统一为：
 
 ```json

@@ -8,6 +8,11 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_host: str = "0.0.0.0"
     api_port: int = 8000
+    auth_mode: str = "single_admin"
+    admin_username: str = "admin"
+    admin_password: str = "change-me"
+    auth_token_secret: str = "change-me"
+    session_ttl_minutes: int = 720
     database_url: str = "postgresql+psycopg://agromech:agromech@localhost:5432/agromech"
     postgres_host: str = "localhost"
     postgres_port: int = 5432
@@ -38,6 +43,10 @@ class Settings(BaseSettings):
         "neo4j_user",
         "neo4j_password",
         "local_file_storage_path",
+        "auth_mode",
+        "admin_username",
+        "admin_password",
+        "auth_token_secret",
     )
     @classmethod
     def required_non_empty(cls, value: str, info) -> str:
