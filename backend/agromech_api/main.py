@@ -16,6 +16,7 @@ from agromech_api.database import get_engine
 from agromech_api.documents import register_document_routes
 from agromech_api.errors import register_error_handlers
 from agromech_api.infrastructure import DependencyCheck, check_infrastructure
+from agromech_api.retrieval_traces import register_retrieval_trace_routes
 
 
 class LoginRequest(BaseModel):
@@ -41,6 +42,7 @@ def create_app(
     app.state.database_engine = database_engine
     register_error_handlers(app)
     register_document_routes(app, settings=settings, engine=database_engine)
+    register_retrieval_trace_routes(app, engine=database_engine)
     checker = dependency_checker or (lambda: check_infrastructure(settings))
 
     @app.middleware("http")

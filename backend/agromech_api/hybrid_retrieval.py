@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from sqlalchemy import Engine, select
 
 from agromech_api.db.enums import ChunkType
-from agromech_api.db.models import chunk_entity_links, document_chunks
+from agromech_api.db.models import chunk_entity_links, document_chunks, retrieval_logs
 from agromech_api.entity_extraction import normalize
 from agromech_api.graph_rag import GraphRagService
 from agromech_api.query_understanding import ParsedQuery, parse_query, structured_filter_chunks
@@ -22,6 +24,49 @@ MIN_CANDIDATE_SCORE = 0.25
 
 def hybrid_retrieve(engine: Engine, query: str, *, limit: int = 10) -> dict[str, object]:
     parsed = parse_query(query)
+    ranked = rank_candidates(collect_candidates(engine, query, parsed, limit=limit), limit=limit)
+    reranked, _trace = rerank_candidates(ranked, parsed, limit=limit)
+    if not reranked:
+        return evidence_insufficient()
+    return {"status": "ok", "candidates": reranked}
+
+
+def hybrid_retrieve_with_trace(
+    engine: Engine,
+    query: str,
+    *,
+    trace_id: str | None = None,
+    limit: int = 10,
+    degraded_channels: dict[str, str] | None = None,
+) -> dict[str, object]:
+    parsed = parse_query(query)
+    trace_id = trace_id or str(uuid4())
+    ranked = rank_candidates(collect_candidates(engine, query, parsed, limit=limit), limit=limit)
+    reranked, rerank_trace = rerank_candidates(ranked, parsed, limit=limit)
+    status = "ok" if reranked else "evidence_insufficient"
+    final_evidence = evidence_payload(reranked)
+    channels = channel_trace(ranked, degraded_channels or {})
+    write_retrieval_log(
+        engine,
+        trace_id=trace_id,
+        query=query,
+        filters=parsed.filters,
+        channels=channels,
+        candidates=[trace_candidate(candidate) for candidate in ranked],
+        rerank=rerank_trace,
+        final_evidence=final_evidence,
+    )
+    if not reranked:
+        return {**evidence_insufficient(), "trace_id": trace_id}
+    return {
+        "status": status,
+        "trace_id": trace_id,
+        "candidates": reranked,
+        "final_evidence": final_evidence,
+    }
+
+
+def collect_candidates(engine: Engine, query: str, parsed: ParsedQuery, *, limit: int) -> list[dict[str, object]]:
     candidates: dict[str, dict[str, object]] = {}
 
     for result in keyword_search(engine, query, limit=limit * 2):
@@ -43,14 +88,132 @@ def hybrid_retrieve(engine: Engine, query: str, *, limit: int = 10) -> dict[str,
         for candidate in candidates.values()
         if candidate["score"] >= MIN_CANDIDATE_SCORE or any(channel in candidate["channels"] for channel in ["keyword", "structured", "graph"])
     ]
-    ranked = sorted(viable_candidates, key=lambda item: item["score"], reverse=True)[:limit]
-    if not ranked:
-        return {
-            "status": "evidence_insufficient",
-            "candidates": [],
-            "message": "No evidence found for the query",
+    return viable_candidates
+
+
+def rank_candidates(candidates: list[dict[str, object]], *, limit: int) -> list[dict[str, object]]:
+    return sorted(candidates, key=lambda item: item["score"], reverse=True)[:limit]
+
+
+def rerank_candidates(
+    candidates: list[dict[str, object]],
+    parsed: ParsedQuery,
+    *,
+    limit: int,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    before_positions = {str(candidate["chunk_id"]): index for index, candidate in enumerate(candidates, start=1)}
+    scored: list[dict[str, object]] = []
+    for candidate in candidates:
+        reranked = dict(candidate)
+        reranked["rerank_score"] = rerank_score(candidate, parsed)
+        scored.append(reranked)
+
+    ranked = sorted(scored, key=lambda item: item["rerank_score"], reverse=True)[:limit]
+    after_positions = {str(candidate["chunk_id"]): index for index, candidate in enumerate(ranked, start=1)}
+    trace_items = []
+    for candidate in ranked:
+        chunk_id = str(candidate["chunk_id"])
+        trace_items.append(
+            {
+                "chunk_id": chunk_id,
+                "before_rank": before_positions[chunk_id],
+                "after_rank": after_positions[chunk_id],
+                "before_score": round(float(candidate["score"]), 6),
+                "after_score": round(float(candidate["rerank_score"]), 6),
+                "channels": list(candidate["channels"]),
+            }
+        )
+    return ranked, {"strategy": "deterministic_evidence_rerank", "items": trace_items}
+
+
+def rerank_score(candidate: dict[str, object], parsed: ParsedQuery) -> float:
+    score = float(candidate["score"])
+    channels = set(candidate["channels"])
+    score += 0.15 * len(channels)
+    if "structured" in channels:
+        score += 1.0
+    if "graph" in channels:
+        score += 0.5
+    if "vision" in channels:
+        score += 0.25
+    if parsed.scope_uncertain:
+        score -= 0.2
+    if candidate.get("not_applicable"):
+        score *= 0.1
+    return score
+
+
+def evidence_insufficient() -> dict[str, object]:
+    return {
+        "status": "evidence_insufficient",
+        "candidates": [],
+        "message": "No evidence found for the query",
+    }
+
+
+def channel_trace(candidates: list[dict[str, object]], degraded_channels: dict[str, str]) -> dict[str, object]:
+    used = sorted({channel for candidate in candidates for channel in candidate["channels"]})
+    degraded = [
+        {"channel": channel, "reason": reason}
+        for channel, reason in sorted(degraded_channels.items(), key=lambda item: item[0])
+    ]
+    return {"used": used, "degraded": degraded}
+
+
+def trace_candidate(candidate: dict[str, object]) -> dict[str, object]:
+    return {
+        "chunk_id": candidate["chunk_id"],
+        "document_id": candidate["document_id"],
+        "chunk_type": candidate["chunk_type"],
+        "content": candidate["content"],
+        "source_locator": candidate["source_locator"],
+        "channels": list(candidate["channels"]),
+        "score": round(float(candidate["score"]), 6),
+        "rerank_score": round(float(candidate.get("rerank_score", candidate["score"])), 6),
+        "not_applicable": bool(candidate.get("not_applicable", False)),
+        "applicability_reason": candidate.get("applicability_reason"),
+    }
+
+
+def evidence_payload(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {
+            "chunk_id": candidate["chunk_id"],
+            "document_id": candidate["document_id"],
+            "chunk_type": candidate["chunk_type"],
+            "content": candidate["content"],
+            "source_locator": candidate["source_locator"],
+            "channels": list(candidate["channels"]),
+            "score": round(float(candidate.get("rerank_score", candidate["score"])), 6),
         }
-    return {"status": "ok", "candidates": ranked}
+        for candidate in candidates
+    ]
+
+
+def write_retrieval_log(
+    engine: Engine,
+    *,
+    trace_id: str,
+    query: str,
+    filters: dict[str, object],
+    channels: dict[str, object],
+    candidates: list[dict[str, object]],
+    rerank: dict[str, object],
+    final_evidence: list[dict[str, object]],
+) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            retrieval_logs.insert().values(
+                id=str(uuid4()),
+                trace_id=trace_id,
+                query=query,
+                filters=filters,
+                channels=channels,
+                candidates=candidates,
+                rerank=rerank,
+                final_evidence=final_evidence,
+            )
+        )
 
 
 def graph_candidates(engine: Engine, parsed: ParsedQuery) -> list[dict[str, object]]:
