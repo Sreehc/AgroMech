@@ -11,6 +11,7 @@ from agromech_api.auth import (
     current_user_dependency,
     require_authenticated_write,
 )
+from agromech_api.chat_sessions import register_chat_session_routes
 from agromech_api.config import Settings, get_settings
 from agromech_api.database import get_engine
 from agromech_api.documents import register_document_routes
@@ -44,6 +45,7 @@ def create_app(
     app.state.database_engine = database_engine
     register_error_handlers(app)
     register_document_routes(app, settings=settings, engine=database_engine)
+    register_chat_session_routes(app, engine=database_engine)
     register_retrieval_trace_routes(app, engine=database_engine)
     register_text_qa_routes(app, engine=database_engine)
     register_image_qa_routes(app, settings=settings, engine=database_engine)

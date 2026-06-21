@@ -87,6 +87,37 @@ def test_text_qa_returns_evidence_insufficient_without_citations(tmp_path: Path)
     assert payload["trace_id"] == "trace-empty"
 
 
+def test_text_qa_forwards_context_filters_to_retrieval_query(tmp_path: Path) -> None:
+    client, engine, token = qa_client(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    response = client.post(
+        "/qa/text",
+        headers=auth_header(token, "trace-text-filters"),
+        json={
+            "question": "E01 液压告警怎么排查？",
+            "filters": {
+                "brand": "Kubota",
+                "model": "M7040",
+                "document_type": "manual",
+                "language": "zh-CN",
+            },
+            "session_id": "session-text-filters",
+        },
+    )
+
+    assert response.status_code == 200
+    with engine.connect() as connection:
+        retrieval_log = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-text-filters")
+        ).mappings().one()
+
+    assert "Kubota" in retrieval_log["query"]
+    assert "M7040" in retrieval_log["query"]
+    assert "manual" in retrieval_log["query"]
+    assert "zh-CN" in retrieval_log["query"]
+
+
 def test_text_qa_refuses_requests_to_fabricate_or_ignore_citations(tmp_path: Path) -> None:
     client, _engine, token = qa_client(tmp_path)
 

@@ -5,15 +5,17 @@ import mimetypes
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from fastapi import Depends, File, Form, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy import Engine, desc, func, insert, select, update
 
 from agromech_api.auth import UserContext, require_roles
 from agromech_api.config import Settings
-from agromech_api.db.enums import DocumentStatus, IngestTaskStatus, TaskType, UserRole
-from agromech_api.db.models import document_chunks, documents, ingest_tasks
+from agromech_api.db.enums import AssetType, DocumentStatus, IngestTaskStatus, TaskType, UserRole
+from agromech_api.db.models import document_assets, document_chunks, documents, ingest_tasks
 from agromech_api.errors import AppError, ErrorCode
 from agromech_api.file_storage import LocalFileStorage
 
@@ -187,6 +189,182 @@ def chunk_summary(row) -> dict[str, object]:
     }
 
 
+def source_position(row) -> dict[str, object]:
+    return {
+        "page_number": row["page_number"],
+        "section_title": row["section_title"],
+        "worksheet_name": row["worksheet_name"],
+        "row_start": row["row_start"],
+        "row_end": row["row_end"],
+    }
+
+
+def evidence_snippet(content: str, limit: int = 500) -> str:
+    normalized = " ".join(content.split())
+    return normalized[:limit]
+
+
+def local_asset_path(storage_uri: str) -> Path:
+    parsed = urlparse(storage_uri)
+    if parsed.scheme != "file":
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            "Document asset file not found",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    return Path(unquote(parsed.path))
+
+
+def page_asset_payload(document_id: str, asset) -> dict[str, object]:
+    if asset is None:
+        return {
+            "page_image_url": None,
+            "render_status": "not_rendered",
+        }
+    path = local_asset_path(asset["storage_uri"])
+    if not path.exists():
+        return {
+            "page_image_url": None,
+            "render_status": "missing",
+        }
+    return {
+        "page_image_url": f"/documents/{document_id}/assets/{asset['id']}",
+        "render_status": "rendered",
+    }
+
+
+def area_highlight_from_locator(source_locator: dict[str, object], page_number: int | None) -> dict[str, object] | None:
+    bbox = source_locator.get("bbox")
+    if not isinstance(bbox, dict):
+        return None
+
+    required_keys = ("x", "y", "width", "height")
+    if not all(isinstance(bbox.get(key), (int, float)) for key in required_keys):
+        return None
+
+    normalized_bbox = {key: float(bbox[key]) for key in required_keys}
+    return {
+        "type": "area",
+        "page_number": page_number,
+        "source_locator": source_locator,
+        "bbox": normalized_bbox,
+    }
+
+
+def preview_payload(
+    document,
+    chunk,
+    *,
+    accessible: bool,
+    reason: str | None = None,
+    page_asset=None,
+) -> dict[str, object]:
+    snippet = evidence_snippet(chunk["content"]) if chunk else None
+    source_locator = chunk["source_locator"] if chunk else {}
+    position = source_position(chunk) if chunk else {
+        "page_number": None,
+        "section_title": None,
+        "worksheet_name": None,
+        "row_start": None,
+        "row_end": None,
+    }
+    is_pdf = document["mime_type"] == "application/pdf"
+    preview_type = "unavailable" if not accessible else ("pdf" if is_pdf else "text")
+    pdf_asset = page_asset_payload(document["id"], page_asset) if accessible and is_pdf else None
+    highlights = []
+    if accessible and snippet:
+        highlights.append(
+            {
+                "type": "text",
+                "text": snippet,
+                "page_number": position["page_number"],
+                "source_locator": source_locator,
+            }
+        )
+        if is_pdf:
+            area_highlight = area_highlight_from_locator(source_locator, position["page_number"])
+            if area_highlight:
+                highlights.append(area_highlight)
+
+    return {
+        "document_id": document["id"],
+        "document_title": document["title"],
+        "chunk_id": chunk["id"] if chunk else None,
+        "preview_type": preview_type,
+        "accessible": accessible,
+        "source_locator": source_locator,
+        "source_position": position,
+        "evidence_snippet": snippet,
+        "text_preview": snippet if accessible and not is_pdf else None,
+        "pdf_page": {
+            "page_number": position["page_number"],
+            "page_image_url": pdf_asset["page_image_url"] if pdf_asset else None,
+            "render_status": pdf_asset["render_status"] if pdf_asset else "not_rendered",
+        }
+        if accessible and is_pdf
+        else None,
+        "highlights": highlights,
+        "unavailable_reason": reason,
+    }
+
+
+def document_preview(engine: Engine, document_id: str, chunk_id: str | None = None) -> dict[str, object]:
+    with engine.connect() as connection:
+        document = connection.execute(
+            select(documents).where(documents.c.id == document_id)
+        ).mappings().one_or_none()
+        if document is None:
+            raise AppError(ErrorCode.NOT_FOUND, "Document not found", status_code=status.HTTP_404_NOT_FOUND)
+
+        chunk_filters = [document_chunks.c.document_id == document_id]
+        if chunk_id:
+            chunk_filters.append(document_chunks.c.id == chunk_id)
+        chunk = connection.execute(
+            select(document_chunks).where(*chunk_filters).order_by(document_chunks.c.created_at).limit(1)
+        ).mappings().one_or_none()
+        page_asset = None
+        if chunk and document["mime_type"] == "application/pdf" and chunk["page_number"] is not None:
+            page_asset = connection.execute(
+                select(document_assets)
+                .where(
+                    document_assets.c.document_id == document_id,
+                    document_assets.c.asset_type == AssetType.PAGE_IMAGE.value,
+                    document_assets.c.page_number == chunk["page_number"],
+                )
+                .limit(1)
+            ).mappings().one_or_none()
+
+    if chunk is None:
+        return preview_payload(document, None, accessible=False, reason="chunk_not_found")
+    if document["status"] == DocumentStatus.DELETED.value:
+        return preview_payload(document, chunk, accessible=False, reason="document_deleted")
+    if document["mime_type"] == "application/pdf":
+        if chunk["page_number"] is None:
+            return preview_payload(document, chunk, accessible=False, reason="pdf_page_locator_missing")
+        if page_asset is not None and page_asset_payload(document_id, page_asset)["render_status"] == "missing":
+            return preview_payload(document, chunk, accessible=False, reason="pdf_page_file_missing")
+
+    return preview_payload(document, chunk, accessible=True, page_asset=page_asset)
+
+
+def get_document_page_asset_or_404(engine: Engine, document_id: str, asset_id: str):
+    with engine.connect() as connection:
+        asset = connection.execute(
+            select(document_assets).where(
+                document_assets.c.id == asset_id,
+                document_assets.c.document_id == document_id,
+                document_assets.c.asset_type == AssetType.PAGE_IMAGE.value,
+            )
+        ).mappings().one_or_none()
+    if asset is None:
+        raise AppError(ErrorCode.NOT_FOUND, "Document asset not found", status_code=status.HTTP_404_NOT_FOUND)
+
+    path = local_asset_path(asset["storage_uri"])
+    if not path.exists():
+        raise AppError(ErrorCode.NOT_FOUND, "Document asset file not found", status_code=status.HTTP_404_NOT_FOUND)
+    return asset, path
+
+
 def get_document_or_404(engine: Engine, document_id: str):
     with engine.connect() as connection:
         row = connection.execute(
@@ -288,6 +466,23 @@ def register_document_routes(app, *, settings: Settings, engine: Engine) -> None
             total = connection.execute(total_query).scalar_one()
 
         return {"total": total, "items": [document_summary(row) for row in rows]}
+
+    @app.get("/documents/{document_id}/preview", tags=["documents"])
+    def preview_document(
+        document_id: str,
+        chunk_id: str | None = None,
+        _user: UserContext = Depends(require_roles(UserRole.ADMIN, UserRole.MAINTAINER, UserRole.USER, UserRole.EVALUATOR)),
+    ) -> dict[str, object]:
+        return document_preview(engine, document_id, chunk_id)
+
+    @app.get("/documents/{document_id}/assets/{asset_id}", tags=["documents"])
+    def get_document_asset(
+        document_id: str,
+        asset_id: str,
+        _user: UserContext = Depends(require_roles(UserRole.ADMIN, UserRole.MAINTAINER, UserRole.USER, UserRole.EVALUATOR)),
+    ) -> FileResponse:
+        asset, path = get_document_page_asset_or_404(engine, document_id, asset_id)
+        return FileResponse(path, media_type=asset["mime_type"] or "application/octet-stream")
 
     @app.get("/documents/{document_id}", tags=["documents"])
     def document_detail(

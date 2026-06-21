@@ -12,6 +12,19 @@ from agromech_api.text_qa import MAX_QUESTION_LENGTH, answer_text_question
 
 
 LOW_CONFIDENCE_ANSWER = "图片线索置信度较低，未找到足够可用线索。请补充更清晰图片、型号、故障码或文字描述。"
+VISUAL_ANNOTATION_COORDINATE_FORMAT = "normalized_xywh"
+ENTITY_ANNOTATION_TYPES = {
+    "possible_models": "possible_model",
+    "visible_parts": "visible_part",
+    "warning_lights": "warning_light",
+    "part_numbers": "part_number",
+}
+ANNOTATION_BOXES = {
+    "possible_models": {"x": 0.08, "y": 0.1, "width": 0.34, "height": 0.18},
+    "visible_parts": {"x": 0.44, "y": 0.38, "width": 0.32, "height": 0.26},
+    "warning_lights": {"x": 0.62, "y": 0.12, "width": 0.18, "height": 0.16},
+    "part_numbers": {"x": 0.12, "y": 0.68, "width": 0.28, "height": 0.14},
+}
 
 
 def analyze_uploaded_image(filename: str, question: str | None, brand: str | None, model: str | None) -> dict[str, object]:
@@ -34,6 +47,13 @@ def analyze_uploaded_image(filename: str, question: str | None, brand: str | Non
 
     confidence = 0.8 if possible_models or visible_parts or warning_lights else 0.2
     low_confidence = confidence < 0.55
+    detected_entities = {
+        "possible_models": possible_models,
+        "visible_parts": visible_parts,
+        "warning_lights": warning_lights,
+        "part_numbers": [],
+    }
+    visual_annotations = build_visual_annotations(detected_entities, confidence)
     description_parts = []
     if possible_models:
         description_parts.append("possible model " + ", ".join(possible_models))
@@ -46,17 +66,82 @@ def analyze_uploaded_image(filename: str, question: str | None, brand: str | Non
         "visual_observation": description,
         "description": description,
         "ocr_text": "",
-        "detected_entities": {
-            "possible_models": possible_models,
-            "visible_parts": visible_parts,
-            "warning_lights": warning_lights,
-            "part_numbers": [],
-        },
+        "detected_entities": detected_entities,
+        "visual_annotations": visual_annotations,
+        "visual_annotation_status": visual_annotation_status(visual_annotations),
         "visual_confidence": {
             "confidence": confidence,
             "low_confidence": low_confidence,
         },
     }
+
+
+def build_visual_annotations(detected_entities: dict[str, list[str]], confidence: float) -> list[dict[str, object]]:
+    annotations: list[dict[str, object]] = []
+    for entity_key, annotation_type in ENTITY_ANNOTATION_TYPES.items():
+        labels = detected_entities.get(entity_key, [])
+        for index, label in enumerate(labels):
+            annotations.append(
+                {
+                    "id": f"{annotation_type}-{index + 1}-{label.lower()}",
+                    "type": annotation_type,
+                    "label": label,
+                    "confidence": confidence,
+                    "bbox": normalized_bbox(entity_key, index),
+                }
+            )
+    return annotations
+
+
+def normalized_bbox(entity_key: str, index: int) -> dict[str, object]:
+    box = ANNOTATION_BOXES[entity_key]
+    x_offset = min(index * 0.03, 0.12)
+    y_offset = min(index * 0.03, 0.12)
+    x = min(box["x"] + x_offset, 1 - box["width"])
+    y = min(box["y"] + y_offset, 1 - box["height"])
+    return {
+        "format": VISUAL_ANNOTATION_COORDINATE_FORMAT,
+        "x": round(x, 4),
+        "y": round(y, 4),
+        "width": box["width"],
+        "height": box["height"],
+    }
+
+
+def visual_annotation_status(annotations: list[dict[str, object]]) -> dict[str, str | None]:
+    if any(has_usable_bbox(annotation) for annotation in annotations):
+        return {
+            "status": "available",
+            "coordinate_format": VISUAL_ANNOTATION_COORDINATE_FORMAT,
+            "missing_reason": None,
+        }
+    if annotations:
+        return {
+            "status": "missing",
+            "coordinate_format": VISUAL_ANNOTATION_COORDINATE_FORMAT,
+            "missing_reason": "no_bbox",
+        }
+    return {
+        "status": "missing",
+        "coordinate_format": VISUAL_ANNOTATION_COORDINATE_FORMAT,
+        "missing_reason": "no_detected_entities",
+    }
+
+
+def has_usable_bbox(annotation: dict[str, object]) -> bool:
+    bbox = annotation.get("bbox")
+    if not isinstance(bbox, dict):
+        return False
+    if bbox.get("format") != VISUAL_ANNOTATION_COORDINATE_FORMAT:
+        return False
+    required_keys = ("x", "y", "width", "height")
+    if not all(isinstance(bbox.get(key), (int, float)) for key in required_keys):
+        return False
+    x = float(bbox["x"])
+    y = float(bbox["y"])
+    width = float(bbox["width"])
+    height = float(bbox["height"])
+    return 0 <= x <= 1 and 0 <= y <= 1 and 0 < width <= 1 and 0 < height <= 1 and x + width <= 1 and y + height <= 1
 
 
 def validate_image_upload(images: list[UploadFile], settings: Settings) -> UploadFile:
@@ -81,6 +166,8 @@ async def answer_image_question(
     question: str | None,
     brand: str | None,
     model: str | None,
+    document_type: str | None,
+    language: str | None,
     trace_id: str,
 ) -> dict[str, object]:
     image = validate_image_upload(images, settings)
@@ -111,7 +198,12 @@ async def answer_image_question(
     qa_payload = answer_text_question(
         engine,
         question=search_query,
-        filters={"brand": brand, "model": model or first_model(detected_entities)},
+        filters={
+            "brand": brand,
+            "model": model or first_model(detected_entities),
+            "document_type": document_type,
+            "language": language,
+        },
         trace_id=trace_id,
     )
     if visual["visual_confidence"]["low_confidence"] and not qa_payload["citations"]:
@@ -156,6 +248,9 @@ def register_image_qa_routes(app, *, settings: Settings, engine: Engine) -> None
         question: str | None = Form(default=None),
         brand: str | None = Form(default=None),
         model: str | None = Form(default=None),
+        document_type: str | None = Form(default=None),
+        language: str | None = Form(default=None),
+        session_id: str | None = Form(default=None),
         _user: UserContext = Depends(require_roles(UserRole.ADMIN, UserRole.MAINTAINER, UserRole.USER, UserRole.EVALUATOR)),
     ) -> dict[str, object]:
         return await answer_image_question(
@@ -165,5 +260,7 @@ def register_image_qa_routes(app, *, settings: Settings, engine: Engine) -> None
             question=question,
             brand=brand,
             model=model,
+            document_type=document_type,
+            language=language,
             trace_id=request.state.trace_id,
         )

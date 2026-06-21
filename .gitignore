@@ -12,6 +12,7 @@ __pycache__/
 node_modules/
 dist/
 frontend/dist/
+frontend/test-results/
 frontend/vite.config.d.ts
 frontend/vite.config.js
 

@@ -5,8 +5,11 @@ import {
 } from "ai";
 
 import {
+  createAgroMechPayloadDataPart,
   extractAgroMechRequest,
   formatAgroMechAnswer,
+  type AgroMechChatContext,
+  type AgroMechContextFilters,
   type AgroMechQaResponse,
 } from "@/lib/agromech-chat";
 
@@ -34,8 +37,14 @@ async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
   return response.blob();
 }
 
-async function askAgroMech(messages: UIMessage[]): Promise<AgroMechQaResponse> {
-  const request = extractAgroMechRequest(messages);
+type AgroMechRouteRequest = {
+  messages: UIMessage[];
+  filters?: AgroMechContextFilters;
+  session_id?: string | null;
+};
+
+async function askAgroMech(messages: UIMessage[], context: AgroMechChatContext): Promise<AgroMechQaResponse> {
+  const request = extractAgroMechRequest(messages, context);
   const token = await getAccessToken();
 
   if (request.image) {
@@ -48,6 +57,14 @@ async function askAgroMech(messages: UIMessage[]): Promise<AgroMechQaResponse> {
     if (request.question) {
       formData.append("question", request.question);
     }
+    Object.entries(request.filters).forEach(([key, value]) => {
+      if (value) {
+        formData.append(key, value);
+      }
+    });
+    if (request.session_id) {
+      formData.append("session_id", request.session_id);
+    }
 
     const response = await fetch(`${API_BASE_URL}/qa/image`, {
       method: "POST",
@@ -59,7 +76,10 @@ async function askAgroMech(messages: UIMessage[]): Promise<AgroMechQaResponse> {
       throw new Error("AgroMech image question failed.");
     }
 
-    return (await response.json()) as AgroMechQaResponse;
+    return {
+      ...((await response.json()) as AgroMechQaResponse),
+      question_image: request.image,
+    };
   }
 
   const response = await fetch(`${API_BASE_URL}/qa/text`, {
@@ -68,7 +88,11 @@ async function askAgroMech(messages: UIMessage[]): Promise<AgroMechQaResponse> {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ question: request.question, filters: {} }),
+    body: JSON.stringify({
+      question: request.question,
+      filters: request.filters,
+      session_id: request.session_id,
+    }),
   });
 
   if (!response.ok) {
@@ -79,16 +103,18 @@ async function askAgroMech(messages: UIMessage[]): Promise<AgroMechQaResponse> {
 }
 
 export async function POST(req: Request) {
-  const { messages }: { messages: UIMessage[] } = await req.json();
+  const { messages, filters, session_id }: AgroMechRouteRequest = await req.json();
 
   return createUIMessageStreamResponse({
     stream: createUIMessageStream({
       originalMessages: messages,
       execute: async ({ writer }) => {
-        const answer = formatAgroMechAnswer(await askAgroMech(messages));
+        const payload = await askAgroMech(messages, { filters, session_id });
+        const answer = formatAgroMechAnswer(payload);
         const textId = "agromech-answer";
 
         writer.write({ type: "start" });
+        writer.write(createAgroMechPayloadDataPart(payload));
         writer.write({ type: "text-start", id: textId });
         writer.write({ type: "text-delta", id: textId, delta: answer });
         writer.write({ type: "text-end", id: textId });

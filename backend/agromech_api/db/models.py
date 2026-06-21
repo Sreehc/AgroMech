@@ -262,6 +262,20 @@ answer_citations = Table(
 )
 Index("ix_answer_citations_qa_record_id", answer_citations.c.qa_record_id)
 
+chat_sessions = Table(
+    "chat_sessions",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("username", String(120), nullable=False),
+    Column("title", String(255), nullable=False),
+    Column("messages", JSON, nullable=False),
+    Column("filters", JSON, nullable=False),
+    Column("has_image", Boolean, nullable=False, default=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+Index("ix_chat_sessions_username_updated_at", chat_sessions.c.username, chat_sessions.c.updated_at)
+
 evaluation_runs = Table(
     "evaluation_runs",
     metadata,
