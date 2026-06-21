@@ -1,7 +1,13 @@
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { LibraryDocumentList, LibraryErrorAlert, LibraryStatusOverview, libraryActionConfirmationContent } from "./library-page";
+import {
+  LibraryDocumentList,
+  LibraryErrorAlert,
+  LibraryStatusOverview,
+  libraryActionConfirmationContent,
+} from "./library-page";
 import type { DocumentSummary } from "@/lib/frontend-api";
 
 const documents: DocumentSummary[] = [
@@ -36,6 +42,19 @@ const documents: DocumentSummary[] = [
 ];
 
 describe("library document list", () => {
+  it("shows structured filter controls with select-friendly labels", () => {
+    const source = readFileSync(new URL("./library-page.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("选择品牌或直接输入");
+    expect(source).toContain("选择型号或直接输入");
+    expect(source).toContain("品牌和型号支持选择或直接输入，无匹配项时可按回车使用当前输入");
+    expect(source).toContain("const hasDraftFilters");
+    expect(source).toContain("重置");
+    expect(source).toContain("statusOptions");
+    expect(source).toContain("languageOptions");
+    expect(source).not.toContain(">清空筛选<");
+  });
+
   it("renders scan-friendly fields and status overview", () => {
     const overviewHtml = renderToStaticMarkup(<LibraryStatusOverview total={2} documents={documents} />);
     const listHtml = renderToStaticMarkup(

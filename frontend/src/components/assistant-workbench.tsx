@@ -10,19 +10,26 @@ import {
 import { useEffect, useState, type ReactNode } from "react";
 
 import { EvidencePanel } from "@/components/evidence-panel";
+import {
+  collectSessionFilterOptions,
+  documentTypeOptions,
+  languageOptions,
+  mergeOptionValues,
+  SearchableSelectField,
+  SelectField,
+} from "@/components/filter-controls";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Input } from "@/components/ui/input";
 import type { AgroMechContextFilters, AgroMechEvidenceSelection } from "@/lib/agromech-chat";
 import { useChatSessionHistory } from "@/lib/chat-sessions";
 import { loadSession, type Session } from "@/lib/session";
 
 const contextFilterFields = [
-  { key: "brand", label: "品牌", placeholder: "如 Kubota" },
-  { key: "model", label: "型号", placeholder: "如 M7040" },
-  { key: "document_type", label: "资料类型", placeholder: "如 manual" },
-  { key: "language", label: "语言", placeholder: "如 zh-CN" },
+  { key: "brand", label: "品牌" },
+  { key: "model", label: "型号" },
+  { key: "document_type", label: "资料类型" },
+  { key: "language", label: "语言" },
 ] as const;
 
 export function AssistantWorkbench({
@@ -54,6 +61,14 @@ export function AssistantWorkbench({
     username: session?.username ?? "anonymous",
   });
   const { refresh } = history;
+  const filterOptions = collectSessionFilterOptions(history.sessions);
+  const selectedBrand = activeFilters.brand?.trim() ?? "";
+  const modelOptions = selectedBrand ? (filterOptions.modelsByBrand[selectedBrand] ?? filterOptions.allModels) : filterOptions.allModels;
+  const mergedDocumentTypeOptions = mergeOptionValues(documentTypeOptions, filterOptions.documentTypes);
+  const mergedLanguageOptions = mergeOptionValues(languageOptions, filterOptions.languages, {
+    "zh-CN": "中文（简体）",
+    "en-US": "英文（美国）",
+  });
 
   useEffect(() => {
     if (!session) return;
@@ -186,17 +201,36 @@ export function AssistantWorkbench({
               </Button>
             </div>
             <div className="mt-3 grid gap-2 md:grid-cols-4">
-              {contextFilterFields.map((field) => (
-                <label className="grid gap-1 text-xs text-text-muted" key={field.key}>
-                  <span>{field.label}</span>
-                  <Input
-                    value={activeFilters[field.key] ?? ""}
-                    placeholder={field.placeholder}
-                    onChange={(event) => updateFilter(field.key, event.target.value)}
-                  />
-                </label>
-              ))}
+              <SearchableSelectField
+                label="品牌"
+                value={activeFilters.brand ?? ""}
+                options={filterOptions.brands}
+                placeholder="选择品牌或直接输入"
+                onChange={(value) => updateFilter("brand", value)}
+              />
+              <SearchableSelectField
+                label="型号"
+                value={activeFilters.model ?? ""}
+                options={modelOptions}
+                placeholder="选择型号或直接输入"
+                onChange={(value) => updateFilter("model", value)}
+              />
+              <SelectField
+                label="资料类型"
+                value={activeFilters.document_type ?? ""}
+                options={mergedDocumentTypeOptions}
+                onChange={(value) => updateFilter("document_type", value)}
+              />
+              <SelectField
+                label="语言"
+                value={activeFilters.language ?? ""}
+                options={mergedLanguageOptions}
+                onChange={(value) => updateFilter("language", value)}
+              />
             </div>
+            <p className="mt-2 text-xs text-text-muted">
+              品牌和型号支持选择或直接输入，无匹配项时可按回车使用当前输入。
+            </p>
           </div>
         </header>
         <div className="min-h-0">{children}</div>

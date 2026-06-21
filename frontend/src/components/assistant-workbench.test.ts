@@ -28,6 +28,7 @@ describe("assistant workbench layout", () => {
     expect(workbench).toContain("型号");
     expect(workbench).toContain("资料类型");
     expect(workbench).toContain("语言");
+    expect(workbench).toContain("品牌和型号支持选择或直接输入，无匹配项时可按回车使用当前输入");
     expect(workbench).toContain("清空筛选");
     expect(workbench).toContain("onActiveFiltersChange");
     expect(workbench).toContain("history.update");
@@ -74,6 +75,7 @@ describe("assistant workbench layout", () => {
     expect(workbench).toContain("history.update(activeSessionId, { filters })");
     expect(workbench).toContain("onActiveFiltersChange({})");
     expect(workbench).toContain("persistFilters({})");
+    expect(workbench).not.toContain("无匹配项时按回车使用当前输入");
   });
 
   it("wires citation selection to evidence panel open, switch, and close state", () => {

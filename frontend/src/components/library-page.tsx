@@ -22,6 +22,15 @@ import {
   validateUploadFile,
   type UploadQueueItem,
 } from "@/components/document-upload-queue";
+import {
+  collectFilterOptions,
+  documentTypeOptions,
+  languageOptions,
+  mergeOptionValues,
+  SearchableSelectField,
+  SelectField,
+  statusOptions,
+} from "@/components/filter-controls";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -61,6 +70,19 @@ export function LibraryPage() {
   const [confirmation, setConfirmation] = useState<{ action: "reprocess" | "delete"; document: DocumentSummary } | null>(null);
 
   const canMutate = session ? canMutateLibrary(session.role) : false;
+  const filterOptions = collectFilterOptions(documents);
+  const selectedBrand = draftFilters.brand.trim();
+  const modelOptions = selectedBrand ? (filterOptions.modelsByBrand[selectedBrand] ?? filterOptions.allModels) : filterOptions.allModels;
+  const mergedDocumentTypeOptions = mergeOptionValues(documentTypeOptions, filterOptions.documentTypes, {
+    manual: "说明手册",
+    repair_manual: "维修手册",
+    "fault-code": "故障码",
+  });
+  const mergedLanguageOptions = mergeOptionValues(languageOptions, filterOptions.languages, {
+    "zh-CN": "中文（简体）",
+    "en-US": "英文（美国）",
+  });
+  const hasDraftFilters = hasDocumentFilters(draftFilters);
 
   async function load(nextSession = session, nextFilters = filters) {
     if (!nextSession) return;
@@ -252,19 +274,50 @@ export function LibraryPage() {
       <LibraryStatusOverview documents={documents} total={total} />
 
       <form className="grid gap-3 rounded-lg border border-border bg-surface-panel/80 p-4 md:grid-cols-6" onSubmit={submitFilters}>
-        {(["brand", "model", "document_type", "language", "status"] as const).map((field) => (
-          <label className="grid gap-1 text-sm" key={field}>
-            <span className="text-text-muted">{filterLabel(field)}</span>
-            <input className="rounded-md border border-input bg-surface-raised px-3 py-2 text-foreground" value={draftFilters[field]} onChange={(event) => setDraftFilters({ ...draftFilters, [field]: event.target.value })} />
-          </label>
-        ))}
+        <SearchableSelectField
+          label="品牌"
+          value={draftFilters.brand}
+          options={filterOptions.brands}
+          placeholder="选择品牌或直接输入"
+          onChange={(value) => setDraftFilters({ ...draftFilters, brand: value })}
+        />
+        <SearchableSelectField
+          label="型号"
+          value={draftFilters.model}
+          options={modelOptions}
+          placeholder="选择型号或直接输入"
+          onChange={(value) => setDraftFilters({ ...draftFilters, model: value })}
+        />
+        <SelectField
+          label="类型"
+          value={draftFilters.document_type}
+          options={mergedDocumentTypeOptions}
+          onChange={(value) => setDraftFilters({ ...draftFilters, document_type: value })}
+        />
+        <SelectField
+          label="语言"
+          value={draftFilters.language}
+          options={mergedLanguageOptions}
+          onChange={(value) => setDraftFilters({ ...draftFilters, language: value })}
+        />
+        <SelectField
+          label="状态"
+          value={draftFilters.status}
+          options={statusOptions}
+          onChange={(value) => setDraftFilters({ ...draftFilters, status: value })}
+        />
         <button className="inline-flex items-center justify-center gap-2 self-end rounded-md bg-primary px-4 py-2 text-primary-foreground" type="submit">
           <FunnelSimple className="size-4" />
           筛选
         </button>
-        <button className="inline-flex items-center justify-center gap-2 self-end rounded-md border border-border px-4 py-2 text-foreground" type="button" onClick={clearFilters}>
-          清空筛选
-        </button>
+        <div className="flex items-center justify-between text-xs text-text-muted md:col-span-6">
+          <p>品牌和型号支持选择或直接输入，无匹配项时可按回车使用当前输入。</p>
+          {hasDraftFilters ? (
+            <button className="font-medium text-foreground underline-offset-4 hover:underline" type="button" onClick={clearFilters}>
+              重置
+            </button>
+          ) : null}
+        </div>
       </form>
 
       {canMutate ? (
@@ -501,16 +554,6 @@ function ExpandedDocumentRow({
       </div>
     </div>
   );
-}
-
-function filterLabel(field: keyof DocumentFilters): string {
-  return {
-    brand: "品牌",
-    model: "型号",
-    document_type: "类型",
-    language: "语言",
-    status: "状态",
-  }[field];
 }
 
 function hasDocumentFilters(filters: DocumentFilters): boolean {
