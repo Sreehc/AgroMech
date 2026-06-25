@@ -5,6 +5,7 @@ from agromech_api.db.models import (
     chunk_search_index,
     document_chunks,
     documents,
+    ingest_tasks,
     embedding_references,
     metadata,
 )
@@ -15,6 +16,9 @@ from agromech_api.search_indexing import (
     keyword_search,
     vector_search,
 )
+from agromech_api.zvec_store import ZvecVectorStore
+from agromech_api.config import Settings
+from agromech_worker.main import run_once
 from agromech_worker.main import process_ingest_task
 
 
@@ -29,7 +33,7 @@ def seed_document_with_chunks(engine) -> None:
         connection.execute(
             insert(documents).values(
                 id="doc-1",
-                title="Manual",
+                title="M7040 维修手册",
                 original_file_name="manual.txt",
                 file_hash="hash-doc-1",
                 file_size_bytes=100,
@@ -54,8 +58,8 @@ def seed_document_with_chunks(engine) -> None:
                     "id": "table-1",
                     "document_id": "doc-1",
                     "chunk_type": ChunkType.TABLE.value,
-                    "content": "Fault Code,Action\nE02,Check fuel filter",
-                    "summary": "Fault table",
+                    "content": "Fault Code,Action,Fluid Spec\nE02,Check fuel filter,Hydraulic oil ISO VG 46",
+                    "summary": "Fault and oil specification table",
                     "worksheet_name": "Faults",
                     "row_start": 1,
                     "row_end": 2,
@@ -96,6 +100,156 @@ def test_index_document_creates_fulltext_and_embedding_references(tmp_path) -> N
     assert {row["collection"] for row in embeddings} == {"agromech_chunks"}
 
 
+def test_index_document_can_write_vectors_to_zvec_store(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_document_with_chunks(engine)
+    store = ZvecVectorStore.from_path(
+        tmp_path / "zvec",
+        expected_dimension=256,
+    )
+
+    result = SearchIndexer(
+        engine,
+        vector_store=store,
+        collection="agromech_chunks",
+    ).index_document("doc-1")
+
+    assert result.chunk_count == 3
+    with engine.connect() as connection:
+        embeddings = connection.execute(select(embedding_references)).mappings().all()
+    assert {row["vector_store"] for row in embeddings} == {"zvec"}
+    assert {row["collection"] for row in embeddings} == {"agromech_chunks"}
+    assert all(row["vector_id"].startswith("zvec://agromech_chunks/") for row in embeddings)
+    assert {result["chunk_id"] for result in store.query(collection="agromech_chunks", embedding=[1.0] + [0.0] * 255)} <= {
+        "text-1",
+        "table-1",
+        "image-1",
+    }
+
+
+def test_index_document_records_embedding_version_profile_and_dimension(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_document_with_chunks(engine)
+
+    SearchIndexer(
+        engine,
+        embedding_version="emb_v2",
+        chunk_profile="chunk-v2",
+        embedding_dimension=256,
+    ).index_document("doc-1")
+
+    with engine.connect() as connection:
+        search_rows = connection.execute(select(chunk_search_index)).mappings().all()
+        embeddings = connection.execute(select(embedding_references)).mappings().all()
+    assert {row["embedding_version"] for row in search_rows} == {"emb_v2"}
+    assert {row["chunk_profile"] for row in search_rows} == {"chunk-v2"}
+    assert {row["embedding_dimension"] for row in search_rows} == {256}
+    assert {row["embedding_version"] for row in embeddings} == {"emb_v2"}
+    assert {row["chunk_profile"] for row in embeddings} == {"chunk-v2"}
+    assert {row["embedding_dimension"] for row in embeddings} == {256}
+
+
+def test_vector_search_filters_to_active_embedding_version(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_document_with_chunks(engine)
+    SearchIndexer(engine, embedding_version="emb_old").index_document("doc-1")
+
+    with engine.begin() as connection:
+        connection.execute(
+            insert(document_chunks).values(
+                id="image-new",
+                document_id="doc-1",
+                chunk_type=ChunkType.IMAGE.value,
+                content="Visual description: dashboard hydraulic warning",
+                summary="dashboard hydraulic warning",
+                source_locator={"type": "image", "source_file": "new-label.png"},
+            )
+        )
+    SearchIndexer(engine, embedding_version="emb_new").index_document("doc-1")
+
+    old_results = vector_search(engine, "dashboard hydraulic warning", active_embedding_version="emb_old")
+    new_results = vector_search(engine, "dashboard hydraulic warning", active_embedding_version="emb_new")
+
+    assert "image-new" not in {result["chunk_id"] for result in old_results}
+    assert all(result["embedding_version"] == "emb_old" for result in old_results)
+    assert "image-new" in {result["chunk_id"] for result in new_results}
+    assert all(result["embedding_version"] == "emb_new" for result in new_results)
+
+
+def test_vector_search_can_query_zvec_and_return_vector_refs(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_document_with_chunks(engine)
+    store = ZvecVectorStore.from_path(tmp_path / "zvec", expected_dimension=256)
+    SearchIndexer(engine, vector_store=store, collection="agromech_chunks").index_document("doc-1")
+
+    results = vector_search(
+        engine,
+        "dashboard hydraulic warning",
+        vector_store=store,
+        collection="agromech_chunks",
+        limit=5,
+    )
+
+    chunk_ids = {result["chunk_id"] for result in results}
+    assert {"text-1", "table-1", "image-1"}.issubset(chunk_ids)
+    assert results[0]["vector_ref"].startswith("zvec://agromech_chunks/")
+    assert all(result["score"] > 0 for result in results)
+    assert {result["chunk_type"] for result in results} >= {ChunkType.TEXT.value, ChunkType.TABLE.value, ChunkType.IMAGE.value}
+
+
+def test_run_once_uses_configured_zvec_store(tmp_path, monkeypatch) -> None:
+    engine = create_test_engine(tmp_path)
+    source_path = tmp_path / "manual.txt"
+    source_path.write_text("Kubota M7040 hydraulic pump", encoding="utf-8")
+    settings = Settings(
+        _env_file=None,
+        file_storage_backend="local",
+        graph_backend="local",
+        vector_backend="zvec",
+        model_provider="local",
+        embedding_provider="local",
+        zvec_path=str(tmp_path / "zvec"),
+        zvec_collection="agromech_chunks",
+        embedding_dimension=256,
+    )
+    monkeypatch.setattr("agromech_worker.main.get_settings", lambda: settings)
+
+    with engine.begin() as connection:
+        connection.execute(
+            insert(documents).values(
+                id="doc-1",
+                title="Manual",
+                original_file_name="manual.txt",
+                file_hash="hash-doc-1",
+                file_size_bytes=source_path.stat().st_size,
+                mime_type="text/plain",
+                storage_uri=f"file://{source_path}",
+                status=DocumentStatus.QUEUED.value,
+                created_by_role="admin",
+            )
+        )
+        connection.execute(
+            insert(ingest_tasks).values(
+                id="task-1",
+                document_id="doc-1",
+                task_type=TaskType.INGEST.value,
+                status="queued",
+                attempt_count=0,
+                stage="queued",
+            )
+        )
+
+    result = run_once(engine=engine)
+
+    assert result == "succeeded"
+    with engine.connect() as connection:
+        embedding = connection.execute(select(embedding_references)).mappings().one()
+    assert embedding["vector_store"] == "zvec"
+    assert embedding["collection"] == "agromech_chunks"
+    assert embedding["vector_id"].startswith("zvec://agromech_chunks/")
+    assert (tmp_path / "zvec" / "agromech_chunks.json").exists()
+
+
 def test_keyword_and_vector_search_recall_text_table_and_image_chunks(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     seed_document_with_chunks(engine)
@@ -107,6 +261,20 @@ def test_keyword_and_vector_search_recall_text_table_and_image_chunks(tmp_path) 
     assert keyword_results[0]["chunk_id"] == "table-1"
     assert any(result["chunk_id"] == "text-1" for result in keyword_search(engine, "M7040 pump"))
     assert vector_results[0]["chunk_id"] == "image-1"
+
+
+def test_keyword_search_recalls_document_title_and_table_fields(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_document_with_chunks(engine)
+    SearchIndexer(engine).index_document("doc-1")
+
+    title_results = keyword_search(engine, "维修手册")
+    table_results = keyword_search(engine, "Fault Code Action")
+    fluid_results = keyword_search(engine, "hydraulic oil ISO VG 46")
+
+    assert {result["chunk_id"] for result in title_results} == {"text-1", "table-1", "image-1"}
+    assert table_results[0]["chunk_id"] == "table-1"
+    assert fluid_results[0]["chunk_id"] == "table-1"
 
 
 def test_indexing_failure_prevents_worker_from_succeeding(tmp_path) -> None:

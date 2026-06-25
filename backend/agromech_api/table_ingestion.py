@@ -10,6 +10,7 @@ from zipfile import ZipFile
 
 from sqlalchemy import Engine, delete, insert, select
 
+from agromech_api.chunk_quality import is_referenceable_chunk
 from agromech_api.db.enums import ChunkType
 from agromech_api.db.models import document_chunks, documents
 from agromech_api.ingestion import IngestFailure
@@ -40,6 +41,8 @@ def parse_table_document(path: Path, mime_type: str) -> list[ParsedTableSegment]
     extension = path.suffix.lower()
     if extension == ".csv" or mime_type in {"text/csv", "application/csv"}:
         return parse_csv(path)
+    if extension == ".pdf" or mime_type == "application/pdf":
+        return parse_pdf_tables(path)
     if (
         extension == ".xlsx"
         or mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -105,6 +108,46 @@ def parse_xlsx(path: Path) -> list[ParsedTableSegment]:
     return segments
 
 
+def parse_pdf_tables(path: Path) -> list[ParsedTableSegment]:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise IngestFailure("parser_unavailable", "pypdf is not installed", stage="parse") from exc
+
+    reader = PdfReader(str(path))
+    segments: list[ParsedTableSegment] = []
+    for page_index, page in enumerate(reader.pages, start=1):
+        text = (page.extract_text() or "").strip()
+        if not text:
+            continue
+
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        table_lines = [parse_pipe_delimited_line(line) for line in lines]
+        table_lines = [cells for cells in table_lines if cells]
+        if len(table_lines) < 2:
+            continue
+
+        header = table_lines[0]
+        if not has_header_row(header):
+            continue
+
+        segments.append(
+            ParsedTableSegment(
+                header=header,
+                rows=table_lines[1:],
+                row_start=1,
+                row_end=len(table_lines),
+                source_locator={
+                    "type": "pdf_table",
+                    "page": page_index,
+                    "row_start": 1,
+                    "row_end": len(table_lines),
+                },
+            )
+        )
+    return segments
+
+
 def read_shared_strings(archive: ZipFile) -> list[str]:
     try:
         xml = archive.read("xl/sharedStrings.xml")
@@ -160,6 +203,22 @@ def cell_value(cell, shared_strings: list[str], namespace: dict[str, str]) -> st
     return value.text.strip()
 
 
+def parse_pipe_delimited_line(line: str) -> list[str]:
+    if "|" not in line:
+        return []
+    cells = [cell.strip() for cell in line.split("|")]
+    return [cell for cell in cells if cell]
+
+
+def has_header_row(cells: list[str]) -> bool:
+    if not cells:
+        return False
+    first_cell = cells[0]
+    if any(character.isdigit() for character in first_cell):
+        return False
+    return any(any(character.isalpha() for character in cell) for cell in cells)
+
+
 def replace_table_chunks(
     engine: Engine,
     document_id: str,
@@ -168,7 +227,7 @@ def replace_table_chunks(
     rows = []
     for segment in segments:
         content = table_content(segment)
-        if not content.strip() or not segment.source_locator:
+        if not is_referenceable_chunk(content, segment.source_locator):
             continue
         rows.append(
             {
@@ -222,7 +281,10 @@ def process_table_document(engine: Engine, document_id: str) -> int:
         raise IngestFailure("source_file_missing", "Source file is missing", stage="parse")
 
     segments = parse_table_document(path, document["mime_type"])
-    has_referenceable_segment = any(table_content(segment).strip() and segment.source_locator for segment in segments)
+    has_referenceable_segment = any(
+        is_referenceable_chunk(table_content(segment), segment.source_locator)
+        for segment in segments
+    )
     if not has_referenceable_segment:
         raise IngestFailure(
             "no_table_extracted",

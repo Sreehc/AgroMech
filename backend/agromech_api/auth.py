@@ -77,13 +77,26 @@ def verify_access_token(token: str, settings: Settings) -> UserContext:
 
 
 def authenticate_single_admin(username: str, password: str, settings: Settings) -> UserContext:
-    if settings.auth_mode != "single_admin":
-        raise AppError(ErrorCode.INTERNAL_ERROR, "Unsupported auth mode", status_code=500)
-    if not hmac.compare_digest(username, settings.admin_username):
+    if settings.auth_mode == "single_admin":
+        if not hmac.compare_digest(username, settings.admin_username):
+            raise AppError(ErrorCode.UNAUTHORIZED, "Invalid username or password", status_code=401)
+        if not hmac.compare_digest(password, settings.admin_password):
+            raise AppError(ErrorCode.UNAUTHORIZED, "Invalid username or password", status_code=401)
+        return UserContext(username=username, role=UserRole.ADMIN)
+
+    if settings.auth_mode == "static_roles":
+        static_accounts = (
+            (settings.admin_username, settings.admin_password, UserRole.ADMIN),
+            (settings.maintainer_username, settings.maintainer_password, UserRole.MAINTAINER),
+            (settings.user_username, settings.user_password, UserRole.USER),
+            (settings.evaluator_username, settings.evaluator_password, UserRole.EVALUATOR),
+        )
+        for expected_username, expected_password, role in static_accounts:
+            if hmac.compare_digest(username, expected_username) and hmac.compare_digest(password, expected_password):
+                return UserContext(username=username, role=role)
         raise AppError(ErrorCode.UNAUTHORIZED, "Invalid username or password", status_code=401)
-    if not hmac.compare_digest(password, settings.admin_password):
-        raise AppError(ErrorCode.UNAUTHORIZED, "Invalid username or password", status_code=401)
-    return UserContext(username=username, role=UserRole.ADMIN)
+
+    raise AppError(ErrorCode.INTERNAL_ERROR, "Unsupported auth mode", status_code=500)
 
 
 def current_user_dependency() -> Callable:

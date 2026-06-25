@@ -1,6 +1,8 @@
 docs/
 
+.DS_Store
 .env
+.agromech-data/
 .runtime/
 .venv/
 __pycache__/
@@ -21,3 +23,5 @@ storage/*
 !storage/files/
 !storage/files/.gitkeep
 *.log
+
+.superpowers/

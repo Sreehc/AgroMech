@@ -16,7 +16,9 @@ dependencies = [
   "sqlalchemy>=2.0.0",
   "python-multipart>=0.0.20",
   "uvicorn[standard]>=0.30.0",
-  "pydantic-settings>=2.4.0"
+  "pydantic-settings>=2.4.0",
+  "oss2>=2.18.0",
+  "neo4j>=5.28.0"
 ]
 
 [project.optional-dependencies]

@@ -17,7 +17,7 @@ from agromech_api.config import Settings
 from agromech_api.db.enums import AssetType, DocumentStatus, IngestTaskStatus, TaskType, UserRole
 from agromech_api.db.models import document_assets, document_chunks, documents, ingest_tasks
 from agromech_api.errors import AppError, ErrorCode
-from agromech_api.file_storage import LocalFileStorage
+from agromech_api.file_storage import build_file_storage
 
 
 SUPPORTED_EXTENSIONS = {
@@ -41,6 +41,7 @@ class UploadResult:
     document_id: str
     task_id: str
     status: str
+    duplicate_of: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,7 +102,7 @@ def create_document_upload(
     validate_file_size(extension, content, settings)
 
     file_hash = hashlib.sha256(content).hexdigest()
-    storage = LocalFileStorage(settings.local_file_storage_path)
+    storage = build_file_storage(settings)
 
     with engine.begin() as connection:
         duplicate = connection.execute(
@@ -160,6 +161,13 @@ def document_summary(row) -> dict[str, object]:
         "document_type": row["document_type"],
         "language": row["language"],
         "status": row["status"],
+        "summary": row.get("summary"),
+        "recent_task": row.get("recent_task"),
+        "failure": {
+            "stage": row["failure_stage"],
+            "code": row["failure_code"],
+            "message": row["failure_message"],
+        },
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }
 
@@ -186,6 +194,8 @@ def chunk_summary(row) -> dict[str, object]:
         "summary": row["summary"],
         "page_number": row["page_number"],
         "section_title": row["section_title"],
+        "source_locator": row["source_locator"],
+        "source_position": source_position(row),
     }
 
 
@@ -376,8 +386,21 @@ def get_document_or_404(engine: Engine, document_id: str):
 
 
 def create_reprocess_task(engine: Engine, document_id: str) -> TaskResult:
-    get_document_or_404(engine, document_id)
+    document = get_document_or_404(engine, document_id)
+    if document["status"] in {DocumentStatus.DELETED.value, DocumentStatus.DELETING.value}:
+        raise AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "Deleted documents cannot be reprocessed",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    if document["status"] == DocumentStatus.REPROCESSING.value:
+        raise AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "Document is already reprocessing",
+            status_code=status.HTTP_409_CONFLICT,
+        )
     task_id = str(uuid4())
+    now = datetime.now(UTC)
     with engine.begin() as connection:
         connection.execute(
             insert(ingest_tasks).values(
@@ -389,16 +412,29 @@ def create_reprocess_task(engine: Engine, document_id: str) -> TaskResult:
                 stage="queued",
             )
         )
-        connection.execute(
-            update(documents)
-            .where(documents.c.id == document_id)
-            .values(status=DocumentStatus.REPROCESSING.value, updated_at=datetime.now(UTC))
-        )
+        if document["status"] in {DocumentStatus.FAILED.value, DocumentStatus.QUEUED.value, DocumentStatus.PROCESSING.value}:
+            connection.execute(
+                update(documents)
+                .where(documents.c.id == document_id)
+                .values(status=DocumentStatus.REPROCESSING.value, updated_at=now)
+            )
+        else:
+            connection.execute(
+                update(documents)
+                .where(documents.c.id == document_id)
+                .values(updated_at=now)
+            )
     return TaskResult(document_id=document_id, task_id=task_id, status=IngestTaskStatus.QUEUED.value)
 
 
 def create_delete_task(engine: Engine, document_id: str) -> TaskResult:
-    get_document_or_404(engine, document_id)
+    document = get_document_or_404(engine, document_id)
+    if document["status"] in {DocumentStatus.DELETED.value, DocumentStatus.DELETING.value}:
+        raise AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "Document is already deleted or deleting",
+            status_code=status.HTTP_409_CONFLICT,
+        )
     task_id = str(uuid4())
     now = datetime.now(UTC)
     with engine.begin() as connection:
@@ -418,21 +454,6 @@ def create_delete_task(engine: Engine, document_id: str) -> TaskResult:
             .values(status=DocumentStatus.DELETING.value, updated_at=now)
         )
     return TaskResult(document_id=document_id, task_id=task_id, status=IngestTaskStatus.QUEUED.value)
-
-
-def mark_document_deleted(engine: Engine, document_id: str) -> dict[str, str]:
-    get_document_or_404(engine, document_id)
-    with engine.begin() as connection:
-        connection.execute(
-            update(documents)
-            .where(documents.c.id == document_id)
-            .values(
-                status=DocumentStatus.DELETED.value,
-                deleted_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
-            )
-        )
-    return {"document_id": document_id, "status": DocumentStatus.DELETED.value}
 
 
 def register_document_routes(app, *, settings: Settings, engine: Engine) -> None:
@@ -464,8 +485,38 @@ def register_document_routes(app, *, settings: Settings, engine: Engine) -> None
         with engine.connect() as connection:
             rows = connection.execute(query).mappings().all()
             total = connection.execute(total_query).scalar_one()
+            items = []
+            for row in rows:
+                latest_chunk = connection.execute(
+                    select(document_chunks.c.summary)
+                    .where(
+                        document_chunks.c.document_id == row["id"],
+                        document_chunks.c.summary.is_not(None),
+                    )
+                    .order_by(document_chunks.c.created_at)
+                    .limit(1)
+                ).mappings().one_or_none()
+                recent_task = connection.execute(
+                    select(ingest_tasks)
+                    .where(ingest_tasks.c.document_id == row["id"])
+                    .order_by(desc(ingest_tasks.c.created_at))
+                    .limit(1)
+                ).mappings().one_or_none()
+                enriched_row = dict(row)
+                enriched_row["summary"] = latest_chunk["summary"] if latest_chunk else None
+                enriched_row["recent_task"] = (
+                    {
+                        "id": recent_task["id"],
+                        "task_type": recent_task["task_type"],
+                        "status": recent_task["status"],
+                        "stage": recent_task["stage"],
+                    }
+                    if recent_task
+                    else None
+                )
+                items.append(document_summary(enriched_row))
 
-        return {"total": total, "items": [document_summary(row) for row in rows]}
+        return {"total": total, "items": items}
 
     @app.get("/documents/{document_id}/preview", tags=["documents"])
     def preview_document(
@@ -522,13 +573,21 @@ def register_document_routes(app, *, settings: Settings, engine: Engine) -> None
                 "file_size_bytes": document["file_size_bytes"],
             },
             "status": document["status"],
+            "accessible": document["status"] != DocumentStatus.DELETED.value,
             "failure": {
                 "stage": document["failure_stage"],
                 "code": document["failure_code"],
                 "message": document["failure_message"],
             },
             "recent_task": task_payload(recent_task) if recent_task else None,
-            "chunks": [chunk_summary(row) for row in chunks],
+            "chunks": [
+                {
+                    **chunk_summary(row),
+                    "accessible": document["status"] != DocumentStatus.DELETED.value,
+                }
+                for row in chunks
+            ],
+            "updated_at": document["updated_at"].isoformat() if document["updated_at"] else None,
         }
 
     @app.get("/tasks/{task_id}", tags=["tasks"])
@@ -561,7 +620,11 @@ def register_document_routes(app, *, settings: Settings, engine: Engine) -> None
         document_id: str,
         _user: UserContext = Depends(require_roles(UserRole.ADMIN, UserRole.MAINTAINER)),
     ) -> dict[str, str]:
-        return mark_document_deleted(engine, document_id)
+        result = create_delete_task(engine, document_id)
+        return {
+            "document_id": result.document_id,
+            "status": DocumentStatus.DELETING.value,
+        }
 
     @app.post("/documents", status_code=status.HTTP_201_CREATED, tags=["documents"])
     async def upload_document(
@@ -572,7 +635,7 @@ def register_document_routes(app, *, settings: Settings, engine: Engine) -> None
         language: str | None = Form(default=None),
         source: str | None = Form(default=None),
         user: UserContext = Depends(require_roles(UserRole.ADMIN, UserRole.MAINTAINER)),
-    ) -> dict[str, str]:
+    ) -> dict[str, str | None]:
         content = await file.read()
         result = create_document_upload(
             engine=engine,
@@ -591,4 +654,5 @@ def register_document_routes(app, *, settings: Settings, engine: Engine) -> None
             "document_id": result.document_id,
             "task_id": result.task_id,
             "status": result.status,
+            "duplicate_of": result.duplicate_of,
         }

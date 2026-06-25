@@ -24,6 +24,11 @@ def seed_model_chunks(engine) -> None:
                     "file_size_bytes": 100,
                     "mime_type": "text/plain",
                     "storage_uri": "file:///tmp/m7040.txt",
+                    "brand": "Kubota",
+                    "model": "M7040",
+                    "document_type": "repair_manual",
+                    "language": "zh-CN",
+                    "document_version": "2024",
                     "status": DocumentStatus.INDEXED.value,
                     "created_by_role": "admin",
                 },
@@ -35,6 +40,11 @@ def seed_model_chunks(engine) -> None:
                     "file_size_bytes": 100,
                     "mime_type": "text/plain",
                     "storage_uri": "file:///tmp/l3901.txt",
+                    "brand": "Kubota",
+                    "model": "L3901",
+                    "document_type": "operator_manual",
+                    "language": "en-US",
+                    "document_version": "2023",
                     "status": DocumentStatus.INDEXED.value,
                     "created_by_role": "admin",
                 },
@@ -83,6 +93,26 @@ def seed_model_chunks(engine) -> None:
                     "source": "rule",
                 },
                 {
+                    "id": "m-system",
+                    "chunk_id": "chunk-m7040",
+                    "document_id": "doc-m7040",
+                    "entity_type": "system",
+                    "entity_value": "hydraulic",
+                    "normalized_value": "hydraulic",
+                    "confidence": 0.75,
+                    "source": "rule",
+                },
+                {
+                    "id": "m-part",
+                    "chunk_id": "chunk-m7040",
+                    "document_id": "doc-m7040",
+                    "entity_type": "part_number",
+                    "entity_value": "HH-123",
+                    "normalized_value": "hh-123",
+                    "confidence": 0.84,
+                    "source": "rule",
+                },
+                {
                     "id": "l-model",
                     "chunk_id": "chunk-l3901",
                     "document_id": "doc-l3901",
@@ -100,6 +130,16 @@ def seed_model_chunks(engine) -> None:
                     "entity_value": "E01",
                     "normalized_value": "e01",
                     "confidence": 0.86,
+                    "source": "rule",
+                },
+                {
+                    "id": "l-system",
+                    "chunk_id": "chunk-l3901",
+                    "document_id": "doc-l3901",
+                    "entity_type": "system",
+                    "entity_value": "electrical",
+                    "normalized_value": "electrical",
+                    "confidence": 0.75,
                     "source": "rule",
                 },
             ],
@@ -136,6 +176,28 @@ def test_multi_model_query_is_marked_for_separate_handling() -> None:
     assert parsed.scope_uncertain is True
 
 
+def test_parse_query_extracts_part_number_and_applicability_intent() -> None:
+    parsed = parse_query("HH-123 这个配件适用于 Kubota M-7040 吗？")
+
+    assert parsed.intent == "part_lookup"
+    assert parsed.filters["brand"] == "Kubota"
+    assert parsed.filters["model"] == "M7040"
+    assert parsed.entities["part_number"] == ["HH-123"]
+    assert parsed.scope_uncertain is False
+    assert parsed.safety_sensitive is False
+
+
+def test_parse_query_extracts_document_metadata_filters() -> None:
+    parsed = parse_query("Kubota M7040 repair_manual zh-CN 2024 液压 E01")
+
+    assert parsed.filters["brand"] == "Kubota"
+    assert parsed.filters["model"] == "M7040"
+    assert parsed.filters["document_type"] == "repair_manual"
+    assert parsed.filters["language"] == "zh-CN"
+    assert parsed.filters["document_version"] == "2024"
+    assert parsed.filters["subsystem"] == "hydraulic"
+
+
 def test_structured_filter_prioritizes_explicit_model_chunks(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     seed_model_chunks(engine)
@@ -155,3 +217,37 @@ def test_structured_filter_without_model_returns_fault_code_matches_as_uncertain
 
     assert {result["chunk_id"] for result in results} == {"chunk-m7040", "chunk-l3901"}
     assert all(result["scope_uncertain"] is True for result in results)
+
+
+def test_structured_filter_matches_part_number_with_explicit_model(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_model_chunks(engine)
+    parsed = parse_query("HH-123 适用于 M7040 吗？")
+
+    results = structured_filter_chunks(engine, parsed)
+
+    assert results == [{"chunk_id": "chunk-m7040", "document_id": "doc-m7040", "matched_filters": ["model", "part_number"]}]
+
+
+def test_structured_filter_matches_document_metadata_and_subsystem(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_model_chunks(engine)
+    parsed = parse_query("Kubota M7040 repair_manual zh-CN 2024 hydraulic E01")
+
+    results = structured_filter_chunks(engine, parsed)
+
+    assert results == [
+        {
+            "chunk_id": "chunk-m7040",
+            "document_id": "doc-m7040",
+            "matched_filters": [
+                "brand",
+                "model",
+                "document_type",
+                "language",
+                "document_version",
+                "subsystem",
+                "fault_code",
+            ],
+        }
+    ]

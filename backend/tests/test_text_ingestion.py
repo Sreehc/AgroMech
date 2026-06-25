@@ -51,6 +51,17 @@ def write_minimal_pdf(path: Path, text: str) -> None:
     path.write_bytes(bytes(content))
 
 
+def write_pdf_with_blank_and_text_page(path: Path) -> None:
+    import fitz
+
+    document = fitz.open()
+    document.new_page()
+    text_page = document.new_page()
+    text_page.insert_text((72, 72), "Hydraulic pressure warning")
+    document.save(path)
+    document.close()
+
+
 def write_minimal_docx(path: Path, paragraphs: list[str]) -> None:
     body = "".join(f"<w:p><w:r><w:t>{paragraph}</w:t></w:r></w:p>" for paragraph in paragraphs)
     document_xml = (
@@ -98,6 +109,18 @@ def test_parse_text_document_supports_p0_text_formats(tmp_path) -> None:
     }
 
 
+def test_parse_pdf_skips_blank_pages_and_preserves_original_page_number(tmp_path) -> None:
+    pdf_path = tmp_path / "blank-first.pdf"
+    write_pdf_with_blank_and_text_page(pdf_path)
+
+    parsed = parse_text_document(pdf_path, "application/pdf")
+
+    assert len(parsed) == 1
+    assert "Hydraulic pressure warning" in parsed[0].text
+    assert parsed[0].page_number == 2
+    assert parsed[0].source_locator == {"type": "pdf", "page": 2}
+
+
 def test_replace_text_chunks_saves_only_chunks_with_source_locator(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     with engine.begin() as connection:
@@ -134,6 +157,35 @@ def test_replace_text_chunks_saves_only_chunks_with_source_locator(tmp_path) -> 
     assert chunks[0]["chunk_type"] == ChunkType.TEXT.value
     assert chunks[0]["content"] == "Keep hands away from belts."
     assert chunks[0]["source_locator"] == {"type": "text", "line_start": 1, "line_end": 1}
+
+
+def test_replace_text_chunks_rejects_empty_source_locator(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(documents).values(
+                id="doc-1",
+                title="Manual",
+                original_file_name="manual.txt",
+                file_hash="hash-doc-1",
+                file_size_bytes=10,
+                mime_type="text/plain",
+                storage_uri="file:///tmp/manual.txt",
+                status=DocumentStatus.PROCESSING.value,
+                created_by_role="admin",
+            )
+        )
+
+    count = replace_text_chunks(
+        engine,
+        "doc-1",
+        [ParsedTextSegment(text="Has text but no usable locator", source_locator={})],
+    )
+
+    assert count == 0
+    with engine.connect() as connection:
+        chunks = connection.execute(select(document_chunks)).mappings().all()
+    assert chunks == []
 
 
 def test_worker_default_processor_parses_text_document_and_saves_chunks(tmp_path) -> None:

@@ -18,6 +18,8 @@ from sqlalchemy import (
     Table,
     Text,
     func,
+    text,
+    true,
 )
 
 from agromech_api.db.enums import AssetType, ChunkType, DocumentStatus, IngestTaskStatus, TaskType
@@ -53,6 +55,7 @@ documents = Table(
     Column("model", String(120)),
     Column("document_type", String(80)),
     Column("language", String(32)),
+    Column("document_version", String(80)),
     Column("source", String(255)),
     Column("status", String(32), nullable=False, default=DocumentStatus.QUEUED.value),
     Column("failure_stage", String(80)),
@@ -135,6 +138,9 @@ embedding_references = Table(
     Column("chunk_id", ForeignKey("document_chunks.id", ondelete="CASCADE"), nullable=False),
     Column("provider", String(80), nullable=False),
     Column("model", String(120), nullable=False),
+    Column("embedding_version", String(160), nullable=False, default="emb_local_256_chunk-v1"),
+    Column("chunk_profile", String(80), nullable=False, default="chunk-v1"),
+    Column("embedding_dimension", Integer, nullable=False, default=256),
     Column("vector_store", String(80), nullable=False),
     Column("collection", String(120), nullable=False),
     Column("vector_id", String(255), nullable=False),
@@ -153,10 +159,13 @@ chunk_search_index = Table(
     Column("chunk_type", String(32), nullable=False),
     Column("search_text", Text, nullable=False),
     Column("embedding", JSON, nullable=False),
+    Column("embedding_version", String(160), nullable=False, default="emb_local_256_chunk-v1"),
+    Column("chunk_profile", String(80), nullable=False, default="chunk-v1"),
+    Column("embedding_dimension", Integer, nullable=False, default=256),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     CheckConstraint(enum_check("chunk_type", ChunkType), name="search_chunk_type"),
 )
-Index("ix_chunk_search_index_chunk_id", chunk_search_index.c.chunk_id, unique=True)
+Index("ix_chunk_search_index_chunk_id_version", chunk_search_index.c.chunk_id, chunk_search_index.c.embedding_version, unique=True)
 Index("ix_chunk_search_index_document_id", chunk_search_index.c.document_id)
 Index("ix_chunk_search_index_type", chunk_search_index.c.chunk_type)
 
@@ -212,14 +221,18 @@ graph_edges = Table(
     Column("target_entity_value", String(255), nullable=False),
     Column("relationship_type", String(80), nullable=False),
     Column("source_document_id", ForeignKey("documents.id", ondelete="CASCADE"), nullable=False),
-    Column("source_chunk_id", ForeignKey("document_chunks.id", ondelete="CASCADE"), nullable=False),
+    Column("source_chunk_id", ForeignKey("document_chunks.id", ondelete="SET NULL")),
+    Column("schema_version", String(80), nullable=False, default="graph-v1"),
     Column("confidence", Float, nullable=False),
+    Column("is_active", Boolean, nullable=False, default=True, server_default=true()),
+    Column("valid_to", DateTime(timezone=True)),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
 Index("ix_graph_edges_source", graph_edges.c.source_node_id)
 Index("ix_graph_edges_target", graph_edges.c.target_node_id)
 Index("ix_graph_edges_document", graph_edges.c.source_document_id)
 Index("ix_graph_edges_chunk", graph_edges.c.source_chunk_id)
+Index("ix_graph_edges_active_document", graph_edges.c.source_document_id, graph_edges.c.is_active)
 
 retrieval_logs = Table(
     "retrieval_logs",
@@ -229,6 +242,7 @@ retrieval_logs = Table(
     Column("query", Text, nullable=False),
     Column("filters", JSON),
     Column("channels", JSON, nullable=False),
+    Column("model_config", JSON, nullable=False, default=dict, server_default=text("'{}'")),
     Column("candidates", JSON),
     Column("rerank", JSON),
     Column("final_evidence", JSON),
@@ -275,6 +289,60 @@ chat_sessions = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
 Index("ix_chat_sessions_username_updated_at", chat_sessions.c.username, chat_sessions.c.updated_at)
+
+qa_messages = Table(
+    "qa_messages",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("session_id", ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False),
+    Column("role", String(32), nullable=False),
+    Column("content", JSON, nullable=False),
+    Column("metadata", JSON),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+Index("ix_qa_messages_session_id_created_at", qa_messages.c.session_id, qa_messages.c.created_at)
+
+model_aliases = Table(
+    "model_aliases",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("alias", String(255), nullable=False),
+    Column("normalized_alias", String(255), nullable=False),
+    Column("canonical_model", String(255), nullable=False),
+    Column("normalized_canonical", String(255), nullable=False),
+    Column("status", String(32), nullable=False, default="active"),
+    Column("source", String(32), nullable=False, default="manual"),
+    Column("confidence", Float),
+    Column("notes", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint("status IN ('active', 'candidate', 'rejected')", name="model_alias_status"),
+    CheckConstraint("source IN ('manual', 'rule', 'llm')", name="model_alias_source"),
+)
+Index("ix_model_aliases_lookup", model_aliases.c.normalized_alias, model_aliases.c.status, unique=True)
+
+evaluation_questions = Table(
+    "evaluation_questions",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("question_id", String(120), nullable=False),
+    Column("dataset_version", String(120), nullable=False),
+    Column("category", String(80), nullable=False),
+    Column("question", Text, nullable=False),
+    Column("expected_model", String(120)),
+    Column("expected_answer_summary", Text),
+    Column("expected_sources", JSON, nullable=False),
+    Column("requires_safety_warning", Boolean, nullable=False, default=False),
+    Column("must_not_include", JSON),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+Index("ix_evaluation_questions_dataset_version", evaluation_questions.c.dataset_version)
+Index(
+    "ix_evaluation_questions_question_id",
+    evaluation_questions.c.question_id,
+    evaluation_questions.c.dataset_version,
+    unique=True,
+)
 
 evaluation_runs = Table(
     "evaluation_runs",

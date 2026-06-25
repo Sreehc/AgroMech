@@ -16,6 +16,7 @@ class IngestTaskStatus(StrEnum):
     PROCESSING = "processing"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    DEAD = "dead"
     CANCELLED = "cancelled"
 
 

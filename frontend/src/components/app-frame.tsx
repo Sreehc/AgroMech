@@ -15,7 +15,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 
 import { useTheme } from "@/components/theme-provider";
-import { clearSession, loadSession, type Session } from "@/lib/session";
+import { clearSession, loadSession, saveReturnToPath, type Session } from "@/lib/session";
 
 type NavItem = {
   href: string;
@@ -30,14 +30,14 @@ const navItems: NavItem[] = [
     href: "/",
     label: "助手问答",
     shortLabel: "问答",
-    description: "维修问答与证据检索",
+    description: "提问并查看证据",
     icon: ChatCircleText,
   },
   {
     href: "/library",
     label: "资料库",
     shortLabel: "资料",
-    description: "资料管理与处理状态",
+    description: "管理资料",
     icon: Books,
   },
 ];
@@ -57,6 +57,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (hydrated && !session && pathname !== "/login") {
+      saveReturnToPath(pathname);
       router.replace("/login");
     }
   }, [hydrated, pathname, router, session]);
@@ -179,7 +180,7 @@ function ShellBrand({ compact = false }: { compact?: boolean }) {
       <h1 className={compact ? "mt-2 text-xl font-semibold leading-tight" : "mt-3 text-2xl font-semibold leading-tight"}>
         农机维修资料助手
       </h1>
-      {!compact ? <p className="mt-2 text-sm text-text-muted">围绕维修资料、图片线索和证据来源工作</p> : null}
+      {!compact ? <p className="mt-2 text-sm text-text-muted">在这里提问、查资料、看证据</p> : null}
     </div>
   );
 }

@@ -38,7 +38,7 @@ export type UploadQueueItem = {
 };
 
 const uploadStatusLabels: Record<UploadQueueStatus, string> = {
-  pending: "等待上传",
+  pending: "待开始上传",
   validating: "校验中",
   uploading: "上传中",
   uploaded: "已上传",
@@ -61,7 +61,11 @@ const supportedUploadExtensions = new Set([
   "txt",
 ]);
 
-const activeUploadStatuses: UploadQueueStatus[] = ["validating", "uploading", "retrying"];
+const activeUploadStatuses: UploadQueueStatus[] = [
+  "validating",
+  "uploading",
+  "retrying",
+];
 
 export function uploadQueueStatusLabel(status: UploadQueueStatus): string {
   return uploadStatusLabels[status];
@@ -71,7 +75,9 @@ export function isActiveUploadStatus(status: UploadQueueStatus): boolean {
   return activeUploadStatuses.includes(status);
 }
 
-export function validateUploadFile(file: Pick<File, "name" | "type">): string | null {
+export function validateUploadFile(
+  file: Pick<File, "name" | "type">,
+): string | null {
   const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
   if (!supportedUploadExtensions.has(extension)) {
     return "不支持的文件类型";
@@ -102,8 +108,12 @@ export function DocumentUploadQueue({
   onRetry: (itemId: string) => void;
   onStartUpload: () => void;
 }) {
-  const readyCount = items.filter((item) => item.status === "pending" || item.status === "failed").length;
-  const hasActiveUpload = items.some((item) => isActiveUploadStatus(item.status));
+  const readyCount = items.filter(
+    (item) => item.status === "pending" || item.status === "failed",
+  ).length;
+  const hasActiveUpload = items.some((item) =>
+    isActiveUploadStatus(item.status),
+  );
 
   function handleDrop(event: DragEvent<HTMLLabelElement>) {
     event.preventDefault();
@@ -111,28 +121,49 @@ export function DocumentUploadQueue({
   }
 
   return (
-    <section id="library-upload" className="grid gap-3 rounded-lg border border-border bg-surface-panel/80 p-4">
+    <section
+      id="library-upload"
+      className="grid gap-3 rounded-2xl border border-border bg-surface-panel/65 p-4"
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <CloudArrowUp className="size-4 text-primary" />
             多文件上传
           </p>
-          <p className="mt-1 text-sm text-text-muted">支持点击选择和拖拽上传，上传成功后会创建资料处理任务。</p>
+          <p className="mt-1 text-sm text-text-muted">
+            可点击选择文件，也可直接拖拽到这里。
+          </p>
         </div>
         <div className="flex gap-2">
           {items.length > 0 ? (
-            <Button type="button" variant="outline" size="sm" onClick={onRequestClose}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onRequestClose}
+            >
               <X className="size-4" />
               关闭队列
             </Button>
           ) : null}
-          <Button type="button" size="sm" onClick={onStartUpload} disabled={readyCount === 0 || busy}>
+          <Button
+            type="button"
+            size="sm"
+            onClick={onStartUpload}
+            disabled={readyCount === 0 || busy}
+          >
             <FileArrowUp className="size-4" />
-            {busy ? "上传中" : "开始上传"}
+            {busy ? "上传中" : `开始上传（${readyCount}）`}
           </Button>
         </div>
       </div>
+
+      {readyCount > 0 ? (
+        <div className="rounded-xl border border-primary/25 bg-primary/10 px-3 py-2 text-sm text-primary">
+          已加入队列，点击“开始上传”后才会真正上传。
+        </div>
+      ) : null}
 
       <label
         className="grid cursor-pointer place-items-center rounded-lg border border-dashed border-border bg-surface-canvas px-4 py-6 text-center transition-colors hover:bg-muted/60"
@@ -140,8 +171,12 @@ export function DocumentUploadQueue({
         onDrop={handleDrop}
       >
         <CloudArrowUp className="size-7 text-primary" />
-        <span className="mt-2 text-sm font-medium text-foreground">拖拽多份资料到这里</span>
-        <span className="mt-1 text-xs text-text-muted">支持 PDF、DOCX、XLSX、CSV、图片、Markdown 和 TXT</span>
+        <span className="mt-2 text-sm font-medium text-foreground">
+          拖拽多份资料到这里
+        </span>
+        <span className="mt-1 text-xs text-text-muted">
+          支持 PDF、DOCX、XLSX、CSV、图片、Markdown 和 TXT
+        </span>
         <input
           className="sr-only"
           type="file"
@@ -155,7 +190,7 @@ export function DocumentUploadQueue({
       </label>
 
       {items.length > 0 ? (
-        <div className="grid gap-2">
+        <div className="grid gap-0 rounded-2xl border border-border/70 bg-surface-raised/80">
           {items.map((item) => (
             <UploadQueueRow
               busy={busy}
@@ -169,19 +204,31 @@ export function DocumentUploadQueue({
       ) : null}
 
       {closeConfirmationOpen ? (
-        <div className="rounded-lg border border-status-warning/40 bg-status-warning/10 p-3">
+        <div className="rounded-xl border border-status-warning/40 bg-status-warning/10 p-3">
           <p className="flex items-center gap-2 text-sm font-medium text-status-warning">
             <WarningCircle className="size-4" />
             上传中关闭队列需要确认
           </p>
           <p className="mt-1 text-sm text-text-muted">
-            {hasActiveUpload ? "仍有文件正在上传，关闭队列后页面不再展示这些文件的进度。" : "关闭后将清空当前上传队列。"}
+            {hasActiveUpload
+              ? "仍有文件正在上传，关闭队列后页面不再展示这些文件的进度。"
+              : "关闭后将清空当前上传队列。"}
           </p>
           <div className="mt-3 flex justify-end gap-2">
-            <Button type="button" variant="outline" size="sm" onClick={onCancelClose}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onCancelClose}
+            >
               继续上传
             </Button>
-            <Button type="button" variant="destructive" size="sm" onClick={onConfirmClose}>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              onClick={onConfirmClose}
+            >
               确认关闭
             </Button>
           </div>
@@ -207,11 +254,17 @@ function UploadQueueRow({
   const uploaded = item.status === "uploaded";
 
   return (
-    <article className="grid gap-3 rounded-lg border border-border bg-surface-raised p-3 md:grid-cols-[1fr_minmax(180px,260px)_auto] md:items-center">
+    <article className="grid gap-3 border-b border-border/80 px-3 py-3 last:border-b-0 md:grid-cols-[1fr_minmax(180px,260px)_auto] md:items-center">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          {uploaded ? <CheckCircle className="size-4 text-status-success" /> : <FileArrowUp className="size-4 text-text-muted" />}
-          <p className="truncate text-sm font-medium text-foreground">{item.name}</p>
+          {uploaded ? (
+            <CheckCircle className="size-4 text-status-success" />
+          ) : (
+            <FileArrowUp className="size-4 text-text-muted" />
+          )}
+          <p className="truncate text-sm font-medium text-foreground">
+            {item.name}
+          </p>
         </div>
         <p className="mt-1 text-xs text-text-muted">
           {formatFileSize(item.size)}
@@ -225,7 +278,12 @@ function UploadQueueRow({
             {item.taskStatus ? `\n${item.taskStatus}` : ""}
           </p>
         ) : null}
-        {item.error ? <p className="mt-1 text-xs text-status-danger">{item.error}</p> : null}
+        {uploaded && item.taskStatus ? (
+          <p className="mt-1 text-xs text-text-muted">已上传，后台处理中</p>
+        ) : null}
+        {item.error ? (
+          <p className="mt-1 text-xs text-status-danger">{item.error}</p>
+        ) : null}
       </div>
 
       <div className="grid gap-2">
@@ -248,13 +306,25 @@ function UploadQueueRow({
 
       <div className="flex flex-wrap justify-end gap-2">
         {failed ? (
-          <Button type="button" variant="outline" size="sm" onClick={onRetry} disabled={busy}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onRetry}
+            disabled={busy}
+          >
             <ArrowCounterClockwise className="size-4" />
             重试
           </Button>
         ) : null}
         {!active ? (
-          <Button type="button" variant="destructive" size="sm" onClick={onRemove} disabled={busy && item.status !== "failed"}>
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            onClick={onRemove}
+            disabled={busy && item.status !== "failed"}
+          >
             <Trash className="size-4" />
             移除
           </Button>

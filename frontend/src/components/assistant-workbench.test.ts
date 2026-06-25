@@ -3,7 +3,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 function readProjectFile(pathFromFrontendRoot: string): string {
-  return readFileSync(new URL(`../../${pathFromFrontendRoot}`, import.meta.url), "utf8");
+  return readFileSync(
+    new URL(`../../${pathFromFrontendRoot}`, import.meta.url),
+    "utf8",
+  );
 }
 
 describe("assistant workbench layout", () => {
@@ -16,7 +19,9 @@ describe("assistant workbench layout", () => {
   });
 
   it("provides session history, context, conversation, and evidence regions", () => {
-    expect(existsSync(new URL("./assistant-workbench.tsx", import.meta.url))).toBe(true);
+    expect(
+      existsSync(new URL("./assistant-workbench.tsx", import.meta.url)),
+    ).toBe(true);
 
     const workbench = readProjectFile("src/components/assistant-workbench.tsx");
 
@@ -28,15 +33,26 @@ describe("assistant workbench layout", () => {
     expect(workbench).toContain("型号");
     expect(workbench).toContain("资料类型");
     expect(workbench).toContain("语言");
-    expect(workbench).toContain("品牌和型号支持选择或直接输入，无匹配项时可按回车使用当前输入");
+    expect(workbench).toContain("可直接输入品牌或型号；没有匹配项时按回车即可。");
     expect(workbench).toContain("清空筛选");
     expect(workbench).toContain("onActiveFiltersChange");
     expect(workbench).toContain("history.update");
     expect(workbench).toContain("EvidencePanel");
     expect(workbench).toContain("selectedEvidence");
     expect(workbench).toContain("onEvidenceClose");
-    expect(workbench).toContain("data-workbench-region=\"conversation\"");
-    expect(workbench).toContain("data-workbench-region=\"evidence\"");
+    expect(workbench).toContain('data-workbench-region="conversation"');
+    expect(workbench).toContain('data-workbench-region="evidence"');
+    expect(workbench).toContain(
+      "rounded-2xl border border-border bg-surface-panel/65",
+    );
+    expect(workbench).toContain(
+      "border-b border-border/80 bg-surface-raised/80",
+    );
+    expect(workbench).toContain(
+      "rounded-xl border border-border/70 bg-surface-raised/85",
+    );
+    expect(workbench).not.toContain("bg-white/75");
+    expect(workbench).not.toContain("bg-white/78");
   });
 
   it("keeps assistant-ui runtime and thread intact while accepting the active session id", () => {
@@ -84,10 +100,14 @@ describe("assistant workbench layout", () => {
 
     expect(page).toContain("const [selectedEvidence, setSelectedEvidence]");
     expect(page).toContain("onCitationSelect={setSelectedEvidence}");
-    expect(page).toContain("setSelectedEvidence((current) => (current ? { ...current, citationIndex } : current))");
+    expect(page).toContain(
+      "setSelectedEvidence((current) => (current ? { ...current, citationIndex } : current))",
+    );
     expect(page).toContain("onEvidenceClose={() => setSelectedEvidence(null)}");
     expect(workbench).toContain("selectedEvidence?.payload");
     expect(workbench).toContain("selectedEvidence?.citationIndex");
-    expect(workbench).toContain("onClose={selectedEvidence ? onEvidenceClose : undefined}");
+    expect(workbench).toContain(
+      "onClose={selectedEvidence ? onEvidenceClose : undefined}",
+    );
   });
 });

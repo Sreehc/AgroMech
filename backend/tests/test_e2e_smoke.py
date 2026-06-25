@@ -16,9 +16,15 @@ def e2e_settings(tmp_path: Path) -> Settings:
         admin_username="admin",
         admin_password="secret",
         auth_token_secret="test-secret",
+        file_storage_backend="local",
         local_file_storage_path=str(tmp_path / "files"),
         upload_max_file_size_mb=1,
         upload_max_image_size_mb=1,
+        graph_backend="local",
+        vector_backend="local",
+        model_provider="local",
+        embedding_provider="local",
+        embedding_dimension=256,
     )
 
 

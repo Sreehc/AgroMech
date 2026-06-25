@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ApiRequestError, currentUser, errorMessage, login } from "@/lib/frontend-api";
-import { saveSession } from "@/lib/session";
+import { clearReturnToPath, loadReturnToPath, saveSession } from "@/lib/session";
 
 const capabilityCards = [
   {
@@ -52,7 +52,9 @@ export function LoginPage() {
       const token = await login(username.trim(), password);
       const user = await currentUser(token.access_token);
       saveSession({ token: token.access_token, username: user.username, role: user.role });
-      router.replace("/");
+      const returnTo = loadReturnToPath();
+      clearReturnToPath();
+      router.replace(returnTo || "/");
     } catch (caught) {
       setError(caught instanceof ApiRequestError ? errorMessage(caught.response) : "服务暂时不可用，请稍后重试。");
       setPassword("");
@@ -73,7 +75,7 @@ export function LoginPage() {
               农机维修 AI 资料工作台
             </h1>
             <p className="mt-5 max-w-2xl text-base leading-7 text-text-muted">
-              面向维修人员、售后服务和资料维护团队，把问答、引用证据、图片线索和资料库状态放进同一个工作流。
+              登录后可提问、查看资料，并追溯回答依据。
             </p>
           </div>
 

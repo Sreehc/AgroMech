@@ -28,6 +28,9 @@ describe("LoginPage productized shell", () => {
     expect(loginPage).toContain("登录中");
     expect(loginPage).toContain('setPassword("")');
     expect(loginPage).not.toContain('setUsername("")');
+    expect(loginPage).toContain("loadReturnToPath");
+    expect(loginPage).toContain("clearReturnToPath");
+    expect(loginPage).toContain("router.replace(returnTo || \"/\")");
   });
 
   it("uses semantic surface and text tokens for light and dark readability", () => {

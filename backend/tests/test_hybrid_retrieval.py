@@ -1,11 +1,13 @@
-from sqlalchemy import create_engine, insert
+from sqlalchemy import create_engine, insert, select
 
 from agromech_api.db.enums import ChunkType, DocumentStatus
-from agromech_api.db.models import document_chunks, documents, metadata
+from agromech_api.db.models import document_chunks, documents, metadata, retrieval_logs
 from agromech_api.entity_extraction import process_document_entities
 from agromech_api.graph_rag import GraphRagService
-from agromech_api.hybrid_retrieval import hybrid_retrieve
+from agromech_api.hybrid_retrieval import CHANNEL_WEIGHTS, add_candidate, hybrid_retrieve, hybrid_retrieve_with_trace
+from agromech_api.rerank import RerankError
 from agromech_api.search_indexing import SearchIndexer
+from agromech_api.zvec_store import ZvecVectorStore
 
 
 def create_test_engine(tmp_path):
@@ -27,6 +29,11 @@ def seed_retrieval_corpus(engine) -> None:
                     "file_size_bytes": 100,
                     "mime_type": "text/plain",
                     "storage_uri": "file:///tmp/m7040.txt",
+                    "brand": "Kubota",
+                    "model": "M7040",
+                    "document_type": "repair_manual",
+                    "language": "zh-CN",
+                    "document_version": "2024",
                     "status": DocumentStatus.INDEXED.value,
                     "created_by_role": "admin",
                 },
@@ -38,6 +45,11 @@ def seed_retrieval_corpus(engine) -> None:
                     "file_size_bytes": 100,
                     "mime_type": "text/plain",
                     "storage_uri": "file:///tmp/l3901.txt",
+                    "brand": "Kubota",
+                    "model": "L3901",
+                    "document_type": "operator_manual",
+                    "language": "en-US",
+                    "document_version": "2023",
                     "status": DocumentStatus.INDEXED.value,
                     "created_by_role": "admin",
                 },
@@ -49,6 +61,11 @@ def seed_retrieval_corpus(engine) -> None:
                     "file_size_bytes": 100,
                     "mime_type": "image/png",
                     "storage_uri": "file:///tmp/warning.png",
+                    "brand": "Kubota",
+                    "model": "M7040",
+                    "document_type": "visual_observation",
+                    "language": "zh-CN",
+                    "document_version": "2024",
                     "status": DocumentStatus.INDEXED.value,
                     "created_by_role": "admin",
                 },
@@ -102,6 +119,19 @@ def test_hybrid_retrieval_merges_channels_and_deduplicates_candidates(tmp_path) 
     assert len([candidate for candidate in result["candidates"] if candidate["chunk_id"] == "chunk-m7040"]) == 1
 
 
+def test_candidate_merge_keeps_highest_score_per_channel_without_double_counting(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    candidates: dict[str, dict[str, object]] = {}
+
+    add_candidate(engine, candidates, "chunk-m7040", "graph", 0.4)
+    add_candidate(engine, candidates, "chunk-m7040", "graph", 0.9)
+
+    candidate = candidates["chunk-m7040"]
+    assert candidate["channels"] == ["graph"]
+    assert candidate["score"] == 0.9 * CHANNEL_WEIGHTS["graph"]
+
+
 def test_hybrid_retrieval_marks_unrelated_model_candidates_not_applicable(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     seed_retrieval_corpus(engine)
@@ -116,6 +146,93 @@ def test_hybrid_retrieval_marks_unrelated_model_candidates_not_applicable(tmp_pa
     assert unrelated["score"] < first["score"]
 
 
+def test_hybrid_retrieval_prioritizes_structured_document_metadata(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    result = hybrid_retrieve(engine, "Kubota M7040 repair_manual zh-CN 2024 E01 hydraulic")
+
+    first = result["candidates"][0]
+    unrelated = next(candidate for candidate in result["candidates"] if candidate["chunk_id"] == "chunk-l3901")
+    assert first["chunk_id"] == "chunk-m7040"
+    assert "structured" in first["channels"]
+    assert unrelated["not_applicable"] is True
+    assert unrelated["applicability_reason"] == "model_mismatch"
+
+
+def test_hybrid_retrieval_can_use_zvec_vector_candidates(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    store = ZvecVectorStore.from_path(tmp_path / "zvec", expected_dimension=256)
+    for document_id in ["doc-m7040", "doc-l3901", "doc-image"]:
+        SearchIndexer(engine, vector_store=store, collection="agromech_chunks").index_document(document_id)
+
+    result = hybrid_retrieve(
+        engine,
+        "dashboard hydraulic warning",
+        vector_store=store,
+        vector_collection="agromech_chunks",
+    )
+
+    image_candidate = next(candidate for candidate in result["candidates"] if candidate["chunk_id"] == "chunk-image")
+    assert "vector" in image_candidate["channels"]
+    assert image_candidate["vector_ref"].startswith("zvec://agromech_chunks/")
+
+
+class FailingGraphSearchService:
+    def expand(self, **_kwargs):
+        raise RuntimeError("neo4j unavailable")
+
+
+def test_hybrid_retrieval_records_graph_degraded_when_graph_search_fails(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    result = hybrid_retrieve_with_trace(
+        engine,
+        "M7040 E01 hydraulic pump",
+        trace_id="trace-graph-degraded",
+        graph_service=FailingGraphSearchService(),
+    )
+
+    assert result["status"] == "ok"
+    with engine.connect() as connection:
+        log = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-graph-degraded")
+        ).mappings().one()
+    assert {"channel": "graph", "reason": "graph_degraded"} in log["channels"]["degraded"]
+
+
+class UnsourcedGraphSearchService:
+    def expand(self, **_kwargs):
+        return [
+            {
+                "entity_type": "fault_code",
+                "entity_value": "E01",
+                "hop_count": 1,
+                "source_document_id": "doc-m7040",
+                "source_chunk_id": None,
+                "relationship_type": "co_occurs:model:fault_code",
+                "confidence": 0.9,
+                "channel": "graph",
+                "final_answer_eligible": False,
+            }
+        ]
+
+
+def test_hybrid_retrieval_ignores_graph_candidates_without_source_chunk(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    result = hybrid_retrieve(
+        engine,
+        "M7040 E01 hydraulic pump",
+        graph_service=UnsourcedGraphSearchService(),
+    )
+
+    assert all("graph" not in candidate["channels"] for candidate in result["candidates"])
+
+
 def test_hybrid_retrieval_includes_vision_channel_for_image_candidates(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     seed_retrieval_corpus(engine)
@@ -125,6 +242,159 @@ def test_hybrid_retrieval_includes_vision_channel_for_image_candidates(tmp_path)
     image_candidate = next(candidate for candidate in result["candidates"] if candidate["chunk_id"] == "chunk-image")
     assert "vision" in image_candidate["channels"]
     assert image_candidate["chunk_type"] == ChunkType.IMAGE.value
+
+
+class ReverseRerankProvider:
+    def rerank(self, _query: str, documents: list[str]) -> list[float]:
+        return [float(index) for index in range(len(documents), 0, -1)]
+
+
+class FailingRerankProvider:
+    def rerank(self, _query: str, _documents: list[str]) -> list[float]:
+        raise RerankError("service timeout")
+
+
+def test_hybrid_retrieval_uses_model_rerank_provider_and_records_trace(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    result = hybrid_retrieve_with_trace(
+        engine,
+        "M7040 E01 hydraulic pump",
+        trace_id="trace-model-rerank",
+        rerank_provider=ReverseRerankProvider(),
+        rerank_top_k=3,
+    )
+
+    assert result["status"] == "ok"
+    assert result["candidates"][0]["chunk_id"] == "chunk-m7040"
+    assert result["candidates"][0]["rerank_score"] == 3.0
+
+    with engine.connect() as connection:
+        log = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-model-rerank")
+        ).mappings().one()
+    assert log["rerank"]["strategy"] == "bailian_model_rerank"
+    assert log["rerank"]["fallback"] is False
+    assert log["channels"]["degraded"] == []
+
+
+def test_hybrid_retrieval_falls_back_when_model_rerank_fails(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    result = hybrid_retrieve_with_trace(
+        engine,
+        "M7040 E01 hydraulic pump",
+        trace_id="trace-rerank-degraded",
+        rerank_provider=FailingRerankProvider(),
+        rerank_top_k=3,
+    )
+
+    assert result["status"] == "ok"
+    assert result["candidates"][0]["chunk_id"] == "chunk-m7040"
+
+    with engine.connect() as connection:
+        log = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-rerank-degraded")
+        ).mappings().one()
+    assert {"channel": "rerank", "reason": "rerank_degraded"} in log["channels"]["degraded"]
+    assert log["rerank"]["strategy"] == "deterministic_evidence_rerank"
+
+
+def test_deterministic_rerank_fallback_prioritizes_model_fault_code_source_and_text_relevance(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(documents),
+            [
+                {
+                    "id": "doc-high",
+                    "title": "M7040 Official Repair Manual",
+                    "original_file_name": "m7040-official.txt",
+                    "file_hash": "hash-high",
+                    "file_size_bytes": 100,
+                    "mime_type": "text/plain",
+                    "storage_uri": "file:///tmp/m7040-official.txt",
+                    "brand": "Kubota",
+                    "model": "M7040",
+                    "document_type": "repair_manual",
+                    "language": "zh-CN",
+                    "document_version": "2024",
+                    "source": "manual",
+                    "status": DocumentStatus.INDEXED.value,
+                    "created_by_role": "admin",
+                },
+                {
+                    "id": "doc-low",
+                    "title": "General Visual Note",
+                    "original_file_name": "general-visual.txt",
+                    "file_hash": "hash-low",
+                    "file_size_bytes": 100,
+                    "mime_type": "text/plain",
+                    "storage_uri": "file:///tmp/general-visual.txt",
+                    "brand": "Kubota",
+                    "model": "M7040",
+                    "document_type": "visual_observation",
+                    "language": "zh-CN",
+                    "document_version": "2024",
+                    "source": "field",
+                    "status": DocumentStatus.INDEXED.value,
+                    "created_by_role": "admin",
+                },
+            ],
+        )
+        connection.execute(
+            insert(document_chunks),
+            [
+                {
+                    "id": "chunk-high",
+                    "document_id": "doc-high",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "content": "Kubota M7040 fault code E01 hydraulic pump pressure inspection steps.",
+                    "summary": "M7040 E01 hydraulic pump",
+                    "source_locator": {"type": "text", "line_start": 1, "line_end": 1},
+                },
+                {
+                    "id": "chunk-low",
+                    "document_id": "doc-low",
+                    "chunk_type": ChunkType.IMAGE.value,
+                    "content": "General tractor warning photo without model or fault code detail.",
+                    "summary": "generic warning",
+                    "source_locator": {"type": "image", "source_file": "general-warning.png"},
+                },
+            ],
+        )
+
+    for document_id in ["doc-high", "doc-low"]:
+        process_document_entities(engine, document_id)
+        SearchIndexer(engine).index_document(document_id)
+
+    result = hybrid_retrieve_with_trace(
+        engine,
+        "M7040 E01 hydraulic pump",
+        trace_id="trace-deterministic-fallback",
+        rerank_provider=FailingRerankProvider(),
+        rerank_top_k=5,
+    )
+
+    assert result["status"] == "ok"
+    assert result["candidates"][0]["chunk_id"] == "chunk-high"
+    assert result["candidates"][0]["rerank_score"] > result["candidates"][1]["rerank_score"]
+
+    with engine.connect() as connection:
+        log = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-deterministic-fallback")
+        ).mappings().one()
+    first_item = log["rerank"]["items"][0]
+    assert log["rerank"]["fallback"] is True
+    assert first_item["chunk_id"] == "chunk-high"
+    assert {
+        "model_match",
+        "fault_code_match",
+        "source_credibility",
+        "text_relevance",
+    }.issubset(first_item["factors"])
 
 
 def test_hybrid_retrieval_returns_evidence_insufficient_when_no_candidates(tmp_path) -> None:

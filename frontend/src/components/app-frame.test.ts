@@ -25,6 +25,7 @@ describe("AppFrame navigation shell", () => {
 
     expect(appFrame).toContain("const [hydrated, setHydrated]");
     expect(appFrame).toContain("setSession(loadSession())");
+    expect(appFrame).toContain("saveReturnToPath(pathname)");
     expect(appFrame).toContain('if (hydrated && !session && pathname !== "/login")');
     expect(appFrame).toContain('router.replace("/login")');
     expect(appFrame).toContain("请先登录");

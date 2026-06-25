@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from sqlalchemy import Engine, delete, insert, select
 
+from agromech_api.chunk_quality import is_referenceable_chunk
 from agromech_api.db.enums import AssetType, ChunkType
 from agromech_api.db.models import document_assets, document_chunks, documents
 from agromech_api.ingestion import IngestFailure
@@ -17,6 +18,10 @@ OcrReader = Callable[[Path], str]
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
+
+
+class OcrUnavailable(RuntimeError):
+    """Raised when the configured OCR engine cannot be loaded."""
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,7 @@ def process_image_document(
     *,
     ocr_reader: OcrReader | None = None,
     fail_on_all_ocr_failure: bool = True,
+    asset_root: Path | None = None,
 ) -> ImageIngestionResult:
     with engine.connect() as connection:
         document = connection.execute(
@@ -62,7 +68,13 @@ def process_image_document(
 
     reader = ocr_reader or default_ocr_reader
     if is_pdf_document(document["original_file_name"], document["mime_type"]):
-        assets = pdf_page_assets(document_id, source_path, document["original_file_name"], reader)
+        assets = pdf_page_assets(
+            document_id,
+            source_path,
+            document["original_file_name"],
+            reader,
+            asset_root=asset_root,
+        )
     elif is_image_document(document["original_file_name"], document["mime_type"]):
         assets = source_image_assets(source_path, document["original_file_name"], document["mime_type"], reader)
     else:
@@ -108,8 +120,10 @@ def pdf_page_assets(
     source_path: Path,
     original_file_name: str,
     ocr_reader: OcrReader,
+    *,
+    asset_root: Path | None = None,
 ) -> list[ImageAssetCandidate]:
-    rendered_pages = render_pdf_pages(document_id, source_path)
+    rendered_pages = render_pdf_pages(document_id, source_path, asset_root=asset_root)
     assets: list[ImageAssetCandidate] = []
     for page_number, page_path in rendered_pages:
         source_locator = {
@@ -132,13 +146,21 @@ def pdf_page_assets(
     return assets
 
 
-def render_pdf_pages(document_id: str, source_path: Path) -> list[tuple[int, Path]]:
+def render_pdf_pages(
+    document_id: str,
+    source_path: Path,
+    *,
+    asset_root: Path | None = None,
+) -> list[tuple[int, Path]]:
     try:
         import fitz
     except ImportError as exc:
         raise IngestFailure("pdf_render_unavailable", "PyMuPDF is not installed", stage="render") from exc
 
-    output_dir = source_path.parent / ".agromech-assets" / document_id
+    if asset_root is None:
+        output_dir = source_path.parent / ".agromech-assets" / document_id
+    else:
+        output_dir = asset_root / "rendered-pages" / document_id
     output_dir.mkdir(parents=True, exist_ok=True)
     rendered: list[tuple[int, Path]] = []
     try:
@@ -156,6 +178,17 @@ def render_pdf_pages(document_id: str, source_path: Path) -> list[tuple[int, Pat
 def read_ocr(path: Path, ocr_reader: OcrReader) -> tuple[str | None, dict[str, object]]:
     try:
         text = ocr_reader(path).strip()
+    except OcrUnavailable as exc:
+        return (
+            None,
+            {
+                "ocr": {
+                    "status": "failed",
+                    "error_code": "ocr_unavailable",
+                    "error_message": str(exc),
+                }
+            },
+        )
     except Exception as exc:
         return (
             None,
@@ -185,7 +218,7 @@ def default_ocr_reader(path: Path) -> str:
     try:
         from paddleocr import PaddleOCR
     except ImportError as exc:
-        raise RuntimeError("PaddleOCR is not installed") from exc
+        raise OcrUnavailable("PaddleOCR is not installed") from exc
 
     result = PaddleOCR(use_angle_cls=True, lang="ch").ocr(str(path), cls=True)
     lines: list[str] = []
@@ -218,7 +251,7 @@ def replace_image_assets_and_chunks(
     for asset in assets:
         asset_id = str(uuid4())
         asset_rows.append(asset_row(document_id, asset, asset_id))
-        if asset.ocr_text:
+        if is_referenceable_chunk(asset.ocr_text, asset.source_locator):
             chunk_rows.append(
                 {
                     "id": str(uuid4()),

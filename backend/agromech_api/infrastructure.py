@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from agromech_api.config import Settings
@@ -38,21 +39,22 @@ class DependencyCheck:
 
 def dependency_targets(settings: Settings) -> dict[str, DependencyTarget]:
     database_url = urlsplit(settings.database_url)
-    neo4j_url = urlsplit(settings.neo4j_uri)
 
     postgres_host = database_url.hostname or settings.postgres_host
     postgres_port = database_url.port or settings.postgres_port
 
     if not postgres_host:
         raise ValueError("DATABASE_URL must include a host")
-    if not neo4j_url.hostname:
-        raise ValueError("NEO4J_URI must include a host")
 
-    return {
+    targets = {
         "postgres": DependencyTarget("postgres", postgres_host, postgres_port),
-        "milvus": DependencyTarget("milvus", settings.milvus_host, settings.milvus_port),
-        "neo4j": DependencyTarget("neo4j", neo4j_url.hostname, neo4j_url.port or 7687),
     }
+    if settings.graph_backend == "neo4j":
+        neo4j_url = urlsplit(settings.neo4j_uri)
+        if not neo4j_url.hostname:
+            raise ValueError("NEO4J_URI must include a host")
+        targets["neo4j"] = DependencyTarget("neo4j", neo4j_url.hostname, neo4j_url.port or 7687)
+    return targets
 
 
 def check_tcp_dependency(
@@ -66,8 +68,95 @@ def check_tcp_dependency(
         return DependencyCheck(target.name, "unavailable", target.label, str(exc))
 
 
+def check_file_storage(settings: Settings) -> DependencyCheck:
+    """Check the configured file storage backend without leaking credentials."""
+    if settings.file_storage_backend == "oss":
+        return check_oss_storage(settings)
+    return check_local_storage(settings)
+
+
+def check_local_storage(settings: Settings) -> DependencyCheck:
+    target = settings.local_file_storage_path
+    try:
+        root = Path(settings.local_file_storage_path)
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / ".health-probe"
+        probe.write_bytes(b"ok")
+        probe.unlink()
+        return DependencyCheck("file_storage", "ok", f"local:{target}")
+    except OSError as exc:
+        return DependencyCheck("file_storage", "unavailable", f"local:{target}", str(exc))
+
+
+def check_oss_storage(settings: Settings) -> DependencyCheck:
+    target = f"oss:{settings.oss_bucket}@{settings.oss_region}"
+    try:
+        import oss2
+    except ImportError as exc:
+        return DependencyCheck("file_storage", "unavailable", target, f"oss2 not installed: {exc}")
+    try:
+        auth = oss2.Auth(settings.oss_access_key_id, settings.oss_access_key_secret)
+        bucket = oss2.Bucket(
+            auth,
+            settings.oss_endpoint,
+            settings.oss_bucket,
+            connect_timeout=settings.dependency_connect_timeout_seconds,
+        )
+        # get_bucket_info validates credentials, endpoint and bucket existence
+        # in one cheap private call without listing or writing objects.
+        bucket.get_bucket_info()
+        return DependencyCheck("file_storage", "ok", target)
+    except Exception as exc:  # noqa: BLE001 - surface any OSS error as unavailable, sanitized
+        return DependencyCheck("file_storage", "unavailable", target, sanitize_oss_error(exc))
+
+
+def sanitize_oss_error(exc: Exception) -> str:
+    """Return a short, credential-free description of an OSS failure."""
+    name = type(exc).__name__
+    status_code = getattr(exc, "status", None)
+    code = getattr(exc, "code", None)
+    parts = [name]
+    if status_code:
+        parts.append(f"status={status_code}")
+    if code:
+        parts.append(f"code={code}")
+    return " ".join(parts)
+
+
+def check_zvec_storage(settings: Settings) -> DependencyCheck:
+    target = settings.zvec_path
+    try:
+        root = Path(settings.zvec_path)
+        root.mkdir(parents=True, exist_ok=True)
+        backup_root = Path(settings.zvec_backup_path)
+        backup_root.mkdir(parents=True, exist_ok=True)
+        probe = root / ".health-probe"
+        probe.write_bytes(b"ok")
+        probe.unlink()
+        backup_probe = backup_root / ".health-probe"
+        backup_probe.write_bytes(b"ok")
+        backup_probe.unlink()
+        return DependencyCheck("zvec", "ok", target)
+    except OSError as exc:
+        return DependencyCheck("zvec", "unavailable", target, str(exc))
+
+
+def check_bailian_config(settings: Settings) -> DependencyCheck:
+    target = settings.bailian_base_url or "unconfigured"
+    bailian_enabled = "bailian" in {settings.model_provider, settings.embedding_provider}
+    if not bailian_enabled:
+        return DependencyCheck("bailian", "unavailable", target, "bailian configuration missing")
+    if not settings.bailian_api_key or not settings.bailian_base_url:
+        return DependencyCheck("bailian", "unavailable", target, "bailian configuration missing")
+    return DependencyCheck("bailian", "ok", settings.bailian_base_url)
+
+
 def check_infrastructure(settings: Settings) -> list[DependencyCheck]:
-    return [
+    checks = [
         check_tcp_dependency(target, settings.dependency_connect_timeout_seconds)
         for target in dependency_targets(settings).values()
     ]
+    checks.append(check_file_storage(settings))
+    checks.append(check_zvec_storage(settings))
+    checks.append(check_bailian_config(settings))
+    return checks

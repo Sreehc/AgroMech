@@ -21,7 +21,10 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
-import type { AgroMechContextFilters, AgroMechEvidenceSelection } from "@/lib/agromech-chat";
+import type {
+  AgroMechContextFilters,
+  AgroMechEvidenceSelection,
+} from "@/lib/agromech-chat";
 import { useChatSessionHistory } from "@/lib/chat-sessions";
 import { loadSession, type Session } from "@/lib/session";
 
@@ -63,12 +66,21 @@ export function AssistantWorkbench({
   const { refresh } = history;
   const filterOptions = collectSessionFilterOptions(history.sessions);
   const selectedBrand = activeFilters.brand?.trim() ?? "";
-  const modelOptions = selectedBrand ? (filterOptions.modelsByBrand[selectedBrand] ?? filterOptions.allModels) : filterOptions.allModels;
-  const mergedDocumentTypeOptions = mergeOptionValues(documentTypeOptions, filterOptions.documentTypes);
-  const mergedLanguageOptions = mergeOptionValues(languageOptions, filterOptions.languages, {
-    "zh-CN": "中文（简体）",
-    "en-US": "英文（美国）",
-  });
+  const modelOptions = selectedBrand
+    ? (filterOptions.modelsByBrand[selectedBrand] ?? filterOptions.allModels)
+    : filterOptions.allModels;
+  const mergedDocumentTypeOptions = mergeOptionValues(
+    documentTypeOptions,
+    filterOptions.documentTypes,
+  );
+  const mergedLanguageOptions = mergeOptionValues(
+    languageOptions,
+    filterOptions.languages,
+    {
+      "zh-CN": "中文（简体）",
+      "en-US": "英文（美国）",
+    },
+  );
 
   useEffect(() => {
     if (!session) return;
@@ -120,12 +132,14 @@ export function AssistantWorkbench({
   return (
     <div className="grid min-h-0 flex-1 gap-4 bg-surface-canvas p-3 md:p-4 xl:grid-cols-[18rem_minmax(0,1fr)_20rem]">
       <aside
-        className="min-h-0 rounded-lg border border-border bg-surface-panel p-3 xl:h-[calc(100dvh-2rem)]"
+        className="min-h-0 rounded-2xl border border-border bg-surface-panel/65 p-3 xl:h-[calc(100dvh-2rem)]"
         data-workbench-region="sessions"
       >
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-text-muted">Sessions</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-text-muted">
+              Sessions
+            </p>
             <h2 className="text-base font-semibold">会话历史</h2>
           </div>
           <Button size="sm" type="button" onClick={createSession}>
@@ -135,13 +149,13 @@ export function AssistantWorkbench({
         </div>
 
         {history.error || actionError ? (
-          <p className="mt-3 flex items-center gap-2 rounded-lg border border-status-warning/30 bg-status-warning/10 px-3 py-2 text-xs text-status-warning">
+          <p className="mt-3 flex items-center gap-2 rounded-xl border border-status-warning/30 bg-status-warning/10 px-3 py-2 text-xs text-status-warning">
             <WarningCircle className="size-4" />
             {actionError ?? history.error}
           </p>
         ) : null}
 
-        <div className="mt-4 grid max-h-72 gap-2 overflow-y-auto pr-1 xl:max-h-[calc(100dvh-11rem)]">
+        <div className="mt-4 grid max-h-72 gap-1 overflow-y-auto pr-1 xl:max-h-[calc(100dvh-11rem)]">
           {history.sessions.length ? (
             history.sessions.map((item) => {
               const active = item.id === activeSessionId;
@@ -149,20 +163,24 @@ export function AssistantWorkbench({
               return (
                 <button
                   className={[
-                    "rounded-lg border px-3 py-2 text-left text-sm transition",
+                    "rounded-xl border border-border/70 px-3 py-2 text-left text-sm transition",
                     active
-                      ? "border-primary bg-primary/10 text-foreground"
-                      : "border-border bg-surface-raised text-text-muted hover:text-foreground",
+                      ? "border-primary/40 bg-primary/10 text-foreground"
+                      : "bg-surface-raised/85 text-text-muted hover:bg-surface-inset/85 hover:text-foreground",
                   ].join(" ")}
                   key={item.id}
                   type="button"
                   onClick={() => selectSession(item.id, item.filters)}
                 >
                   <span className="flex items-center justify-between gap-2">
-                    <span className="truncate font-medium">{item.title || "未命名会话"}</span>
+                    <span className="truncate font-medium">
+                      {item.title || "未命名会话"}
+                    </span>
                     {item.has_image ? <Badge tone="info">图片</Badge> : null}
                   </span>
-                  <span className="mt-1 block truncate text-xs opacity-75">{sessionSummary(item)}</span>
+                  <span className="mt-1 block truncate text-xs opacity-75">
+                    {sessionSummary(item)}
+                  </span>
                 </button>
               );
             })
@@ -171,17 +189,22 @@ export function AssistantWorkbench({
               className="py-8"
               icon={<ClockCounterClockwise className="size-5" />}
               title={history.loading ? "正在加载会话" : "暂无历史会话"}
-              description="新建会话后，当前排查过程会出现在这里。"
+              description="你的历史会话会显示在这里。"
             />
           )}
         </div>
       </aside>
 
-      <section className="grid min-h-[72dvh] min-w-0 grid-rows-[auto_minmax(0,1fr)] rounded-lg border border-border bg-surface-raised shadow-sm xl:h-[calc(100dvh-2rem)]" data-workbench-region="conversation">
-        <header className="border-b border-border bg-surface-panel/80 px-4 py-3">
+      <section
+        className="grid min-h-[72dvh] min-w-0 grid-rows-[auto_minmax(0,1fr)] rounded-2xl border border-border bg-surface-panel/65 xl:h-[calc(100dvh-2rem)]"
+        data-workbench-region="conversation"
+      >
+        <header className="border-b border-border/80 bg-surface-raised/80 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-text-muted">Repair Assistant</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-text-muted">
+                Repair Assistant
+              </p>
               <h1 className="text-lg font-semibold">农机维修问答工作台</h1>
             </div>
             <Badge tone={activeSessionId ? "success" : "neutral"}>
@@ -189,14 +212,21 @@ export function AssistantWorkbench({
               {activeSessionId ? "已选择会话" : "新会话"}
             </Badge>
           </div>
-          <div className="mt-3 rounded-lg border border-border bg-surface-canvas p-3">
+          <div className="mt-3 rounded-xl border border-border/70 bg-surface-raised/85 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-sm">
                 <Database className="size-4 text-primary" />
                 <span className="font-medium text-foreground">资料上下文</span>
-                <span className="text-xs text-text-muted">当前筛选会随会话保存并进入问答请求。</span>
+                <span className="text-xs text-text-muted">
+                  先选资料范围，再开始提问。
+                </span>
               </div>
-              <Button size="sm" variant="outline" type="button" onClick={clearFilters}>
+              <Button
+                size="sm"
+                variant="outline"
+                type="button"
+                onClick={clearFilters}
+              >
                 清空筛选
               </Button>
             </div>
@@ -229,7 +259,7 @@ export function AssistantWorkbench({
               />
             </div>
             <p className="mt-2 text-xs text-text-muted">
-              品牌和型号支持选择或直接输入，无匹配项时可按回车使用当前输入。
+              可直接输入品牌或型号；没有匹配项时按回车即可。
             </p>
           </div>
         </header>
@@ -238,7 +268,7 @@ export function AssistantWorkbench({
 
       <aside
         className={[
-          "rounded-lg border border-border bg-surface-panel p-4 xl:h-[calc(100dvh-2rem)]",
+          "rounded-2xl border border-border bg-surface-panel/65 p-4 xl:h-[calc(100dvh-2rem)]",
           selectedEvidence
             ? "max-xl:fixed max-xl:inset-x-3 max-xl:bottom-3 max-xl:z-40 max-xl:max-h-[82dvh] max-xl:overflow-y-auto max-xl:shadow-2xl"
             : "",
@@ -257,13 +287,21 @@ export function AssistantWorkbench({
   );
 }
 
-function sessionSummary(session: { messages: unknown[]; updated_at: string }): string {
+function sessionSummary(session: {
+  messages: unknown[];
+  updated_at: string;
+}): string {
   const updatedAt = session.updated_at ? new Date(session.updated_at) : null;
-  const updatedLabel = updatedAt && !Number.isNaN(updatedAt.getTime()) ? updatedAt.toLocaleString("zh-CN") : "时间未知";
+  const updatedLabel =
+    updatedAt && !Number.isNaN(updatedAt.getTime())
+      ? updatedAt.toLocaleString("zh-CN")
+      : "时间未知";
   return `${session.messages.length} 条消息 · ${updatedLabel}`;
 }
 
-function normalizeContextFilters(filters: Record<string, unknown> | AgroMechContextFilters): AgroMechContextFilters {
+function normalizeContextFilters(
+  filters: Record<string, unknown> | AgroMechContextFilters,
+): AgroMechContextFilters {
   const normalized: AgroMechContextFilters = {};
   contextFilterFields.forEach((field) => {
     const rawValue = filters[field.key];

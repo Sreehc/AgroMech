@@ -103,3 +103,25 @@ def register_error_handlers(app: FastAPI) -> None:
                 trace_id=request_trace_id(request),
             ),
         )
+
+    @app.exception_handler(TimeoutError)
+    async def timeout_error_handler(request: Request, exc: TimeoutError) -> JSONResponse:
+        return JSONResponse(
+            status_code=504,
+            content=error_payload(
+                ErrorCode.TIMEOUT,
+                "Request timed out",
+                trace_id=request_trace_id(request),
+            ),
+        )
+
+    @app.exception_handler(Exception)
+    async def unexpected_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(
+            status_code=500,
+            content=error_payload(
+                ErrorCode.INTERNAL_ERROR,
+                "Internal server error",
+                trace_id=request_trace_id(request),
+            ),
+        )

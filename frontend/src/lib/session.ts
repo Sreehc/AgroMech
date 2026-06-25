@@ -3,6 +3,7 @@
 import type { UserRole } from "./frontend-api";
 
 export const SESSION_KEY = "agromech.session";
+export const RETURN_TO_KEY = "agromech.return_to";
 
 export type Session = {
   token: string;
@@ -32,4 +33,31 @@ export function saveSession(session: Session): void {
 
 export function clearSession(): void {
   window.localStorage.removeItem(SESSION_KEY);
+}
+
+export function saveReturnToPath(path: string): void {
+  const normalizedPath = path.trim();
+  if (!normalizedPath.startsWith("/")) {
+    return;
+  }
+  if (normalizedPath === "/login") {
+    return;
+  }
+  window.localStorage.setItem(RETURN_TO_KEY, normalizedPath);
+}
+
+export function loadReturnToPath(): string | null {
+  const raw = window.localStorage.getItem(RETURN_TO_KEY);
+  if (!raw) {
+    return null;
+  }
+  const normalizedPath = raw.trim();
+  if (!normalizedPath.startsWith("/") || normalizedPath === "/login") {
+    return null;
+  }
+  return normalizedPath;
+}
+
+export function clearReturnToPath(): void {
+  window.localStorage.removeItem(RETURN_TO_KEY);
 }

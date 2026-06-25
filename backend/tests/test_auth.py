@@ -16,6 +16,22 @@ def auth_settings() -> Settings:
     )
 
 
+def static_role_settings() -> Settings:
+    return Settings(
+        auth_mode="static_roles",
+        admin_username="admin",
+        admin_password="secret",
+        maintainer_username="maintainer",
+        maintainer_password="maint-secret",
+        user_username="operator",
+        user_password="user-secret",
+        evaluator_username="evaluator",
+        evaluator_password="eval-secret",
+        auth_token_secret="test-secret",
+        session_ttl_minutes=30,
+    )
+
+
 def test_login_returns_bearer_token_and_current_user() -> None:
     client = TestClient(create_app(settings=auth_settings()))
 
@@ -48,6 +64,28 @@ def test_invalid_login_returns_unauthorized() -> None:
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_static_role_logins_return_assigned_roles() -> None:
+    client = TestClient(create_app(settings=static_role_settings()))
+
+    expected_roles = {
+        "admin": ("secret", "admin"),
+        "maintainer": ("maint-secret", "maintainer"),
+        "operator": ("user-secret", "user"),
+        "evaluator": ("eval-secret", "evaluator"),
+    }
+
+    for username, (password, role) in expected_roles.items():
+        login = client.post("/auth/login", json={"username": username, "password": password})
+
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+        assert me.status_code == 200
+        assert me.json() == {"username": username, "role": role}
 
 
 def test_role_dependency_returns_forbidden_for_disallowed_role() -> None:

@@ -186,6 +186,10 @@ export type TaskResponse = {
   status: string;
 };
 
+export type UploadDocumentOptions = {
+  onProgress?: (percent: number) => void;
+};
+
 export type DocumentPreviewType = "text" | "pdf" | "unavailable";
 
 export type DocumentSourcePosition = {
@@ -226,6 +230,43 @@ export type DocumentPreviewResponse = {
   } | null;
   highlights: DocumentPreviewHighlight[];
   unavailable_reason: string | null;
+};
+
+export type RetrievalTraceChannelStatus = {
+  channel: string;
+  reason: string;
+};
+
+export type RetrievalTraceChannels = {
+  used: string[];
+  degraded: RetrievalTraceChannelStatus[];
+  embedding_version?: string;
+};
+
+export type RetrievalTraceRerankItem = {
+  chunk_id: string;
+  before_rank: number;
+  after_rank: number;
+  before_score?: number;
+  after_score?: number;
+  channels?: string[];
+  factors?: Record<string, number>;
+};
+
+export type RetrievalTrace = {
+  trace_id: string;
+  query: string;
+  filters: Record<string, unknown>;
+  channels: RetrievalTraceChannels;
+  model_config: Record<string, unknown>;
+  created_at: string | null;
+  candidates?: Array<Record<string, unknown>>;
+  rerank?: {
+    strategy?: string;
+    fallback?: boolean;
+    items: RetrievalTraceRerankItem[];
+  };
+  final_evidence: Array<Record<string, unknown>>;
 };
 
 export const emptyDocumentFilters: DocumentFilters = {
@@ -377,18 +418,45 @@ export async function getDocument(token: string, documentId: string): Promise<Do
   return (await response.json()) as DocumentDetail;
 }
 
-export async function uploadDocument(token: string, file: File): Promise<TaskResponse> {
+export async function uploadDocument(token: string, file: File, options: UploadDocumentOptions = {}): Promise<TaskResponse> {
   const formData = new FormData();
   formData.append("file", file);
-  const response = await fetch("/backend/documents", {
-    method: "POST",
-    headers: authHeaders(token),
-    body: formData,
+  return await new Promise<TaskResponse>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/backend/documents");
+    for (const [name, value] of Object.entries(authHeaders(token))) {
+      xhr.setRequestHeader(name, value);
+    }
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || !options.onProgress) return;
+      const percent = Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      options.onProgress(percent);
+    };
+    xhr.onreadystatechange = async () => {
+      if (xhr.readyState !== 4) return;
+      const response = new Response(xhr.responseText, {
+        status: xhr.status,
+        statusText: xhr.statusText,
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!response.ok) {
+        reject(await parseError(response));
+        return;
+      }
+      resolve((await response.json()) as TaskResponse);
+    };
+    xhr.onerror = async () => {
+      reject(
+        await parseError(
+          new Response(null, {
+            status: 0,
+            statusText: "Network error",
+          }),
+        ),
+      );
+    };
+    xhr.send(formData);
   });
-  if (!response.ok) {
-    throw await parseError(response);
-  }
-  return (await response.json()) as TaskResponse;
 }
 
 export async function reprocessDocument(token: string, documentId: string): Promise<TaskResponse> {
@@ -430,4 +498,14 @@ export async function getDocumentPreview(
     throw await parseError(response);
   }
   return (await response.json()) as DocumentPreviewResponse;
+}
+
+export async function getRetrievalTrace(token: string, traceId: string): Promise<RetrievalTrace> {
+  const response = await fetch(`/backend/retrieval-traces/${traceId}`, {
+    headers: authHeaders(token),
+  });
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+  return (await response.json()) as RetrievalTrace;
 }

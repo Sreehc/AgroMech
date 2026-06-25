@@ -10,8 +10,10 @@ import {
   getChatSession,
   getDocument,
   getDocumentPreview,
+  getRetrievalTrace,
   isKnownDocumentStatus,
   listChatSessions,
+  uploadDocument,
   updateChatSession,
 } from "./frontend-api";
 
@@ -105,6 +107,41 @@ describe("frontend API helpers", () => {
       expect(preview.preview_type).toBe("text");
       expect(preview.accessible).toBe(true);
       expect(preview.source_position.page_number).toBe(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("requests retrieval trace contract with bearer auth", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input, init) => {
+      expect(input).toBe("/backend/retrieval-traces/trace-a");
+      expect(init?.headers).toEqual({ Authorization: "Bearer token-a" });
+      return new Response(
+        JSON.stringify({
+          trace_id: "trace-a",
+          query: "E01 液压告警怎么排查？",
+          filters: { model: "M7040" },
+          channels: {
+            used: ["keyword", "vector"],
+            degraded: [{ channel: "rerank", reason: "rerank_degraded" }],
+          },
+          model_config: {
+            embedding_version: "emb-v1",
+            rerank_model: "qwen3-rerank",
+          },
+          final_evidence: [{ chunk_id: "chunk-a" }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    try {
+      const trace = await getRetrievalTrace("token-a", "trace-a");
+      expect(trace.trace_id).toBe("trace-a");
+      expect(trace.channels.used).toEqual(["keyword", "vector"]);
+      expect(trace.model_config.rerank_model).toBe("qwen3-rerank");
+      expect(trace.final_evidence).toEqual([{ chunk_id: "chunk-a" }]);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -218,6 +255,67 @@ describe("frontend API helpers", () => {
       }
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("uploads documents with XMLHttpRequest and reports real progress", async () => {
+    const OriginalXHR = globalThis.XMLHttpRequest;
+    const progressEvents: number[] = [];
+    const sentBodies: unknown[] = [];
+    const opened: Array<{ method?: string; url?: string }> = [];
+    const headers: Record<string, string> = {};
+
+    class FakeXHR {
+      upload = {
+        onprogress: null as ((event: ProgressEvent<EventTarget>) => void) | null,
+      };
+      onreadystatechange: (() => void) | null = null;
+      readyState = 0;
+      status = 0;
+      responseText = "";
+
+      open(method: string, url: string) {
+        opened.push({ method, url });
+      }
+
+      setRequestHeader(name: string, value: string) {
+        headers[name] = value;
+      }
+
+      send(body: unknown) {
+        sentBodies.push(body);
+        this.upload.onprogress?.({ lengthComputable: true, loaded: 25, total: 100 } as ProgressEvent<EventTarget>);
+        this.upload.onprogress?.({ lengthComputable: true, loaded: 100, total: 100 } as ProgressEvent<EventTarget>);
+        this.status = 200;
+        this.readyState = 4;
+        this.responseText = JSON.stringify({
+          document_id: "doc-uploaded",
+          task_id: "task-uploaded",
+          status: "queued",
+        });
+        this.onreadystatechange?.();
+      }
+    }
+
+    globalThis.XMLHttpRequest = FakeXHR as unknown as typeof XMLHttpRequest;
+
+    try {
+      const file = new File(["hello"], "manual.pdf", { type: "application/pdf" });
+      const result = await uploadDocument("token-a", file, {
+        onProgress: (percent) => progressEvents.push(percent),
+      });
+
+      expect(opened).toEqual([{ method: "POST", url: "/backend/documents" }]);
+      expect(headers.Authorization).toBe("Bearer token-a");
+      expect(sentBodies[0]).toBeInstanceOf(FormData);
+      expect(progressEvents).toEqual([25, 100]);
+      expect(result).toEqual({
+        document_id: "doc-uploaded",
+        task_id: "task-uploaded",
+        status: "queued",
+      });
+    } finally {
+      globalThis.XMLHttpRequest = OriginalXHR;
     }
   });
 });

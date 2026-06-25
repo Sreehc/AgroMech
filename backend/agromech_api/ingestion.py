@@ -42,8 +42,11 @@ class IngestFailure(Exception):
 
 
 class IngestTaskRunner:
-    def __init__(self, engine: Engine) -> None:
+    DEFAULT_MAX_ATTEMPTS = 3
+
+    def __init__(self, engine: Engine, *, max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> None:
         self.engine = engine
+        self.max_attempts = max_attempts
 
     def next_queued_task(self) -> QueuedTask | None:
         with self.engine.connect() as connection:
@@ -72,17 +75,20 @@ class IngestTaskRunner:
         try:
             processor(task)
         except IngestFailure as exc:
-            self.mark_failed(task, exc)
-            return "failed"
+            return self.mark_failed(task, exc)
         except Exception as exc:
-            self.mark_failed(
+            return self.mark_failed(
                 task,
                 IngestFailure("unexpected_error", str(exc), stage="unexpected"),
             )
-            return "failed"
 
         self.mark_succeeded(task)
         return "succeeded"
+
+    def attempts_exhausted(self, task: QueuedTask) -> bool:
+        # attempt_count on the task is the value before mark_processing incremented it,
+        # so the just-completed attempt is task.attempt_count + 1.
+        return (task.attempt_count + 1) >= self.max_attempts
 
     def mark_processing(self, task: QueuedTask) -> None:
         now = datetime.now(UTC)
@@ -148,8 +154,9 @@ class IngestTaskRunner:
                 )
             )
 
-    def mark_failed(self, task: QueuedTask, failure: IngestFailure) -> None:
+    def mark_failed(self, task: QueuedTask, failure: IngestFailure) -> str:
         now = datetime.now(UTC)
+        task_status = IngestTaskStatus.DEAD.value if self.attempts_exhausted(task) else IngestTaskStatus.FAILED.value
         with self.engine.begin() as connection:
             document_status = DocumentStatus.FAILED.value
             if task.task_type == TaskType.REPROCESS.value and has_searchable_index(connection, task.document_id):
@@ -158,7 +165,7 @@ class IngestTaskRunner:
                 update(ingest_tasks)
                 .where(ingest_tasks.c.id == task.id)
                 .values(
-                    status=IngestTaskStatus.FAILED.value,
+                    status=task_status,
                     stage=failure.stage,
                     error_code=failure.code,
                     error_message=failure.message,
@@ -177,6 +184,7 @@ class IngestTaskRunner:
                     updated_at=now,
                 )
             )
+        return task_status
 
 
 def has_searchable_index(connection, document_id: str) -> bool:
@@ -203,7 +211,12 @@ def cleanup_deleted_document(connection, document_id: str) -> None:
         connection.execute(delete(chunk_search_index).where(chunk_search_index.c.chunk_id.in_(chunk_ids)))
         connection.execute(delete(embedding_references).where(embedding_references.c.chunk_id.in_(chunk_ids)))
         connection.execute(delete(chunk_entity_links).where(chunk_entity_links.c.chunk_id.in_(chunk_ids)))
-        connection.execute(delete(graph_edges).where(graph_edges.c.source_chunk_id.in_(chunk_ids)))
+        connection.execute(
+            update(graph_edges)
+            .where(graph_edges.c.source_chunk_id.in_(chunk_ids))
+            .where(graph_edges.c.is_active.is_(True))
+            .values(is_active=False, valid_to=datetime.now(UTC))
+        )
     connection.execute(delete(document_entity_extractions).where(document_entity_extractions.c.document_id == document_id))
     connection.execute(delete(document_assets).where(document_assets.c.document_id == document_id))
     connection.execute(delete(document_chunks).where(document_chunks.c.document_id == document_id))

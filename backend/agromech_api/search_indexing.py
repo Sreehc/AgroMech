@@ -9,7 +9,7 @@ from uuid import uuid4
 from sqlalchemy import Engine, delete, insert, select
 
 from agromech_api.config import get_settings
-from agromech_api.db.models import chunk_search_index, document_chunks, embedding_references
+from agromech_api.db.models import chunk_search_index, document_chunks, documents, embedding_references
 from agromech_api.ingestion import IngestFailure
 
 
@@ -61,15 +61,24 @@ class SearchIndexer:
         embedding_provider=None,
         vector_store=None,
         collection: str | None = None,
+        embedding_version: str | None = None,
+        chunk_profile: str | None = None,
+        embedding_dimension: int | None = None,
     ) -> None:
         settings = get_settings()
         self.engine = engine
         self.embedding_provider = embedding_provider or DeterministicEmbeddingProvider()
         self.vector_store = vector_store or LocalVectorStore()
         self.collection = collection or settings.milvus_collection
+        self.embedding_version = embedding_version or settings.embedding_version
+        self.chunk_profile = chunk_profile or settings.chunk_profile
+        self.embedding_dimension = embedding_dimension or settings.embedding_dimension
 
     def index_document(self, document_id: str) -> IndexResult:
         with self.engine.connect() as connection:
+            document_title = connection.execute(
+                select(documents.c.title).where(documents.c.id == document_id)
+            ).scalar_one()
             chunks = connection.execute(
                 select(document_chunks).where(document_chunks.c.document_id == document_id)
             ).mappings().all()
@@ -77,7 +86,7 @@ class SearchIndexer:
         search_rows = []
         embedding_rows = []
         for chunk in chunks:
-            search_text = searchable_text(chunk)
+            search_text = searchable_text(chunk, document_title=document_title)
             if not search_text.strip():
                 continue
             try:
@@ -101,6 +110,9 @@ class SearchIndexer:
                     "chunk_type": chunk["chunk_type"],
                     "search_text": search_text,
                     "embedding": embedding,
+                    "embedding_version": self.embedding_version,
+                    "chunk_profile": self.chunk_profile,
+                    "embedding_dimension": len(embedding),
                 }
             )
             embedding_rows.append(
@@ -109,6 +121,9 @@ class SearchIndexer:
                     "chunk_id": chunk["id"],
                     "provider": self.embedding_provider.provider,
                     "model": self.embedding_provider.model,
+                    "embedding_version": self.embedding_version,
+                    "chunk_profile": self.chunk_profile,
+                    "embedding_dimension": len(embedding),
                     "vector_store": self.vector_store.name,
                     "collection": self.collection,
                     "vector_id": vector_id,
@@ -123,10 +138,16 @@ class SearchIndexer:
             chunk_ids = [chunk["id"] for chunk in chunks]
             if chunk_ids:
                 connection.execute(
-                    delete(chunk_search_index).where(chunk_search_index.c.chunk_id.in_(chunk_ids))
+                    delete(chunk_search_index).where(
+                        chunk_search_index.c.chunk_id.in_(chunk_ids),
+                        chunk_search_index.c.embedding_version == self.embedding_version,
+                    )
                 )
                 connection.execute(
-                    delete(embedding_references).where(embedding_references.c.chunk_id.in_(chunk_ids))
+                    delete(embedding_references).where(
+                        embedding_references.c.chunk_id.in_(chunk_ids),
+                        embedding_references.c.embedding_version == self.embedding_version,
+                    )
                 )
             if search_rows:
                 connection.execute(insert(chunk_search_index), search_rows)
@@ -135,8 +156,9 @@ class SearchIndexer:
         return IndexResult(chunk_count=len(search_rows))
 
 
-def searchable_text(chunk) -> str:
+def searchable_text(chunk, *, document_title: str | None = None) -> str:
     parts = [
+        document_title or "",
         chunk["content"] or "",
         chunk["summary"] or "",
         chunk["section_title"] or "",
@@ -163,17 +185,91 @@ def keyword_search(engine: Engine, query: str, *, limit: int = 10) -> list[dict[
     return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
 
 
-def vector_search(engine: Engine, query: str, *, limit: int = 10) -> list[dict[str, object]]:
-    provider = DeterministicEmbeddingProvider()
+def vector_search(
+    engine: Engine,
+    query: str,
+    *,
+    limit: int = 10,
+    active_embedding_version: str | None = None,
+    embedding_provider=None,
+    vector_store=None,
+    collection: str | None = None,
+) -> list[dict[str, object]]:
+    provider = embedding_provider or DeterministicEmbeddingProvider()
     query_embedding = provider.embed(query)
+    active_version = active_embedding_version or get_settings().embedding_version
+    if vector_store is not None:
+        return zvec_vector_search(
+            engine,
+            vector_store=vector_store,
+            collection=collection or get_settings().zvec_collection,
+            query_embedding=query_embedding,
+            active_embedding_version=active_version,
+            limit=limit,
+        )
     with engine.connect() as connection:
-        rows = connection.execute(select(chunk_search_index)).mappings().all()
+        rows = connection.execute(
+            select(chunk_search_index).where(chunk_search_index.c.embedding_version == active_version)
+        ).mappings().all()
     scored = []
     for row in rows:
         score = cosine_similarity(query_embedding, row["embedding"])
         if score > 0:
-            scored.append({"chunk_id": row["chunk_id"], "score": score, "chunk_type": row["chunk_type"]})
+            scored.append(
+                {
+                    "chunk_id": row["chunk_id"],
+                    "score": score,
+                    "chunk_type": row["chunk_type"],
+                    "embedding_version": row["embedding_version"],
+                }
+            )
     return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
+
+
+def zvec_vector_search(
+    engine: Engine,
+    *,
+    vector_store,
+    collection: str,
+    query_embedding: list[float],
+    active_embedding_version: str,
+    limit: int,
+) -> list[dict[str, object]]:
+    store_results = vector_store.query(collection=collection, embedding=query_embedding, limit=limit)
+    if not store_results:
+        return []
+    chunk_ids = [str(result["chunk_id"]) for result in store_results]
+    with engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                document_chunks.c.id,
+                document_chunks.c.chunk_type,
+                embedding_references.c.vector_id,
+                embedding_references.c.embedding_version,
+            )
+            .join(embedding_references, embedding_references.c.chunk_id == document_chunks.c.id)
+            .where(document_chunks.c.id.in_(chunk_ids))
+            .where(embedding_references.c.embedding_version == active_embedding_version)
+            .where(embedding_references.c.collection == collection)
+            .where(embedding_references.c.status == "ready")
+        ).mappings().all()
+    metadata_by_chunk = {row["id"]: row for row in rows}
+    results = []
+    for result in store_results:
+        chunk_id = str(result["chunk_id"])
+        metadata = metadata_by_chunk.get(chunk_id)
+        if metadata is None:
+            continue
+        results.append(
+            {
+                "chunk_id": chunk_id,
+                "score": result["score"],
+                "chunk_type": metadata["chunk_type"],
+                "embedding_version": metadata["embedding_version"],
+                "vector_ref": result["vector_ref"],
+            }
+        )
+    return results
 
 
 def tokenize(text: str) -> list[str]:

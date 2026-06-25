@@ -9,6 +9,7 @@ from zipfile import ZipFile
 
 from sqlalchemy import Engine, delete, insert, select
 
+from agromech_api.chunk_quality import is_referenceable_chunk
 from agromech_api.db.enums import ChunkType
 from agromech_api.db.models import document_chunks, documents
 from agromech_api.ingestion import IngestFailure
@@ -152,7 +153,7 @@ def replace_text_chunks(
     rows = []
     for segment in segments:
         text = segment.text.strip()
-        if not text or not segment.source_locator:
+        if not is_referenceable_chunk(text, segment.source_locator):
             continue
         rows.append(
             {
@@ -190,7 +191,9 @@ def process_text_document(engine: Engine, document_id: str) -> int:
         raise IngestFailure("source_file_missing", "Source file is missing", stage="parse")
 
     segments = parse_text_document(path, document["mime_type"])
-    has_referenceable_segment = any(segment.text.strip() and segment.source_locator for segment in segments)
+    has_referenceable_segment = any(
+        is_referenceable_chunk(segment.text, segment.source_locator) for segment in segments
+    )
     if not has_referenceable_segment:
         raise IngestFailure(
             "no_text_extracted",

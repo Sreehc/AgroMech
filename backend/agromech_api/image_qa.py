@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+
 from fastapi import Depends, File, Form, Request, UploadFile, status
 from sqlalchemy import Engine
 
@@ -7,8 +10,10 @@ from agromech_api.auth import UserContext, require_roles
 from agromech_api.config import Settings
 from agromech_api.db.enums import UserRole
 from agromech_api.errors import AppError, ErrorCode
-from agromech_api.image_ingestion import IMAGE_MIME_TYPES
+from agromech_api.image_ingestion import IMAGE_MIME_TYPES, OcrUnavailable, default_ocr_reader
+from agromech_api.qa_session_history import append_image_session_exchange, ensure_session_belongs_to_user
 from agromech_api.text_qa import MAX_QUESTION_LENGTH, answer_text_question
+from agromech_api.vision_ingestion import build_visual_reader, normalize_visual_observation
 
 
 LOW_CONFIDENCE_ANSWER = "图片线索置信度较低，未找到足够可用线索。请补充更清晰图片、型号、故障码或文字描述。"
@@ -27,22 +32,22 @@ ANNOTATION_BOXES = {
 }
 
 
-def analyze_uploaded_image(filename: str, question: str | None, brand: str | None, model: str | None) -> dict[str, object]:
-    text = " ".join(value for value in [filename, question or "", brand or "", model or ""] if value).lower()
+def heuristic_visual_analysis(text: str) -> dict[str, object]:
+    normalized_text = text.lower()
     possible_models = []
-    if "m7040" in text:
+    if "m7040" in normalized_text:
         possible_models.append("M7040")
-    if "l3901" in text:
+    if "l3901" in normalized_text:
         possible_models.append("L3901")
 
     visible_parts = []
-    if "hydraulic" in text or "液压" in text:
+    if "hydraulic" in normalized_text or "液压" in normalized_text:
         visible_parts.append("hydraulic")
-    if "pump" in text or "泵" in text:
+    if "pump" in normalized_text or "泵" in normalized_text:
         visible_parts.append("pump")
 
     warning_lights = []
-    if "e01" in text:
+    if "e01" in normalized_text:
         warning_lights.append("E01")
 
     confidence = 0.8 if possible_models or visible_parts or warning_lights else 0.2
@@ -74,6 +79,100 @@ def analyze_uploaded_image(filename: str, question: str | None, brand: str | Non
             "low_confidence": low_confidence,
         },
     }
+
+
+def analyze_uploaded_image(
+    settings: Settings,
+    *,
+    filename: str,
+    content: bytes,
+    question: str | None,
+    brand: str | None,
+    model: str | None,
+) -> dict[str, object]:
+    suffix = Path(filename).suffix or ".bin"
+    temp_path: Path | None = None
+    with NamedTemporaryFile(delete=False, suffix=suffix) as temporary:
+        temporary.write(content)
+        temp_path = Path(temporary.name)
+
+    try:
+        ocr_text, ocr_status = run_image_ocr(temp_path)
+        heuristic = heuristic_visual_analysis(
+            " ".join(value for value in [filename, question or "", brand or "", model or "", ocr_text or ""] if value)
+        )
+        visual = run_image_vision(settings, temp_path, ocr_text)
+        if visual is None:
+            return {
+                **heuristic,
+                "ocr_text": ocr_text or "",
+                "visual_confidence": {
+                    **heuristic["visual_confidence"],
+                    "degraded_reason": "vision_unavailable",
+                    "ocr_status": ocr_status,
+                },
+            }
+
+        detected_entities = merge_detected_entities(heuristic["detected_entities"], visual)
+        confidence = float(visual.get("confidence") or heuristic["visual_confidence"]["confidence"])
+        low_confidence = bool(visual.get("low_confidence")) or (
+            not any(detected_entities.values()) and not normalized_text_clue(ocr_text)
+        )
+        visual_annotations = build_visual_annotations(detected_entities, confidence)
+        description = str(visual.get("description") or heuristic["description"])
+        return {
+            "visual_observation": description,
+            "description": description,
+            "ocr_text": ocr_text or "",
+            "detected_entities": detected_entities,
+            "visual_annotations": visual_annotations,
+            "visual_annotation_status": visual_annotation_status(visual_annotations),
+            "visual_confidence": {
+                "confidence": confidence,
+                "low_confidence": low_confidence,
+                "ocr_status": ocr_status,
+            },
+        }
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+def run_image_ocr(path: Path) -> tuple[str | None, str]:
+    try:
+        text = default_ocr_reader(path).strip()
+    except OcrUnavailable:
+        return None, "ocr_unavailable"
+    except Exception:
+        return None, "ocr_failed"
+    if not text:
+        return None, "ocr_empty"
+    return text, "succeeded"
+
+
+def run_image_vision(settings: Settings, path: Path, ocr_text: str | None) -> dict[str, object] | None:
+    reader = build_visual_reader(settings)
+    try:
+        raw = reader(path, ocr_text)
+    except Exception:
+        return None
+    return normalize_visual_observation(raw, settings.vision_confidence_threshold)
+
+
+def merge_detected_entities(
+    fallback_entities: dict[str, list[str]],
+    visual: dict[str, object],
+) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    for key in ["possible_models", "visible_parts", "warning_lights", "part_numbers"]:
+        values: list[str] = []
+        for source in [visual.get(key) or [], fallback_entities.get(key) or []]:
+            for item in source:
+                normalized = str(item).strip()
+                if normalized and normalized not in values:
+                    values.append(normalized)
+        merged[key] = values
+    return merged
 
 
 def build_visual_annotations(detected_entities: dict[str, list[str]], confidence: float) -> list[dict[str, object]]:
@@ -169,7 +268,20 @@ async def answer_image_question(
     document_type: str | None,
     language: str | None,
     trace_id: str,
+    username: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, object]:
+    normalized_filters = {
+        "brand": brand,
+        "model": model,
+        "document_type": document_type,
+        "language": language,
+    }
+    normalized_filters = {key: value for key, value in normalized_filters.items() if value is not None}
+    if session_id:
+        if not username:
+            raise AppError(ErrorCode.UNAUTHORIZED, "Authentication required", status_code=status.HTTP_401_UNAUTHORIZED)
+        ensure_session_belongs_to_user(engine, username=username, session_id=session_id)
     image = validate_image_upload(images, settings)
     content = await image.read()
     max_bytes = settings.upload_max_image_size_mb * 1024 * 1024
@@ -189,12 +301,37 @@ async def answer_image_question(
             details={"max_length": MAX_QUESTION_LENGTH},
         )
 
-    visual = analyze_uploaded_image(image.filename or "upload", normalized_question, brand, model)
+    visual = analyze_uploaded_image(
+        settings,
+        filename=image.filename or "upload",
+        content=content,
+        question=normalized_question,
+        brand=brand,
+        model=model,
+    )
     detected_entities = visual["detected_entities"]
     if visual["visual_confidence"]["low_confidence"] and not normalized_question:
-        return low_confidence_payload(visual, trace_id)
+        payload = low_confidence_payload(visual, trace_id)
+        if session_id and username:
+            append_image_session_exchange(
+                engine,
+                username=username,
+                session_id=session_id,
+                question=normalized_question or None,
+                filename=image.filename or "upload",
+                filters=normalized_filters,
+                payload=payload,
+            )
+        return payload
 
-    search_query = visual_search_query(normalized_question, detected_entities)
+    search_query = visual_search_query(
+        normalized_question,
+        {
+            "ocr_text": visual.get("ocr_text"),
+            "description": visual.get("description"),
+            "detected_entities": detected_entities,
+        },
+    )
     qa_payload = answer_text_question(
         engine,
         question=search_query,
@@ -205,17 +342,54 @@ async def answer_image_question(
             "language": language,
         },
         trace_id=trace_id,
+        settings=settings,
+        username=username,
     )
     if visual["visual_confidence"]["low_confidence"] and not qa_payload["citations"]:
         qa_payload["answer"] = LOW_CONFIDENCE_ANSWER
-    return {**visual, **qa_payload}
+    payload = {**visual, **qa_payload}
+    if session_id and username:
+        session_filters = {
+            "brand": brand,
+            "model": model or first_model(detected_entities),
+            "document_type": document_type,
+            "language": language,
+        }
+        append_image_session_exchange(
+            engine,
+            username=username,
+            session_id=session_id,
+            question=normalized_question or None,
+            filename=image.filename or "upload",
+            filters={key: value for key, value in session_filters.items() if value is not None},
+            payload=payload,
+        )
+    return payload
 
 
-def visual_search_query(question: str, detected_entities: dict[str, list[str]]) -> str:
+def visual_search_query(question: str, visual_clues: dict[str, object]) -> str:
     terms = [question] if question else ["识别图片线索并检索相关资料"]
+    ocr_text = normalized_text_clue(visual_clues.get("ocr_text"))
+    if ocr_text:
+        terms.append(ocr_text)
+    description = normalized_text_clue(visual_clues.get("description"))
+    if description:
+        terms.append(description)
+    detected_entities = visual_clues.get("detected_entities")
+    if not isinstance(detected_entities, dict):
+        detected_entities = visual_clues
     for key in ["possible_models", "visible_parts", "warning_lights", "part_numbers"]:
-        terms.extend(detected_entities[key])
+        values = detected_entities.get(key, [])
+        if isinstance(values, list):
+            terms.extend(str(value) for value in values if str(value).strip())
     return " ".join(term for term in terms if term)
+
+
+def normalized_text_clue(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
 
 
 def first_model(detected_entities: dict[str, list[str]]) -> str | None:
@@ -251,7 +425,7 @@ def register_image_qa_routes(app, *, settings: Settings, engine: Engine) -> None
         document_type: str | None = Form(default=None),
         language: str | None = Form(default=None),
         session_id: str | None = Form(default=None),
-        _user: UserContext = Depends(require_roles(UserRole.ADMIN, UserRole.MAINTAINER, UserRole.USER, UserRole.EVALUATOR)),
+        user: UserContext = Depends(require_roles(UserRole.ADMIN, UserRole.MAINTAINER, UserRole.USER, UserRole.EVALUATOR)),
     ) -> dict[str, object]:
         return await answer_image_question(
             engine,
@@ -263,4 +437,6 @@ def register_image_qa_routes(app, *, settings: Settings, engine: Engine) -> None
             document_type=document_type,
             language=language,
             trace_id=request.state.trace_id,
+            username=user.username,
+            session_id=session_id,
         )

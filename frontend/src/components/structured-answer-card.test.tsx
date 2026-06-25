@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import { StructuredAnswerCard } from "./structured-answer-card";
 import type { AgroMechStructuredPayload } from "@/lib/agromech-chat";
 
-function payload(overrides: Partial<AgroMechStructuredPayload> = {}): AgroMechStructuredPayload {
+function payload(
+  overrides: Partial<AgroMechStructuredPayload> = {},
+): AgroMechStructuredPayload {
   return {
     answer: "检查液压泵压力并确认 E01 故障码适用 M7040。",
     sections: {},
@@ -30,7 +32,9 @@ function payload(overrides: Partial<AgroMechStructuredPayload> = {}): AgroMechSt
 
 describe("StructuredAnswerCard", () => {
   it("renders structured safety, uncertainty, OCR, visual observation, and citation entry", () => {
-    const html = renderToStaticMarkup(<StructuredAnswerCard payload={payload()} />);
+    const html = renderToStaticMarkup(
+      <StructuredAnswerCard payload={payload()} />,
+    );
 
     expect(html).toContain("检查液压泵压力");
     expect(html).toContain("安全提醒");
@@ -44,6 +48,13 @@ describe("StructuredAnswerCard", () => {
     expect(html).toContain("引用来源");
     expect(html).toContain("M7040 Manual");
     expect(html).toContain("查看证据");
+    expect(html).toContain(
+      "rounded-2xl border border-border bg-surface-panel/65",
+    );
+    expect(html).toContain(
+      "rounded-xl border border-border/70 bg-surface-raised/85",
+    );
+    expect(html).not.toContain("bg-white/78");
   });
 
   it("renders uploaded image thumbnail and visual annotations when available", () => {
@@ -61,7 +72,13 @@ describe("StructuredAnswerCard", () => {
               type: "warning_light",
               label: "E01",
               confidence: 0.8,
-              bbox: { format: "normalized_xywh", x: 0.62, y: 0.12, width: 0.18, height: 0.16 },
+              bbox: {
+                format: "normalized_xywh",
+                x: 0.62,
+                y: 0.12,
+                width: 0.18,
+                height: 0.16,
+              },
             },
           ],
           visual_annotation_status: {
@@ -81,7 +98,9 @@ describe("StructuredAnswerCard", () => {
   });
 
   it("shows a stable no-citation state", () => {
-    const html = renderToStaticMarkup(<StructuredAnswerCard payload={payload({ citations: [] })} />);
+    const html = renderToStaticMarkup(
+      <StructuredAnswerCard payload={payload({ citations: [] })} />,
+    );
 
     expect(html).toContain("未返回可引用来源");
   });

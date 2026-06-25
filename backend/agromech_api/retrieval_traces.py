@@ -46,6 +46,7 @@ def retrieval_trace_payload(row, user: UserContext) -> dict[str, object]:
         "query": row["query"],
         "filters": row["filters"] or {},
         "channels": row["channels"] or {"used": [], "degraded": []},
+        "model_config": row["model_config"] or {},
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
     }
     if user.role in FULL_TRACE_ROLES:

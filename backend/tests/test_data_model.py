@@ -18,8 +18,10 @@ def test_core_tables_are_declared() -> None:
         "graph_edges",
         "retrieval_logs",
         "qa_records",
+        "qa_messages",
         "answer_citations",
         "chat_sessions",
+        "evaluation_questions",
         "evaluation_runs",
     }
 
@@ -36,6 +38,8 @@ def test_key_indexes_are_declared() -> None:
     graph_edges = metadata.tables["graph_edges"]
     retrieval_logs = metadata.tables["retrieval_logs"]
     chat_sessions = metadata.tables["chat_sessions"]
+    qa_messages = metadata.tables["qa_messages"]
+    evaluation_questions = metadata.tables["evaluation_questions"]
 
     index_names = {
         index.name
@@ -49,6 +53,8 @@ def test_key_indexes_are_declared() -> None:
             graph_edges,
             retrieval_logs,
             chat_sessions,
+            qa_messages,
+            evaluation_questions,
         ]
         for index in table.indexes
     }
@@ -57,14 +63,41 @@ def test_key_indexes_are_declared() -> None:
         "ix_documents_status",
         "ix_documents_brand_model",
         "ix_document_chunks_document_id",
-        "ix_chunk_search_index_chunk_id",
+        "ix_chunk_search_index_chunk_id_version",
         "ix_chunk_entity_links_lookup",
         "ix_graph_nodes_lookup",
         "ix_graph_edges_chunk",
         "ix_ingest_tasks_document_id_status",
         "ix_retrieval_logs_trace_id",
         "ix_chat_sessions_username_updated_at",
+        "ix_qa_messages_session_id_created_at",
+        "ix_evaluation_questions_dataset_version",
     }.issubset(index_names)
+
+
+def test_embedding_tables_declare_version_fields() -> None:
+    search_index = metadata.tables["chunk_search_index"]
+    embedding_refs = metadata.tables["embedding_references"]
+
+    for table in [search_index, embedding_refs]:
+        assert {"embedding_version", "chunk_profile", "embedding_dimension"}.issubset(table.c.keys())
+        assert table.c.embedding_version.nullable is False
+        assert table.c.chunk_profile.nullable is False
+        assert table.c.embedding_dimension.nullable is False
+
+
+def test_retrieval_logs_declare_model_config_field() -> None:
+    retrieval_logs = metadata.tables["retrieval_logs"]
+
+    assert "model_config" in retrieval_logs.c.keys()
+    assert retrieval_logs.c.model_config.nullable is False
+
+
+def test_documents_table_declares_document_version_field() -> None:
+    documents = metadata.tables["documents"]
+
+    assert "document_version" in documents.c.keys()
+    assert documents.c.document_version.nullable is True
 
 
 def test_status_and_role_enums_are_centralized() -> None:
@@ -83,6 +116,7 @@ def test_status_and_role_enums_are_centralized() -> None:
         "succeeded",
         "failed",
         "cancelled",
+        "dead",
     }
     assert {role.value for role in UserRole} == {"admin", "maintainer", "user", "evaluator"}
 
@@ -148,3 +182,30 @@ def test_chat_sessions_can_store_user_isolated_message_state() -> None:
             "has_image": False,
         }
     ]
+
+
+def test_qa_messages_and_evaluation_questions_tables_declare_required_fields() -> None:
+    qa_messages = metadata.tables["qa_messages"]
+    evaluation_questions = metadata.tables["evaluation_questions"]
+
+    assert {"id", "session_id", "role", "content", "metadata", "created_at"}.issubset(qa_messages.c.keys())
+    assert qa_messages.c.session_id.nullable is False
+    assert qa_messages.c.role.nullable is False
+    assert qa_messages.c.content.nullable is False
+
+    assert {
+        "id",
+        "question_id",
+        "dataset_version",
+        "category",
+        "question",
+        "expected_model",
+        "expected_answer_summary",
+        "expected_sources",
+        "requires_safety_warning",
+        "must_not_include",
+        "created_at",
+    }.issubset(evaluation_questions.c.keys())
+    assert evaluation_questions.c.question_id.nullable is False
+    assert evaluation_questions.c.dataset_version.nullable is False
+    assert evaluation_questions.c.question.nullable is False

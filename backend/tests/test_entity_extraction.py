@@ -60,6 +60,22 @@ def test_entity_extractor_finds_key_agromech_entities() -> None:
     assert ("part_number", "HH-123") in {(entity.entity_type, entity.value) for entity in entities}
 
 
+def test_entity_extractor_finds_maintenance_items_and_chinese_terms() -> None:
+    entities = EntityExtractor().extract(
+        "久保田 M-7040 液压系统提升无力，检查液压泵和滤芯；保养项目：更换机油、润滑黄油嘴，配件号 RE-456。"
+    )
+    values = {(entity.entity_type, entity.value) for entity in entities}
+
+    assert ("brand", "久保田") in values
+    assert ("model", "M-7040") in values
+    assert ("system", "液压") in values
+    assert ("component", "液压泵") in values
+    assert ("component", "滤芯") in values
+    assert ("maintenance_item", "更换机油") in values
+    assert ("maintenance_item", "润滑黄油嘴") in values
+    assert ("part_number", "RE-456") in values
+
+
 def test_process_document_entities_links_entities_to_source_chunks(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     seed_document_with_chunk(
@@ -78,6 +94,27 @@ def test_process_document_entities_links_entities_to_source_chunks(tmp_path) -> 
     assert ("fault_code", "E01") in {(link["entity_type"], link["entity_value"]) for link in links}
     assert extraction["low_confidence"] is False
     assert extraction["extracted_entities"]["model"] == ["M7040"]
+
+
+def test_process_document_entities_persists_maintenance_and_confidence(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_document_with_chunk(
+        engine,
+        "Kubota M7040 engine maintenance item: change engine oil and grease fittings with part RE-456.",
+    )
+
+    result = process_document_entities(engine, "doc-1")
+
+    assert result.link_count >= 5
+    with engine.connect() as connection:
+        links = connection.execute(select(chunk_entity_links)).mappings().all()
+    maintenance_links = [link for link in links if link["entity_type"] == "maintenance_item"]
+    assert {link["entity_value"] for link in maintenance_links} == {
+        "change engine oil",
+        "grease fittings",
+    }
+    assert all(link["source"] == "rule" for link in maintenance_links)
+    assert all(link["confidence"] >= 0.7 for link in maintenance_links)
 
 
 def test_no_entities_records_low_confidence_empty_result(tmp_path) -> None:

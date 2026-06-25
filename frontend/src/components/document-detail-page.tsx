@@ -153,7 +153,7 @@ export function DocumentDetailView({
       <PageHeader
         eyebrow="Document Detail"
         title={document.title}
-        description="查看资料元数据、处理状态、最近任务、失败信息和引用预览。"
+        description="查看这份资料的状态、内容摘要和处理记录。"
         actions={
           <>
             <Link

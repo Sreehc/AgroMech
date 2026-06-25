@@ -7,6 +7,8 @@ from agromech_api.db.models import (
     chunk_search_index,
     document_chunks,
     documents,
+    graph_edges,
+    graph_nodes,
     ingest_tasks,
     metadata,
     qa_records,
@@ -180,6 +182,40 @@ def test_delete_task_cleans_searchable_data_and_marks_historical_citations_inacc
             )
         )
         connection.execute(
+            insert(graph_nodes),
+            [
+                {
+                    "id": "node-1",
+                    "entity_type": "model",
+                    "entity_value": "M7040",
+                    "normalized_value": "m7040",
+                },
+                {
+                    "id": "node-2",
+                    "entity_type": "fault_code",
+                    "entity_value": "E01",
+                    "normalized_value": "e01",
+                },
+            ],
+        )
+        connection.execute(
+            insert(graph_edges).values(
+                id="edge-1",
+                source_node_id="node-1",
+                target_node_id="node-2",
+                source_entity_type="model",
+                source_entity_value="M7040",
+                target_entity_type="fault_code",
+                target_entity_value="E01",
+                relationship_type="co_occurs:model:fault_code",
+                source_document_id="doc-1",
+                source_chunk_id="chunk-1",
+                schema_version="graph-v1",
+                confidence=0.8,
+                is_active=True,
+            )
+        )
+        connection.execute(
             insert(qa_records).values(
                 id="qa-1",
                 trace_id="trace-1",
@@ -206,12 +242,19 @@ def test_delete_task_cleans_searchable_data_and_marks_historical_citations_inacc
     with engine.connect() as connection:
         chunk_count = len(connection.execute(select(document_chunks)).all())
         index_count = len(connection.execute(select(chunk_search_index)).all())
+        edge = connection.execute(select(graph_edges)).mappings().one()
         citation = connection.execute(select(answer_citations)).mappings().one()
     assert chunk_count == 0
     assert index_count == 0
+    assert edge["is_active"] is False
+    assert edge["valid_to"] is not None
     assert citation["document_id"] is None
     assert citation["chunk_id"] is None
     assert citation["accessible"] is False
+    assert citation["citation_payload"] == {
+        "document_id": "doc-1",
+        "chunk_id": "chunk-1",
+    }
 
 
 def test_failed_reprocess_keeps_indexed_document_when_old_index_exists(tmp_path) -> None:
@@ -263,3 +306,41 @@ def test_runner_returns_idle_when_no_queued_task(tmp_path) -> None:
     runner = IngestTaskRunner(engine)
 
     assert runner.run_next(lambda _task: None) == "idle"
+
+
+def _always_fails(_task):
+    raise IngestFailure("parse_failed", "Parser could not read file", stage="parse")
+
+
+def test_task_moves_to_dead_after_max_attempts(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_task(engine, task_status=IngestTaskStatus.FAILED.value, document_status=DocumentStatus.FAILED.value)
+    # Simulate two prior attempts already recorded on the task.
+    with engine.begin() as connection:
+        connection.execute(
+            ingest_tasks.update().where(ingest_tasks.c.id == "task-1").values(
+                status=IngestTaskStatus.QUEUED.value, attempt_count=2
+            )
+        )
+    runner = IngestTaskRunner(engine, max_attempts=3)
+
+    result = runner.run_next(_always_fails)
+
+    assert result == "dead"
+    _document, task = fetch_state(engine)
+    assert task["status"] == "dead"
+    assert task["attempt_count"] == 3
+    assert task["error_code"] == "parse_failed"
+
+
+def test_task_stays_failed_and_retryable_before_max_attempts(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_task(engine)
+    runner = IngestTaskRunner(engine, max_attempts=3)
+
+    result = runner.run_next(_always_fails)
+
+    assert result == "failed"
+    _document, task = fetch_state(engine)
+    assert task["status"] == "failed"
+    assert task["attempt_count"] == 1

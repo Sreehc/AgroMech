@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert, select
@@ -6,7 +7,7 @@ from sqlalchemy import create_engine, insert, select
 from agromech_api.auth import create_access_token
 from agromech_api.config import Settings
 from agromech_api.db.enums import AssetType, ChunkType, DocumentStatus, IngestTaskStatus, TaskType, UserRole
-from agromech_api.db.models import document_assets, document_chunks, documents, ingest_tasks, metadata
+from agromech_api.db.models import answer_citations, chunk_search_index, document_assets, document_chunks, documents, ingest_tasks, metadata, qa_records
 from agromech_api.main import create_app
 
 
@@ -132,6 +133,72 @@ def test_document_list_supports_filters(tmp_path: Path) -> None:
     assert response.json()["items"][0]["brand"] == "Kubota"
 
 
+def test_document_list_returns_summary_recent_task_failure_and_updated_at(tmp_path: Path) -> None:
+    client, engine, token = library_client(tmp_path)
+    seed_document(engine, document_id="doc-indexed", task_id="task-indexed", brand="Kubota", model="M7040")
+    seed_document(
+        engine,
+        document_id="doc-failed",
+        task_id="task-failed-old",
+        brand="Deere",
+        model="5075E",
+        status=DocumentStatus.FAILED.value,
+    )
+
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(ingest_tasks).values(
+                id="task-failed-latest",
+                document_id="doc-failed",
+                task_type=TaskType.REPROCESS.value,
+                status=IngestTaskStatus.FAILED.value,
+                attempt_count=2,
+                stage="ocr",
+                error_code="ocr_failed",
+                error_message="OCR service failed",
+                created_at=now + timedelta(seconds=1),
+                updated_at=now + timedelta(seconds=1),
+            )
+        )
+
+    response = client.get("/documents", headers=auth_header(token))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 2
+
+    indexed_item = next(item for item in payload["items"] if item["id"] == "doc-indexed")
+    assert indexed_item["summary"] == "Hydraulic maintenance interval"
+    assert indexed_item["recent_task"] == {
+        "id": "task-indexed",
+        "task_type": "ingest",
+        "status": "succeeded",
+        "stage": "indexed",
+    }
+    assert indexed_item["failure"] == {
+        "stage": None,
+        "code": None,
+        "message": None,
+    }
+    assert indexed_item["updated_at"] is not None
+
+    failed_item = next(item for item in payload["items"] if item["id"] == "doc-failed")
+    assert failed_item["summary"] == "Hydraulic maintenance interval"
+    assert failed_item["recent_task"] == {
+        "id": "task-failed-latest",
+        "task_type": "reprocess",
+        "status": "failed",
+        "stage": "ocr",
+    }
+    assert failed_item["failure"] == {
+        "stage": "parse",
+        "code": "parse_failed",
+        "message": "Cannot parse file",
+    }
+    assert failed_item["updated_at"] is not None
+
+
 def test_document_detail_returns_metadata_recent_task_failure_and_chunk_summary(tmp_path: Path) -> None:
     client, engine, token = library_client(tmp_path)
     seed_document(
@@ -146,6 +213,9 @@ def test_document_detail_returns_metadata_recent_task_failure_and_chunk_summary(
     assert response.status_code == 200
     payload = response.json()
     assert payload["id"] == "doc-failed"
+    assert payload["status"] == "failed"
+    assert payload["accessible"] is True
+    assert payload["updated_at"] is not None
     assert payload["metadata"]["brand"] == "Kubota"
     assert payload["failure"]["code"] == "parse_failed"
     assert payload["recent_task"]["id"] == "task-failed"
@@ -155,7 +225,37 @@ def test_document_detail_returns_metadata_recent_task_failure_and_chunk_summary(
         "summary": "Hydraulic maintenance interval",
         "page_number": 3,
         "section_title": "Maintenance",
+        "source_locator": {"page": 3},
+        "source_position": {
+            "page_number": 3,
+            "section_title": "Maintenance",
+            "worksheet_name": None,
+            "row_start": None,
+            "row_end": None,
+        },
+        "accessible": True,
     }
+
+
+def test_document_detail_returns_deleted_document_as_inaccessible_without_blank_payload(tmp_path: Path) -> None:
+    client, engine, token = library_client(tmp_path)
+    seed_document(
+        engine,
+        document_id="doc-deleted",
+        task_id="task-deleted",
+        status=DocumentStatus.DELETED.value,
+    )
+
+    response = client.get("/documents/doc-deleted", headers=auth_header(token))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == "doc-deleted"
+    assert payload["status"] == "deleted"
+    assert payload["accessible"] is False
+    assert payload["metadata"]["original_file_name"] == "doc-deleted.txt"
+    assert payload["chunks"][0]["accessible"] is False
+    assert payload["chunks"][0]["source_locator"] == {"page": 3}
 
 
 def test_document_preview_returns_text_contract_for_chunk(tmp_path: Path) -> None:
@@ -363,6 +463,49 @@ def test_document_preview_returns_inaccessible_contract_for_deleted_document(tmp
     }
 
 
+def test_deleted_document_historical_citation_keeps_metadata_and_preview_stays_unavailable(tmp_path: Path) -> None:
+    client, engine, token = library_client(tmp_path)
+    seed_document(engine, document_id="doc-deleted", task_id="task-deleted", status=DocumentStatus.DELETED.value)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(qa_records).values(
+                id="qa-1",
+                trace_id="trace-historical-citation",
+                question="question",
+                answer="answer",
+                uncertainty={"level": "low", "reasons": []},
+            )
+        )
+        connection.execute(
+            insert(answer_citations).values(
+                id="citation-1",
+                qa_record_id="qa-1",
+                document_id=None,
+                chunk_id=None,
+                citation_payload={
+                    "document_id": "doc-deleted",
+                    "document_title": "Kubota M7040",
+                    "chunk_id": "chunk-doc-deleted",
+                    "source_locator": {"page": 3},
+                    "evidence_snippet": "Hydraulic maintenance interval and safety notes.",
+                    "evidence_type": "text",
+                    "accessible": False,
+                },
+                accessible=False,
+            )
+        )
+
+    response = client.get("/documents/doc-deleted/preview?chunk_id=chunk-doc-deleted", headers=auth_header(token))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["accessible"] is False
+    assert payload["document_title"] == "Kubota M7040"
+    assert payload["source_locator"] == {"page": 3}
+    assert payload["evidence_snippet"] == "Hydraulic maintenance interval and safety notes."
+    assert payload["unavailable_reason"] == "document_deleted"
+
+
 def test_task_query_returns_task_status(tmp_path: Path) -> None:
     client, engine, token = library_client(tmp_path)
     seed_document(engine, document_id="doc-a", task_id="task-a")
@@ -378,6 +521,17 @@ def test_task_query_returns_task_status(tmp_path: Path) -> None:
 def test_reprocess_creates_new_task(tmp_path: Path) -> None:
     client, engine, token = library_client(tmp_path)
     seed_document(engine, document_id="doc-a", task_id="task-a")
+    with engine.begin() as connection:
+        connection.execute(
+            insert(chunk_search_index).values(
+                id="search-doc-a",
+                chunk_id="chunk-doc-a",
+                document_id="doc-a",
+                chunk_type=ChunkType.TEXT.value,
+                search_text="Hydraulic maintenance interval and safety notes.",
+                embedding=[1.0],
+            )
+        )
 
     response = client.post("/documents/doc-a/reprocess", headers=auth_header(token))
 
@@ -389,21 +543,82 @@ def test_reprocess_creates_new_task(tmp_path: Path) -> None:
 
     with engine.connect() as connection:
         task_count = connection.execute(select(ingest_tasks)).all()
+        document = connection.execute(select(documents).where(documents.c.id == "doc-a")).mappings().one()
     assert len(task_count) == 2
+    assert document["status"] == "indexed"
+
+
+def test_reprocess_failed_document_without_old_index_marks_reprocessing_and_keeps_failure_visible(tmp_path: Path) -> None:
+    client, engine, token = library_client(tmp_path)
+    seed_document(engine, document_id="doc-failed", task_id="task-failed", status=DocumentStatus.FAILED.value)
+
+    response = client.post("/documents/doc-failed/reprocess", headers=auth_header(token))
+
+    assert response.status_code == 201
+    with engine.connect() as connection:
+        document = connection.execute(select(documents).where(documents.c.id == "doc-failed")).mappings().one()
+        tasks = connection.execute(select(ingest_tasks).where(ingest_tasks.c.document_id == "doc-failed")).mappings().all()
+    assert document["status"] == "reprocessing"
+    assert document["failure_code"] == "parse_failed"
+    assert len(tasks) == 2
+
+
+def test_reprocess_rejects_deleted_or_already_reprocessing_documents(tmp_path: Path) -> None:
+    client, engine, token = library_client(tmp_path)
+    seed_document(engine, document_id="doc-deleted", task_id="task-deleted", status=DocumentStatus.DELETED.value)
+    seed_document(engine, document_id="doc-reprocessing", task_id="task-reprocessing", status=DocumentStatus.REPROCESSING.value)
+
+    deleted_response = client.post("/documents/doc-deleted/reprocess", headers=auth_header(token))
+    reprocessing_response = client.post("/documents/doc-reprocessing/reprocess", headers=auth_header(token))
+
+    assert deleted_response.status_code == 409
+    assert deleted_response.json()["error"]["code"] == "validation_error"
+    assert reprocessing_response.status_code == 409
+    assert reprocessing_response.json()["error"]["code"] == "validation_error"
 
 
 def test_delete_marks_document_deleted(tmp_path: Path) -> None:
     client, engine, token = library_client(tmp_path)
     seed_document(engine, document_id="doc-a", task_id="task-a")
+    with engine.begin() as connection:
+        connection.execute(
+            insert(chunk_search_index).values(
+                id="search-doc-a",
+                chunk_id="chunk-doc-a",
+                document_id="doc-a",
+                chunk_type=ChunkType.TEXT.value,
+                search_text="Hydraulic maintenance interval and safety notes.",
+                embedding=[1.0],
+            )
+        )
 
     response = client.delete("/documents/doc-a", headers=auth_header(token))
 
     assert response.status_code == 200
-    assert response.json() == {"document_id": "doc-a", "status": "deleted"}
+    assert response.json() == {"document_id": "doc-a", "status": "deleting"}
 
     with engine.connect() as connection:
-        status = connection.execute(select(documents.c.status).where(documents.c.id == "doc-a")).scalar_one()
-    assert status == "deleted"
+        document = connection.execute(select(documents).where(documents.c.id == "doc-a")).mappings().one()
+        tasks = connection.execute(select(ingest_tasks).where(ingest_tasks.c.document_id == "doc-a")).mappings().all()
+        index_count = len(connection.execute(select(chunk_search_index).where(chunk_search_index.c.document_id == "doc-a")).all())
+    assert document["status"] == "deleting"
+    assert index_count == 1
+    assert len(tasks) == 2
+    assert any(task["task_type"] == "delete" and task["status"] == "queued" for task in tasks)
+
+
+def test_delete_rejects_deleted_or_already_deleting_documents(tmp_path: Path) -> None:
+    client, engine, token = library_client(tmp_path)
+    seed_document(engine, document_id="doc-deleted", task_id="task-deleted", status=DocumentStatus.DELETED.value)
+    seed_document(engine, document_id="doc-deleting", task_id="task-deleting", status=DocumentStatus.DELETING.value)
+
+    deleted_response = client.delete("/documents/doc-deleted", headers=auth_header(token))
+    deleting_response = client.delete("/documents/doc-deleting", headers=auth_header(token))
+
+    assert deleted_response.status_code == 409
+    assert deleted_response.json()["error"]["code"] == "validation_error"
+    assert deleting_response.status_code == 409
+    assert deleting_response.json()["error"]["code"] == "validation_error"
 
 
 def test_non_maintainer_write_returns_forbidden(tmp_path: Path) -> None:
