@@ -9,6 +9,7 @@ from agromech_api.config import Settings
 from agromech_api.db.enums import AssetType, ChunkType, DocumentStatus, IngestTaskStatus, TaskType, UserRole
 from agromech_api.db.models import answer_citations, chunk_search_index, document_assets, document_chunks, documents, ingest_tasks, metadata, qa_records
 from agromech_api.main import create_app
+from agromech_api.task_queue import InMemoryTaskPublisher
 
 
 def library_settings(tmp_path: Path) -> Settings:
@@ -20,12 +21,19 @@ def library_settings(tmp_path: Path) -> Settings:
     )
 
 
-def library_client(tmp_path: Path, role: UserRole = UserRole.ADMIN) -> tuple[TestClient, object, str]:
+def library_client(
+    tmp_path: Path,
+    role: UserRole = UserRole.ADMIN,
+    *,
+    task_publisher: InMemoryTaskPublisher | None = None,
+) -> tuple[TestClient, object, str]:
     settings = library_settings(tmp_path)
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
     token = create_access_token(username=role.value, role=role, settings=settings)
-    return TestClient(create_app(settings=settings, database_engine=engine)), engine, token
+    return TestClient(
+        create_app(settings=settings, database_engine=engine, task_publisher=task_publisher)
+    ), engine, token
 
 
 def auth_header(token: str) -> dict[str, str]:
@@ -519,7 +527,8 @@ def test_task_query_returns_task_status(tmp_path: Path) -> None:
 
 
 def test_reprocess_creates_new_task(tmp_path: Path) -> None:
-    client, engine, token = library_client(tmp_path)
+    publisher = InMemoryTaskPublisher()
+    client, engine, token = library_client(tmp_path, task_publisher=publisher)
     seed_document(engine, document_id="doc-a", task_id="task-a")
     with engine.begin() as connection:
         connection.execute(
@@ -540,6 +549,10 @@ def test_reprocess_creates_new_task(tmp_path: Path) -> None:
     assert payload["document_id"] == "doc-a"
     assert payload["task_id"]
     assert payload["status"] == "queued"
+    assert len(publisher.messages) == 1
+    assert publisher.messages[0].task_id == payload["task_id"]
+    assert publisher.messages[0].document_id == "doc-a"
+    assert publisher.messages[0].task_type == "reprocess"
 
     with engine.connect() as connection:
         task_count = connection.execute(select(ingest_tasks)).all()
@@ -578,7 +591,8 @@ def test_reprocess_rejects_deleted_or_already_reprocessing_documents(tmp_path: P
 
 
 def test_delete_marks_document_deleted(tmp_path: Path) -> None:
-    client, engine, token = library_client(tmp_path)
+    publisher = InMemoryTaskPublisher()
+    client, engine, token = library_client(tmp_path, task_publisher=publisher)
     seed_document(engine, document_id="doc-a", task_id="task-a")
     with engine.begin() as connection:
         connection.execute(
@@ -596,6 +610,9 @@ def test_delete_marks_document_deleted(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"document_id": "doc-a", "status": "deleting"}
+    assert len(publisher.messages) == 1
+    assert publisher.messages[0].document_id == "doc-a"
+    assert publisher.messages[0].task_type == "delete"
 
     with engine.connect() as connection:
         document = connection.execute(select(documents).where(documents.c.id == "doc-a")).mappings().one()

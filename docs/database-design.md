@@ -1,0 +1,331 @@
+# 数据库设计
+
+本文以 `backend/agromech_api/db/models.py` 和 Alembic 迁移为准。
+
+## 1. 核心状态
+
+文档状态：
+
+- `queued`
+- `processing`
+- `reprocessing`
+- `indexed`
+- `failed`
+- `deleting`
+- `deleted`
+
+任务类型：
+
+- `ingest`
+- `reprocess`
+- `delete`
+
+任务状态：
+
+- `queued`
+- `processing`
+- `succeeded`
+- `failed`
+- `dead`
+- `cancelled`
+
+chunk 类型：
+
+- `text`
+- `table`
+- `image`
+
+asset 类型：
+
+- `page_image`
+- `source_image`
+- `extracted_image`
+
+## 2. 文档和导入
+
+### `documents`
+
+资料主表。关键字段：
+
+- `id`
+- `title`
+- `original_file_name`
+- `file_hash`
+- `file_size_bytes`
+- `mime_type`
+- `storage_uri`
+- `brand`
+- `model`
+- `document_type`
+- `language`
+- `document_version`
+- `source`
+- `status`
+- `failure_stage`
+- `failure_code`
+- `failure_message`
+- `created_by_role`
+- `created_at`
+- `updated_at`
+- `deleted_at`
+
+索引：`status`、`brand/model`、`file_hash`。
+
+### `ingest_tasks`
+
+导入、重处理、删除任务表，也是 worker 状态机的权威来源。关键字段：
+
+- `id`
+- `document_id`
+- `task_type`
+- `status`
+- `attempt_count`
+- `stage`
+- `error_code`
+- `error_message`
+- `started_at`
+- `finished_at`
+
+### `document_assets`
+
+页面图、原始图片、提取图片等视觉资产。关键字段：
+
+- `document_id`
+- `asset_type`
+- `storage_uri`
+- `mime_type`
+- `page_number`
+- `source_locator`
+- `ocr_text`
+- `visual_observation`
+
+### `document_chunks`
+
+可检索证据单元。关键字段：
+
+- `document_id`
+- `asset_id`
+- `chunk_type`
+- `content`
+- `summary`
+- `page_number`
+- `section_title`
+- `worksheet_name`
+- `row_start`
+- `row_end`
+- `source_locator`
+- `metadata`
+
+`source_locator` 必填，用于 citation 和预览定位。
+
+## 3. 索引和检索
+
+### `chunk_search_index`
+
+全文和本地检索索引引用。包含：
+
+- `chunk_id`
+- `document_id`
+- `chunk_type`
+- `search_text`
+- `embedding`
+- `embedding_version`
+- `chunk_profile`
+- `embedding_dimension`
+
+`chunk_id + embedding_version` 唯一。
+
+### `embedding_references`
+
+Zvec 向量引用表。包含：
+
+- `chunk_id`
+- `provider`
+- `model`
+- `embedding_version`
+- `chunk_profile`
+- `embedding_dimension`
+- `vector_store`
+- `collection`
+- `vector_id`
+- `status`
+
+Postgres 不保存生产向量库主体，Zvec collection 保存实际向量；本表保存业务回连信息。
+
+### `retrieval_logs`
+
+检索 trace 表。包含：
+
+- `trace_id`
+- `query`
+- `filters`
+- `channels`
+- `model_config`
+- `candidates`
+- `rerank`
+- `final_evidence`
+
+`trace_id` 唯一。
+
+## 4. 实体和暂存图谱表
+
+### `chunk_entity_links`
+
+chunk 到领域实体的链接：
+
+- `chunk_id`
+- `document_id`
+- `entity_type`
+- `entity_value`
+- `normalized_value`
+- `confidence`
+- `source`
+
+用于结构化过滤；图谱同步当前不在主链路启用。
+
+### `document_entity_extractions`
+
+文档级抽取结果快照：
+
+- `document_id`
+- `extracted_entities`
+- `confidence`
+- `low_confidence`
+
+### `graph_nodes`
+
+本地图谱节点缓存，当前作为后续 Graph RAG 预留表：
+
+- `entity_type`
+- `entity_value`
+- `normalized_value`
+
+`entity_type + normalized_value` 唯一。
+
+### `graph_edges`
+
+本地图谱边缓存，当前作为后续 Graph RAG 预留表：
+
+- `source_node_id`
+- `target_node_id`
+- `source_entity_type`
+- `source_entity_value`
+- `target_entity_type`
+- `target_entity_value`
+- `relationship_type`
+- `source_document_id`
+- `source_chunk_id`
+- `schema_version`
+- `confidence`
+- `is_active`
+- `valid_to`
+
+如果后续恢复 Graph RAG，图谱边必须保留来源文档，最终回答不能只引用图谱边，必须回到 chunk。
+
+当前常见实体类型：
+
+- brand
+- model
+- subsystem
+- component
+- fault_code
+- fault_symptom
+- part_number
+- maintenance_item
+- document
+- chunk
+
+当前关系用于 1-2 跳扩展，重处理和删除会让旧边 inactive。
+
+## 5. 问答和引用
+
+### `qa_records`
+
+问答记录：
+
+- `trace_id`
+- `question`
+- `answer`
+- `sections`
+- `uncertainty`
+
+### `answer_citations`
+
+回答引用：
+
+- `qa_record_id`
+- `document_id`
+- `chunk_id`
+- `citation_payload`
+- `accessible`
+
+删除资料后，`document_id/chunk_id` 可置空，但 `citation_payload` 保留历史元数据和不可访问提示。
+
+## 6. 会话
+
+### `chat_sessions`
+
+- `username`
+- `title`
+- `messages`
+- `filters`
+- `has_image`
+- `created_at`
+- `updated_at`
+
+### `qa_messages`
+
+- `session_id`
+- `role`
+- `content`
+- `metadata`
+- `created_at`
+
+文本问答和图片问答携带 `session_id` 时会追加用户消息和 assistant 消息。
+
+## 7. 型号别名
+
+### `model_aliases`
+
+- `alias`
+- `normalized_alias`
+- `canonical_model`
+- `normalized_canonical`
+- `status`: `active`、`candidate`、`rejected`
+- `source`: `manual`、`rule`、`llm`
+- `confidence`
+- `notes`
+
+LLM 候选不会直接进入正式别名，必须提升为 active。
+
+## 8. 评估
+
+### `evaluation_questions`
+
+固定题库：
+
+- `question_id`
+- `dataset_version`
+- `category`
+- `question`
+- `expected_model`
+- `expected_answer_summary`
+- `expected_sources`
+- `requires_safety_warning`
+- `must_not_include`
+
+`question_id + dataset_version` 唯一。
+
+### `evaluation_runs`
+
+评估运行记录：
+
+- `run_id`
+- `dataset_version`
+- `model_config`
+- `prompt_version`
+- `code_version`
+- `metrics_summary`
+- `failure_types`
+- `started_at`
+- `finished_at`

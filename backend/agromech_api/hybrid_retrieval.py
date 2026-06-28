@@ -8,7 +8,6 @@ from agromech_api.config import get_settings
 from agromech_api.db.enums import ChunkType
 from agromech_api.db.models import chunk_entity_links, document_chunks, retrieval_logs
 from agromech_api.entity_extraction import normalize
-from agromech_api.graph_rag import GraphRagService
 from agromech_api.query_understanding import ParsedQuery, parse_query, structured_filter_chunks
 from agromech_api.rerank import RerankError
 from agromech_api.search_indexing import keyword_search, vector_search
@@ -18,7 +17,6 @@ CHANNEL_WEIGHTS = {
     "structured": 4.0,
     "keyword": 2.0,
     "vector": 1.5,
-    "graph": 1.2,
     "vision": 1.0,
 }
 MIN_CANDIDATE_SCORE = 0.25
@@ -170,10 +168,8 @@ def collect_candidates(
         )
     for result in structured_filter_chunks(engine, parsed):
         add_candidate(engine, candidates, result["chunk_id"], "structured", float(len(result["matched_filters"])))
-    for result in graph_candidates(engine, parsed, graph_service=graph_service, degraded_channels=degraded_channels):
-        source_chunk_id = result.get("source_chunk_id")
-        if source_chunk_id:
-            add_candidate(engine, candidates, str(source_chunk_id), "graph", float(result["confidence"]))
+    # Graph retrieval is intentionally disabled in the current product scope.
+    # Keep the injection parameter for compatibility with older tests/callers.
 
     for candidate in candidates.values():
         if candidate["chunk_type"] == ChunkType.IMAGE.value:
@@ -183,7 +179,7 @@ def collect_candidates(
     viable_candidates = [
         candidate
         for candidate in candidates.values()
-        if candidate["score"] >= MIN_CANDIDATE_SCORE or any(channel in candidate["channels"] for channel in ["keyword", "structured", "graph"])
+        if candidate["score"] >= MIN_CANDIDATE_SCORE or any(channel in candidate["channels"] for channel in ["keyword", "structured"])
     ]
     return viable_candidates
 
@@ -467,18 +463,7 @@ def graph_candidates(
     graph_service=None,
     degraded_channels: dict[str, str] | None = None,
 ) -> list[dict[str, object]]:
-    service = graph_service or GraphRagService(engine)
-    results: list[dict[str, object]] = []
-    try:
-        for model in parsed.entities.get("model") or []:
-            results.extend(service.expand(entity_type="model", value=model, max_hops=2))
-        for fault_code in parsed.entities.get("fault_code") or []:
-            results.extend(service.expand(entity_type="fault_code", value=fault_code, max_hops=1))
-    except Exception:  # noqa: BLE001 - graph search is an optional retrieval channel.
-        if degraded_channels is not None:
-            degraded_channels["graph"] = "graph_degraded"
-        return []
-    return [result for result in results if result.get("source_chunk_id")]
+    return []
 
 
 def add_candidate(

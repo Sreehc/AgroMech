@@ -8,6 +8,7 @@ from agromech_api.config import Settings
 from agromech_api.db.enums import UserRole
 from agromech_api.db.models import documents, ingest_tasks, metadata
 from agromech_api.main import create_app
+from agromech_api.task_queue import InMemoryTaskPublisher
 
 
 def upload_settings(tmp_path: Path) -> Settings:
@@ -22,12 +23,18 @@ def upload_settings(tmp_path: Path) -> Settings:
     )
 
 
-def upload_client(tmp_path: Path) -> tuple[TestClient, object, str]:
+def upload_client(
+    tmp_path: Path,
+    *,
+    task_publisher: InMemoryTaskPublisher | None = None,
+) -> tuple[TestClient, object, str]:
     settings = upload_settings(tmp_path)
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
     token = create_access_token(username="admin", role=UserRole.ADMIN, settings=settings)
-    return TestClient(create_app(settings=settings, database_engine=engine)), engine, token
+    return TestClient(
+        create_app(settings=settings, database_engine=engine, task_publisher=task_publisher)
+    ), engine, token
 
 
 def auth_header(token: str) -> dict[str, str]:
@@ -70,6 +77,24 @@ def test_upload_creates_document_task_and_stores_file(tmp_path: Path) -> None:
     assert task["document_id"] == payload["document_id"]
     assert task["task_type"] == "ingest"
     assert task["status"] == "queued"
+
+
+def test_upload_publishes_ingest_task_message(tmp_path: Path) -> None:
+    publisher = InMemoryTaskPublisher()
+    client, _engine, token = upload_client(tmp_path, task_publisher=publisher)
+
+    response = client.post(
+        "/documents",
+        headers=auth_header(token),
+        files={"file": ("manual.txt", b"hydraulic pump service", "text/plain")},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert len(publisher.messages) == 1
+    assert publisher.messages[0].task_id == payload["task_id"]
+    assert publisher.messages[0].document_id == payload["document_id"]
+    assert publisher.messages[0].task_type == "ingest"
 
 
 def test_upload_accepts_all_t09_supported_file_types(tmp_path: Path) -> None:

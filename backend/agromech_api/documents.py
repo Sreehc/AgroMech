@@ -18,6 +18,7 @@ from agromech_api.db.enums import AssetType, DocumentStatus, IngestTaskStatus, T
 from agromech_api.db.models import document_assets, document_chunks, documents, ingest_tasks
 from agromech_api.errors import AppError, ErrorCode
 from agromech_api.file_storage import build_file_storage
+from agromech_api.task_queue import TaskMessage, TaskPublisher
 
 
 SUPPORTED_EXTENSIONS = {
@@ -456,7 +457,7 @@ def create_delete_task(engine: Engine, document_id: str) -> TaskResult:
     return TaskResult(document_id=document_id, task_id=task_id, status=IngestTaskStatus.QUEUED.value)
 
 
-def register_document_routes(app, *, settings: Settings, engine: Engine) -> None:
+def register_document_routes(app, *, settings: Settings, engine: Engine, task_publisher: TaskPublisher) -> None:
     @app.get("/documents", tags=["documents"])
     def list_documents(
         brand: str | None = None,
@@ -609,6 +610,13 @@ def register_document_routes(app, *, settings: Settings, engine: Engine) -> None
         _user: UserContext = Depends(require_roles(UserRole.ADMIN, UserRole.MAINTAINER)),
     ) -> dict[str, str]:
         result = create_reprocess_task(engine, document_id)
+        task_publisher.publish(
+            TaskMessage(
+                task_id=result.task_id,
+                document_id=result.document_id,
+                task_type=TaskType.REPROCESS.value,
+            )
+        )
         return {
             "document_id": result.document_id,
             "task_id": result.task_id,
@@ -621,6 +629,13 @@ def register_document_routes(app, *, settings: Settings, engine: Engine) -> None
         _user: UserContext = Depends(require_roles(UserRole.ADMIN, UserRole.MAINTAINER)),
     ) -> dict[str, str]:
         result = create_delete_task(engine, document_id)
+        task_publisher.publish(
+            TaskMessage(
+                task_id=result.task_id,
+                document_id=result.document_id,
+                task_type=TaskType.DELETE.value,
+            )
+        )
         return {
             "document_id": result.document_id,
             "status": DocumentStatus.DELETING.value,
@@ -649,6 +664,13 @@ def register_document_routes(app, *, settings: Settings, engine: Engine) -> None
             document_type=document_type,
             language=language,
             source=source,
+        )
+        task_publisher.publish(
+            TaskMessage(
+                task_id=result.task_id,
+                document_id=result.document_id,
+                task_type=TaskType.INGEST.value,
+            )
         )
         return {
             "document_id": result.document_id,

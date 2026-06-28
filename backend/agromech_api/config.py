@@ -85,6 +85,15 @@ class Settings(BaseSettings):
     paddleocr_poll_interval_seconds: float = 5.0
     paddleocr_poll_timeout_seconds: float = 1800.0
 
+    # RabbitMQ task dispatch
+    rabbitmq_url: str = "amqp://guest:guest@localhost:5672/%2F"
+    rabbitmq_queue: str = "agromech.ingest"
+    rabbitmq_exchange: str = ""
+    rabbitmq_routing_key: str = "agromech.ingest"
+    rabbitmq_publish_enabled: bool = False
+    rabbitmq_consume_prefetch: int = 1
+    rabbitmq_reconnect_seconds: float = 5.0
+
     # PostgreSQL
     database_url: str = "postgresql+psycopg://agromech:agromech@localhost:5432/agromech"
     postgres_host: str = "localhost"
@@ -115,8 +124,8 @@ class Settings(BaseSettings):
     embedding_version: str = "emb_202606231530_text-embedding-v4_1024_chunk-v1"
     chunk_profile: str = "chunk-v1"
 
-    # Graph: Neo4j
-    graph_backend: str = "neo4j"
+    # Graph: disabled from the main product path; local keeps Neo4j optional.
+    graph_backend: str = "local"
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "agromech"
@@ -143,7 +152,7 @@ class Settings(BaseSettings):
 
     # Retrieval degradation policy
     retrieval_degrade_on_optional_channel_failure: bool = True
-    optional_retrieval_channels: str = "graph,vision,rerank"
+    optional_retrieval_channels: str = "vision,rerank"
 
     # Evaluation
     evaluation_runner_mode: str = "cli"

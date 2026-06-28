@@ -159,7 +159,7 @@ def test_graph_expansion_ignores_inactive_edges(tmp_path) -> None:
     assert candidates == []
 
 
-def test_worker_runs_graph_sync_after_entity_extraction(tmp_path) -> None:
+def test_worker_main_ingest_path_does_not_sync_graph(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     source_path = tmp_path / "manual.txt"
     source_path.write_text("Kubota M7040 hydraulic pump fault code E01", encoding="utf-8")
@@ -191,7 +191,7 @@ def test_worker_runs_graph_sync_after_entity_extraction(tmp_path) -> None:
 
     with engine.connect() as connection:
         edges = connection.execute(select(graph_edges)).mappings().all()
-    assert edges
+    assert edges == []
 
 
 class FakeNeo4jSession:
@@ -346,7 +346,7 @@ class FailingGraphService:
         raise GraphSyncError("boom")
 
 
-def test_worker_maps_graph_sync_failure_to_ingest_failure(tmp_path) -> None:
+def test_worker_ignores_graph_service_failures_when_graph_is_disabled(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     source_path = tmp_path / "manual.txt"
     source_path.write_text("Kubota M7040 hydraulic pump fault code E01", encoding="utf-8")
@@ -365,20 +365,18 @@ def test_worker_maps_graph_sync_failure_to_ingest_failure(tmp_path) -> None:
             )
         )
 
-    try:
-        process_ingest_task(
-            engine,
-            QueuedTask(
-                id="task-1",
-                document_id="doc-1",
-                task_type=TaskType.INGEST.value,
-                attempt_count=0,
-                stage="processing",
-            ),
-            graph_service=FailingGraphService(),
-        )
-    except IngestFailure as exc:
-        assert exc.code == "graph_sync_failed"
-        assert exc.stage == "graph"
-    else:
-        raise AssertionError("expected graph sync failure")
+    process_ingest_task(
+        engine,
+        QueuedTask(
+            id="task-1",
+            document_id="doc-1",
+            task_type=TaskType.INGEST.value,
+            attempt_count=0,
+            stage="processing",
+        ),
+        graph_service=FailingGraphService(),
+    )
+
+    with engine.connect() as connection:
+        edges = connection.execute(select(graph_edges)).mappings().all()
+    assert edges == []

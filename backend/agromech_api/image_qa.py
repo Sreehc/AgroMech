@@ -344,6 +344,11 @@ async def answer_image_question(
         trace_id=trace_id,
         settings=settings,
         username=username,
+        image_context={
+            "ocr_text": visual.get("ocr_text"),
+            "description": visual.get("description"),
+            "detected_entities": detected_entities,
+        },
     )
     if visual["visual_confidence"]["low_confidence"] and not qa_payload["citations"]:
         qa_payload["answer"] = LOW_CONFIDENCE_ANSWER

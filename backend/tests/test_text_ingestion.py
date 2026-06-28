@@ -223,6 +223,58 @@ def test_worker_default_processor_parses_text_document_and_saves_chunks(tmp_path
     assert content == "Grease fittings every 50 hours."
 
 
+def test_worker_backfills_empty_document_metadata_from_llm_after_parsing(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    source_path = tmp_path / "manual.txt"
+    source_path.write_text("雷沃欧豹MG系列轮式拖拉机MG2004说明书\n适用于MG2004拖拉机。", encoding="utf-8")
+    with engine.begin() as connection:
+        connection.execute(
+            insert(documents).values(
+                id="doc-1",
+                title="Manual",
+                original_file_name="雷沃欧豹MG系列轮式拖拉机MG2004说明书.txt",
+                file_hash="hash-doc-1",
+                file_size_bytes=source_path.stat().st_size,
+                mime_type="text/plain",
+                storage_uri=f"file://{source_path}",
+                status=DocumentStatus.PROCESSING.value,
+                created_by_role="admin",
+            )
+        )
+
+    class FakeMetadataExtractor:
+        def extract(self, context):
+            assert "雷沃欧豹MG系列轮式拖拉机MG2004说明书" in context.context_text
+            return {
+                "brand": "雷沃欧豹",
+                "model": "MG2004",
+                "document_type": "说明书",
+                "language": "zh-CN",
+                "source": "upload",
+                "confidence": 0.92,
+            }
+
+    process_ingest_task(
+        engine,
+        QueuedTask(
+            id="task-1",
+            document_id="doc-1",
+            task_type=TaskType.INGEST.value,
+            attempt_count=0,
+            stage="processing",
+        ),
+        metadata_extractor=FakeMetadataExtractor(),
+    )
+
+    with engine.connect() as connection:
+        document = connection.execute(select(documents).where(documents.c.id == "doc-1")).mappings().one()
+    assert document["brand"] == "雷沃欧豹"
+    assert document["model"] == "MG2004"
+    assert document["document_type"] == "说明书"
+    assert document["language"] == "zh-CN"
+    assert document["source"] == "upload"
+
+
 def test_empty_parse_failure_does_not_delete_existing_text_chunks(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     source_path = tmp_path / "empty.txt"

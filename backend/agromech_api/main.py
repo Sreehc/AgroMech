@@ -19,6 +19,7 @@ from agromech_api.errors import register_error_handlers
 from agromech_api.image_qa import register_image_qa_routes
 from agromech_api.infrastructure import DependencyCheck, check_infrastructure
 from agromech_api.retrieval_traces import register_retrieval_trace_routes
+from agromech_api.task_queue import build_task_publisher
 from agromech_api.text_qa import register_text_qa_routes
 
 
@@ -37,6 +38,7 @@ def create_app(
     dependency_checker=None,
     settings: Settings | None = None,
     database_engine: Engine | None = None,
+    task_publisher=None,
 ) -> FastAPI:
     settings = settings or get_settings()
     database_engine = database_engine or get_engine()
@@ -44,7 +46,8 @@ def create_app(
     app.state.settings = settings
     app.state.database_engine = database_engine
     register_error_handlers(app)
-    register_document_routes(app, settings=settings, engine=database_engine)
+    task_publisher = task_publisher or build_task_publisher(settings)
+    register_document_routes(app, settings=settings, engine=database_engine, task_publisher=task_publisher)
     register_chat_session_routes(app, engine=database_engine)
     register_retrieval_trace_routes(app, engine=database_engine)
     register_text_qa_routes(app, settings=settings, engine=database_engine)

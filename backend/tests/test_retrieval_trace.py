@@ -42,12 +42,20 @@ def auth_header(token: str) -> dict[str, str]:
 def test_retrieve_with_trace_logs_query_filters_channels_rerank_and_final_evidence(tmp_path: Path) -> None:
     engine = create_test_engine(tmp_path)
     seed_retrieval_corpus(engine)
+    settings = Settings(
+        _env_file=None,
+        bailian_api_key="test-key",
+        bailian_base_url="https://bailian.example",
+        graph_backend="neo4j",
+        vector_backend="zvec",
+    )
 
     result = hybrid_retrieve_with_trace(
         engine,
         "M7040 E01 hydraulic repair",
         trace_id="trace-rerank",
         degraded_channels={"graph": "neo4j timeout"},
+        settings=settings,
     )
 
     assert result["trace_id"] == "trace-rerank"

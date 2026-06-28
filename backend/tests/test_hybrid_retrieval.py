@@ -3,7 +3,6 @@ from sqlalchemy import create_engine, insert, select
 from agromech_api.db.enums import ChunkType, DocumentStatus
 from agromech_api.db.models import document_chunks, documents, metadata, retrieval_logs
 from agromech_api.entity_extraction import process_document_entities
-from agromech_api.graph_rag import GraphRagService
 from agromech_api.hybrid_retrieval import CHANNEL_WEIGHTS, add_candidate, hybrid_retrieve, hybrid_retrieve_with_trace
 from agromech_api.rerank import RerankError
 from agromech_api.search_indexing import SearchIndexer
@@ -103,7 +102,6 @@ def seed_retrieval_corpus(engine) -> None:
         )
     for document_id in ["doc-m7040", "doc-l3901", "doc-image"]:
         process_document_entities(engine, document_id)
-        GraphRagService(engine).sync_document(document_id)
         SearchIndexer(engine).index_document(document_id)
 
 
@@ -115,7 +113,8 @@ def test_hybrid_retrieval_merges_channels_and_deduplicates_candidates(tmp_path) 
 
     assert result["status"] == "ok"
     m7040 = next(candidate for candidate in result["candidates"] if candidate["chunk_id"] == "chunk-m7040")
-    assert set(m7040["channels"]) >= {"keyword", "vector", "structured", "graph"}
+    assert set(m7040["channels"]) >= {"keyword", "vector", "structured"}
+    assert "graph" not in m7040["channels"]
     assert len([candidate for candidate in result["candidates"] if candidate["chunk_id"] == "chunk-m7040"]) == 1
 
 
@@ -124,12 +123,12 @@ def test_candidate_merge_keeps_highest_score_per_channel_without_double_counting
     seed_retrieval_corpus(engine)
     candidates: dict[str, dict[str, object]] = {}
 
-    add_candidate(engine, candidates, "chunk-m7040", "graph", 0.4)
-    add_candidate(engine, candidates, "chunk-m7040", "graph", 0.9)
+    add_candidate(engine, candidates, "chunk-m7040", "keyword", 0.4)
+    add_candidate(engine, candidates, "chunk-m7040", "keyword", 0.9)
 
     candidate = candidates["chunk-m7040"]
-    assert candidate["channels"] == ["graph"]
-    assert candidate["score"] == 0.9 * CHANNEL_WEIGHTS["graph"]
+    assert candidate["channels"] == ["keyword"]
+    assert candidate["score"] == 0.9 * CHANNEL_WEIGHTS["keyword"]
 
 
 def test_hybrid_retrieval_marks_unrelated_model_candidates_not_applicable(tmp_path) -> None:
@@ -184,7 +183,7 @@ class FailingGraphSearchService:
         raise RuntimeError("neo4j unavailable")
 
 
-def test_hybrid_retrieval_records_graph_degraded_when_graph_search_fails(tmp_path) -> None:
+def test_hybrid_retrieval_ignores_graph_service_when_graph_is_disabled(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     seed_retrieval_corpus(engine)
 
@@ -200,7 +199,7 @@ def test_hybrid_retrieval_records_graph_degraded_when_graph_search_fails(tmp_pat
         log = connection.execute(
             select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-graph-degraded")
         ).mappings().one()
-    assert {"channel": "graph", "reason": "graph_degraded"} in log["channels"]["degraded"]
+    assert log["channels"]["degraded"] == []
 
 
 class UnsourcedGraphSearchService:

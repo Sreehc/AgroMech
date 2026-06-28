@@ -90,6 +90,8 @@ def test_image_qa_returns_visual_observation_detected_entities_answer_and_citati
     assert model_annotation["bbox"]["y"] + model_annotation["bbox"]["height"] <= 1
     assert payload["answer"]
     assert payload["citations"][0]["document_id"] == "doc-m7040"
+    assert payload["agent_trace"][0]["step"] == "route"
+    assert payload["agent_trace"][0]["decision"] == "text_visual"
 
 
 def test_image_qa_forwards_context_filters_to_retrieval_query(tmp_path: Path) -> None:
@@ -122,6 +124,23 @@ def test_image_qa_forwards_context_filters_to_retrieval_query(tmp_path: Path) ->
         "document_type": "manual",
         "language": "zh-CN",
     }
+
+
+def test_image_qa_routes_text_visual_even_when_question_has_no_visual_words(tmp_path: Path) -> None:
+    client, engine, token = image_qa_client(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    response = client.post(
+        "/qa/image",
+        headers=auth_header(token, "trace-image-route"),
+        data={"question": "E01 怎么排查？"},
+        files={"image": ("m7040-hydraulic-e01.png", b"fake-image", "image/png")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_trace"][0]["decision"] == "text_visual"
+    assert payload["agent_trace"][0]["reason"] == "visual input is present"
 
 
 def test_visual_search_query_includes_ocr_description_and_detected_entities() -> None:

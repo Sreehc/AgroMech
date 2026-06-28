@@ -6,6 +6,7 @@ from fastapi import Depends, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import Engine, insert, or_, select, update
 
+from agromech_api.agent_controller import AgentController
 from agromech_api.auth import UserContext, require_roles
 from agromech_api.answer_generation import AnswerGenerationError, build_answer_generator
 from agromech_api.config import Settings, get_settings
@@ -62,6 +63,7 @@ def answer_text_question(
     settings: Settings | None = None,
     username: str | None = None,
     session_id: str | None = None,
+    image_context: dict[str, object] | None = None,
 ) -> dict[str, object]:
     normalized_question = validate_question(question)
     normalized_filters = {key: value for key, value in (filters or {}).items() if value is not None}
@@ -82,8 +84,49 @@ def answer_text_question(
             )
         return payload
 
-    search_query = query_with_filters(normalized_question, filters or {})
     settings = settings or get_settings()
+    controller = build_text_agent_controller(settings)
+    payload = controller.answer_text(
+        engine=engine,
+        question=normalized_question,
+        trace_id=trace_id,
+        filters=normalized_filters,
+        image_context=image_context,
+    )
+    record_qa(engine, question=normalized_question, payload=payload)
+    if session_id and username:
+        append_text_session_exchange(
+            engine,
+            username=username,
+            session_id=session_id,
+            question=normalized_question,
+            filters=normalized_filters,
+            payload=payload,
+        )
+    return payload
+
+
+def build_text_agent_controller(settings: Settings) -> AgentController:
+    return AgentController(
+        parse_query_fn=lambda question, engine=None: parse_query(
+            query_with_filters(question, {}),
+            engine=engine,
+        ),
+        retrieve_fn=lambda **kwargs: retrieve_for_text_agent(settings=settings, **kwargs),
+        answer_fn=lambda **kwargs: answer_for_text_agent(settings=settings, **kwargs),
+    )
+
+
+def retrieve_for_text_agent(
+    *,
+    settings: Settings,
+    engine: Engine,
+    question: str,
+    filters: dict[str, str | None],
+    trace_id: str,
+    **_kwargs,
+) -> dict[str, object]:
+    search_query = query_with_filters(question, filters)
     vector_store = None
     embedding_provider = None
     vector_collection = None
@@ -96,10 +139,8 @@ def answer_text_question(
         vector_store = build_vector_store(settings)
         embedding_provider = build_embedding_provider(settings)
         vector_collection = settings.zvec_collection
-    if settings.graph_backend == "neo4j":
-        from agromech_api.graph_rag import build_graph_service
-
-        graph_service = build_graph_service(engine, settings)
+    # Graph RAG is currently out of scope for the main QA path, even when
+    # experimental graph settings are present.
     if settings.rerank_enabled:
         from agromech_api.rerank import build_rerank_provider
 
@@ -108,8 +149,8 @@ def answer_text_question(
         engine,
         search_query,
         trace_id=trace_id,
-        logged_query=normalized_question,
-        filters=normalized_filters,
+        logged_query=question,
+        filters={key: value for key, value in filters.items() if value is not None},
         vector_store=vector_store,
         vector_collection=vector_collection,
         embedding_provider=embedding_provider,
@@ -118,38 +159,35 @@ def answer_text_question(
         rerank_top_k=settings.rerank_top_k,
         settings=settings,
     )
-    if retrieval["status"] == "evidence_insufficient":
-        payload = evidence_insufficient_answer(trace_id)
-        record_qa(engine, question=normalized_question, payload=payload)
-        if session_id and username:
-            append_text_session_exchange(
-                engine,
-                username=username,
-                session_id=session_id,
-                question=normalized_question,
-                filters=normalized_filters,
-                payload=payload,
-            )
-        return payload
+    if retrieval.get("status") == "ok":
+        final_evidence = list(retrieval.get("final_evidence", []))[: settings.final_evidence_limit]
+        retrieval["final_evidence"] = final_evidence
+        retrieval["citations"] = build_citations(engine, final_evidence)
+    return retrieval
 
-    final_evidence = retrieval["final_evidence"][: settings.final_evidence_limit]
+
+def answer_for_text_agent(
+    *,
+    settings: Settings,
+    engine: Engine,
+    question: str,
+    trace_id: str,
+    filters: dict[str, str | None],
+    retrieval: dict[str, object],
+    final_evidence: list[dict[str, object]],
+    **_kwargs,
+) -> dict[str, object]:
+    if retrieval["status"] == "evidence_insufficient":
+        return evidence_insufficient_answer(trace_id)
+
+    final_evidence = final_evidence[: settings.final_evidence_limit]
     retrieval["final_evidence"] = final_evidence
     trim_retrieval_final_evidence(engine, trace_id=trace_id, final_evidence=final_evidence)
     citations = build_citations(engine, final_evidence)
     if not citations:
-        payload = evidence_insufficient_answer(trace_id)
-        record_qa(engine, question=normalized_question, payload=payload)
-        if session_id and username:
-            append_text_session_exchange(
-                engine,
-                username=username,
-                session_id=session_id,
-                question=normalized_question,
-                filters=normalized_filters,
-                payload=payload,
-            )
-        return payload
+        return evidence_insufficient_answer(trace_id)
 
+    search_query = query_with_filters(question, filters)
     parsed = parse_query(search_query, engine=engine)
     safety_warnings = [SAFETY_WARNING] if parsed.safety_sensitive or evidence_is_safety_sensitive(citations) else []
     uncertainty = uncertainty_payload(parsed.scope_uncertain, citations)
@@ -157,7 +195,7 @@ def answer_text_question(
     if answer_generator is not None:
         try:
             generated = answer_generator.generate(
-                question=normalized_question,
+                question=question,
                 citations=citations,
                 safety_warnings=safety_warnings,
                 uncertainty=uncertainty,
@@ -193,16 +231,6 @@ def answer_text_question(
         "uncertainty": uncertainty,
         "safety_warnings": safety_warnings,
     }
-    record_qa(engine, question=normalized_question, payload=payload)
-    if session_id and username:
-        append_text_session_exchange(
-            engine,
-            username=username,
-            session_id=session_id,
-            question=normalized_question,
-            filters=normalized_filters,
-            payload=payload,
-        )
     return payload
 
 

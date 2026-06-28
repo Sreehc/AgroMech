@@ -77,6 +77,8 @@ def test_text_qa_returns_answer_sections_citations_trace_and_persists_records(tm
     assert payload["citations"][0]["accessible"] is True
     assert payload["uncertainty"]["level"] in {"low", "medium"}
     assert payload["safety_warnings"]
+    assert payload["agent_trace"][0]["step"] == "route"
+    assert payload["agent_trace"][0]["decision"] == "text_only"
 
     with engine.connect() as connection:
         qa_record = connection.execute(select(qa_records)).mappings().one()
@@ -483,6 +485,34 @@ def test_text_qa_uses_bailian_answer_generator_when_configured(tmp_path: Path, m
     assert payload["answer"] == "根据手册，先检查液压油位和液压泵压力。"
     assert payload["sections"]["conclusion"] == "先检查液压油位和液压泵压力。"
     assert payload["citations"][0]["chunk_id"] == "chunk-m7040"
+
+
+def test_text_qa_does_not_initialize_graph_service_when_graph_is_out_of_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = qa_settings(tmp_path)
+    settings.graph_backend = "neo4j"
+    settings.neo4j_uri = "bolt://neo4j.example:7687"
+
+    def fail_build_graph_service(*_args, **_kwargs):
+        raise AssertionError("graph service should not be initialized")
+
+    monkeypatch.setattr("agromech_api.graph_rag.build_graph_service", fail_build_graph_service)
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
+    metadata.create_all(engine)
+    seed_retrieval_corpus(engine)
+    token = create_access_token(username=UserRole.USER.value, role=UserRole.USER, settings=settings)
+    client = TestClient(create_app(settings=settings, database_engine=engine))
+
+    response = client.post(
+        "/qa/text",
+        headers=auth_header(token, "trace-no-graph-service"),
+        json={"question": "M7040 E01 hydraulic pump repair"},
+    )
+
+    assert response.status_code == 200
 
 
 def test_text_qa_returns_readable_error_when_bailian_answer_generation_fails(
