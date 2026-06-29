@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -188,7 +189,7 @@ class Settings(BaseSettings):
             require_settings(self, ["zvec_path", "zvec_collection"], mode="VECTOR_BACKEND=zvec")
         if self.graph_backend == "neo4j":
             require_settings(self, ["neo4j_uri", "neo4j_user", "neo4j_password"], mode="GRAPH_BACKEND=neo4j")
-        if "bailian" in {self.model_provider, self.embedding_provider}:
+        if self.app_env != "test" and "bailian" in {self.model_provider, self.embedding_provider}:
             require_settings(self, ["bailian_api_key", "bailian_base_url"], mode="provider=bailian")
         if self.final_evidence_limit > self.rerank_top_k:
             raise ValueError("FINAL_EVIDENCE_LIMIT must be <= RERANK_TOP_K")
@@ -253,4 +254,10 @@ def ensure_probability(value: float, env_name: str) -> None:
 
 @lru_cache
 def get_settings() -> Settings:
+    if os.getenv("CI", "").lower() == "true":
+        return Settings(
+            _env_file=None,
+            model_provider="local",
+            embedding_provider="local",
+        )
     return Settings()

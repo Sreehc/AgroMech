@@ -61,6 +61,19 @@ def test_bailian_provider_requires_api_key() -> None:
         local_settings(model_provider="bailian", bailian_api_key="", bailian_base_url="")
 
 
+def test_get_settings_uses_local_backends_in_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agromech_api.config import get_settings
+
+    monkeypatch.setenv("CI", "true")
+    get_settings.cache_clear()
+
+    settings = get_settings()
+
+    assert settings.model_provider == "local"
+    assert settings.embedding_provider == "local"
+    assert settings.bailian_api_key == ""
+
+
 def test_neo4j_connection_settings_are_always_required() -> None:
     # neo4j_uri/user/password are enforced unconditionally by the field validator.
     with pytest.raises(ValueError, match="NEO4J_PASSWORD is required"):
