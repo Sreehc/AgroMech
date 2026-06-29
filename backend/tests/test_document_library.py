@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert, select
 
-from agromech_api.auth import create_access_token
+from auth_helpers import auth_token_for_user
 from agromech_api.config import Settings
 from agromech_api.db.enums import AssetType, ChunkType, DocumentStatus, IngestTaskStatus, TaskType, UserRole
 from agromech_api.db.models import answer_citations, chunk_search_index, document_assets, document_chunks, documents, ingest_tasks, metadata, qa_records
@@ -14,8 +14,6 @@ from agromech_api.task_queue import InMemoryTaskPublisher
 
 def library_settings(tmp_path: Path) -> Settings:
     return Settings(
-        admin_username="admin",
-        admin_password="secret",
         auth_token_secret="test-secret",
         local_file_storage_path=str(tmp_path / "files"),
     )
@@ -30,7 +28,7 @@ def library_client(
     settings = library_settings(tmp_path)
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
-    token = create_access_token(username=role.value, role=role, settings=settings)
+    token = auth_token_for_user(engine, settings, username=role.value, role=role)
     return TestClient(
         create_app(settings=settings, database_engine=engine, task_publisher=task_publisher)
     ), engine, token

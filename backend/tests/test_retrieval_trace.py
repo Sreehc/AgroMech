@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert, select
 
-from agromech_api.auth import create_access_token
+from auth_helpers import auth_token_for_user
 from agromech_api.config import Settings
 from agromech_api.db.enums import UserRole
 from agromech_api.db.models import metadata, retrieval_logs
@@ -15,8 +15,6 @@ from test_hybrid_retrieval import create_test_engine, seed_retrieval_corpus
 
 def trace_settings(tmp_path: Path) -> Settings:
     return Settings(
-        admin_username="admin",
-        admin_password="secret",
         auth_token_secret="test-secret",
         local_file_storage_path=str(tmp_path / "files"),
         graph_backend="local",
@@ -31,7 +29,7 @@ def trace_client(tmp_path: Path, role: UserRole = UserRole.EVALUATOR) -> tuple[T
     settings = trace_settings(tmp_path)
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
-    token = create_access_token(username=role.value, role=role, settings=settings)
+    token = auth_token_for_user(engine, settings, username=role.value, role=role)
     return TestClient(create_app(settings=settings, database_engine=engine)), engine, token
 
 
@@ -127,7 +125,7 @@ def test_text_qa_trace_records_original_question_filters_and_model_config(tmp_pa
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
     seed_retrieval_corpus(engine)
-    token = create_access_token(username=UserRole.USER.value, role=UserRole.USER, settings=settings)
+    token = auth_token_for_user(engine, settings, username=UserRole.USER.value, role=UserRole.USER)
     client = TestClient(create_app(settings=settings, database_engine=engine))
 
     response = client.post(

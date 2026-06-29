@@ -14,5 +14,7 @@ describe("session helpers", () => {
     expect(source).toContain("export function saveReturnToPath");
     expect(source).toContain("export function loadReturnToPath");
     expect(source).toContain("export function clearReturnToPath");
+    expect(source).toContain('export const SESSION_CHANGE_EVENT = "agromech.session.change"');
+    expect(source).toContain("window.dispatchEvent(new Event(SESSION_CHANGE_EVENT))");
   });
 });

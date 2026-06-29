@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createAgroMechChatTransport,
   createAgroMechPayloadDataPart,
   extractAgroMechRequest,
   formatAgroMechAnswer,
@@ -247,4 +248,147 @@ describe("agromech chat adapter", () => {
       reasons: ["evidence_insufficient"],
     });
   });
+
+  it("directly sends text questions to the backend QA endpoint", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    globalThis.fetch = (async (input, init) => {
+      requests.push({ input, init });
+      return new Response(
+        JSON.stringify({
+          answer: "根据资料检查液压泵压力。",
+          citations: [],
+          trace_id: "trace-direct",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    try {
+      const stream = await createAgroMechChatTransport({
+        token: "browser-token",
+        filters: { brand: " Kubota ", model: "M7040" },
+        sessionId: "session-direct",
+      }).sendMessages({
+        trigger: "submit-message",
+        chatId: "chat-1",
+        messageId: undefined,
+        messages: [
+          {
+            id: "m1",
+            role: "user",
+            parts: [{ type: "text", text: "E01 怎么排查？" }],
+          },
+        ],
+        abortSignal: undefined,
+      });
+
+      const chunks = await readChunks(stream);
+
+      expect(String(requests[0].input)).toBe("/backend/qa/text");
+      expect(requests[0].init?.headers).toEqual(
+        expect.objectContaining({
+          Authorization: "Bearer browser-token",
+          "Content-Type": "application/json",
+        }),
+      );
+      expect(JSON.parse(String(requests[0].init?.body))).toEqual({
+        question: "E01 怎么排查？",
+        filters: { brand: "Kubota", model: "M7040" },
+        session_id: "session-direct",
+      });
+      expect(chunks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "data-agromech-payload" }),
+          expect.objectContaining({ type: "text-delta", delta: "根据资料检查液压泵压力。" }),
+          expect.objectContaining({ type: "finish", finishReason: "stop" }),
+        ]),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("directly sends image questions to the backend image QA endpoint", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    globalThis.fetch = (async (input, init) => {
+      requests.push({ input, init });
+      if (String(input).startsWith("data:image/png")) {
+        return new Response(new Blob(["fake-image"], { type: "image/png" }));
+      }
+      return new Response(
+        JSON.stringify({
+          answer: "图片显示 E01 告警。",
+          citations: [],
+          trace_id: "trace-image-direct",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    try {
+      await createAgroMechChatTransport({ token: "browser-token" }).sendMessages({
+        trigger: "submit-message",
+        chatId: "chat-1",
+        messageId: undefined,
+        messages: [
+          {
+            id: "m1",
+            role: "user",
+            parts: [
+              { type: "text", text: "这张图怎么处理？" },
+              {
+                type: "file",
+                mediaType: "image/png",
+                filename: "dashboard.png",
+                url: "data:image/png;base64,aGVsbG8=",
+              },
+            ],
+          },
+        ],
+        abortSignal: undefined,
+      });
+
+      const qaRequest = requests.find((request) => String(request.input) === "/backend/qa/image");
+      expect(qaRequest).toBeDefined();
+      expect(qaRequest?.init?.headers).toEqual(
+        expect.objectContaining({ Authorization: "Bearer browser-token" }),
+      );
+      const formData = qaRequest?.init?.body as FormData;
+      expect(formData.get("question")).toBe("这张图怎么处理？");
+      expect(formData.get("image")).toBeInstanceOf(Blob);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects direct chat requests without a token", async () => {
+    await expect(
+      createAgroMechChatTransport({}).sendMessages({
+        trigger: "submit-message",
+        chatId: "chat-1",
+        messageId: undefined,
+        messages: [
+          {
+            id: "m1",
+            role: "user",
+            parts: [{ type: "text", text: "E01 怎么排查？" }],
+          },
+        ],
+        abortSignal: undefined,
+      }),
+    ).rejects.toThrow("Authentication required");
+  });
 });
+
+async function readChunks(stream: ReadableStream) {
+  const reader = stream.getReader();
+  const chunks: unknown[] = [];
+  while (true) {
+    const result = await reader.read();
+    if (result.done) break;
+    chunks.push(result.value);
+  }
+  return chunks;
+}

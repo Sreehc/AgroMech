@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import create_engine, insert, select
 
-from agromech_api.auth import create_access_token
+from auth_helpers import auth_token_for_user
 from agromech_api.config import Settings
 from agromech_api.db.enums import UserRole
 from agromech_api.db.models import chat_sessions, metadata, qa_messages, retrieval_logs
@@ -15,8 +15,6 @@ from test_hybrid_retrieval import seed_retrieval_corpus
 
 def image_qa_settings(tmp_path: Path) -> Settings:
     return Settings(
-        admin_username="admin",
-        admin_password="secret",
         auth_token_secret="test-secret",
         local_file_storage_path=str(tmp_path / "files"),
         graph_backend="local",
@@ -31,7 +29,7 @@ def image_qa_client(tmp_path: Path, role: UserRole = UserRole.USER, username: st
     settings = image_qa_settings(tmp_path)
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
-    token = create_access_token(username=username or role.value, role=role, settings=settings)
+    token = auth_token_for_user(engine, settings, username=username or role.value, role=role)
     return TestClient(create_app(settings=settings, database_engine=engine)), engine, token
 
 

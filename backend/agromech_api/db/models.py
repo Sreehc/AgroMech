@@ -22,7 +22,7 @@ from sqlalchemy import (
     true,
 )
 
-from agromech_api.db.enums import AssetType, ChunkType, DocumentStatus, IngestTaskStatus, TaskType
+from agromech_api.db.enums import AssetType, ChunkType, DocumentStatus, IngestTaskStatus, TaskType, UserRole
 
 
 metadata = MetaData(
@@ -70,6 +70,42 @@ documents = Table(
 Index("ix_documents_status", documents.c.status)
 Index("ix_documents_brand_model", documents.c.brand, documents.c.model)
 Index("ix_documents_file_hash", documents.c.file_hash)
+
+users = Table(
+    "users",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("username", String(120), nullable=False),
+    Column("password_hash", String(255), nullable=False),
+    Column("role", String(32), nullable=False),
+    Column("status", String(32), nullable=False, default="active"),
+    Column("display_name", String(255)),
+    Column("last_login_at", DateTime(timezone=True)),
+    Column("password_changed_at", DateTime(timezone=True)),
+    Column("token_version", Integer, nullable=False, default=1, server_default=text("1")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint(enum_check("role", UserRole), name="user_role"),
+    CheckConstraint("status IN ('active', 'disabled')", name="user_status"),
+)
+Index("ix_users_username", users.c.username, unique=True)
+Index("ix_users_role_status", users.c.role, users.c.status)
+
+auth_audit_logs = Table(
+    "auth_audit_logs",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("user_id", ForeignKey("users.id", ondelete="SET NULL")),
+    Column("username", String(120), nullable=False),
+    Column("event_type", String(80), nullable=False),
+    Column("success", Boolean, nullable=False),
+    Column("ip_address", String(80)),
+    Column("user_agent", String(255)),
+    Column("metadata", JSON),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+Index("ix_auth_audit_logs_user_id_created_at", auth_audit_logs.c.user_id, auth_audit_logs.c.created_at)
+Index("ix_auth_audit_logs_username_created_at", auth_audit_logs.c.username, auth_audit_logs.c.created_at)
 
 document_assets = Table(
     "document_assets",

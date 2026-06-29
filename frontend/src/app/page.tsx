@@ -25,11 +25,14 @@ export default function Home() {
         }
         onEvidenceClose={() => setSelectedEvidence(null)}
       >
-        <Assistant
-          sessionId={activeSessionId ?? undefined}
-          filters={activeFilters}
-          onCitationSelect={setSelectedEvidence}
-        />
+        {(session) => (
+          <Assistant
+            sessionId={activeSessionId ?? undefined}
+            token={session?.token}
+            filters={activeFilters}
+            onCitationSelect={setSelectedEvidence}
+          />
+        )}
       </AssistantWorkbench>
     </AppFrame>
   );

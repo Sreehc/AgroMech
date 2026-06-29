@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert, select
 
-from agromech_api.auth import create_access_token
+from auth_helpers import auth_token_for_user
 from agromech_api.config import Settings
 from agromech_api.db.enums import UserRole
 from agromech_api.db.models import chat_sessions, metadata
@@ -13,8 +13,6 @@ from agromech_api.main import create_app
 
 def session_settings(tmp_path: Path) -> Settings:
     return Settings(
-        admin_username="admin",
-        admin_password="secret",
         auth_token_secret="test-secret",
         local_file_storage_path=str(tmp_path / "files"),
     )
@@ -24,7 +22,7 @@ def session_client(tmp_path: Path, *, username: str = "admin", role: UserRole = 
     settings = session_settings(tmp_path)
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
-    token = create_access_token(username=username, role=role, settings=settings)
+    token = auth_token_for_user(engine, settings, username=username, role=role)
     return TestClient(create_app(settings=settings, database_engine=engine)), engine, token
 
 

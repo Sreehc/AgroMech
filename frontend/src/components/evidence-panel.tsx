@@ -240,7 +240,7 @@ function PanelHeader({ onClose }: { onClose?: () => void }) {
 
 function CitationDetail({ citation }: { citation: AgroMechCitation }) {
   const detailHref = citation.document_id
-    ? `/library/${citation.document_id}`
+    ? `/library/document?id=${encodeURIComponent(citation.document_id)}`
     : undefined;
 
   return (

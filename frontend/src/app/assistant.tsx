@@ -1,16 +1,18 @@
 "use client";
 
 import { AssistantRuntimeProvider, makeAssistantDataUI } from "@assistant-ui/react";
-import {
-  useChatRuntime,
-  AssistantChatTransport,
-} from "@assistant-ui/react-ai-sdk";
+import { useChatRuntime } from "@assistant-ui/react-ai-sdk";
 import { lastAssistantMessageIsCompleteWithToolCalls } from "ai";
 import { createContext, useContext, useMemo } from "react";
 
 import { Thread } from "@/components/assistant-ui/thread";
 import { StructuredAnswerCard } from "@/components/structured-answer-card";
-import type { AgroMechContextFilters, AgroMechEvidenceSelection, AgroMechStructuredPayload } from "@/lib/agromech-chat";
+import {
+  createAgroMechChatTransport,
+  type AgroMechContextFilters,
+  type AgroMechEvidenceSelection,
+  type AgroMechStructuredPayload,
+} from "@/lib/agromech-chat";
 
 const CitationSelectionContext = createContext<((selection: AgroMechEvidenceSelection) => void) | undefined>(undefined);
 
@@ -32,33 +34,23 @@ const AgroMechPayloadDataUI = makeAssistantDataUI<AgroMechStructuredPayload>({
 
 export const Assistant = ({
   sessionId,
+  token,
   filters,
   onCitationSelect,
 }: {
   sessionId?: string;
+  token?: string;
   filters?: AgroMechContextFilters;
   onCitationSelect?: (selection: AgroMechEvidenceSelection) => void;
 }) => {
   const transport = useMemo(
     () =>
-      new AssistantChatTransport({
-        api: "/api/chat",
-        prepareSendMessagesRequest: async (options) => {
-          return {
-            body: {
-              ...options.body,
-              id: options.id,
-              messages: options.messages,
-              trigger: options.trigger,
-              messageId: options.messageId,
-              metadata: options.requestMetadata,
-              filters: filters ?? {},
-              ...(sessionId ? { session_id: sessionId } : {}),
-            },
-          };
-        },
+      createAgroMechChatTransport({
+        token,
+        filters: filters ?? {},
+        sessionId,
       }),
-    [filters, sessionId],
+    [filters, sessionId, token],
   );
   const runtime = useChatRuntime({
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,

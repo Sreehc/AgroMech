@@ -139,6 +139,7 @@ API：
 
 ```bash
 .venv/bin/python -m alembic upgrade head
+.venv/bin/python scripts/create-user.py --username admin --role admin --display-name "Administrator"
 .venv/bin/python -m uvicorn agromech_api.main:app --app-dir backend --host 0.0.0.0 --port 8000
 ```
 
@@ -155,9 +156,11 @@ Frontend：
 npm run dev --prefix frontend
 ```
 
+前端使用 Next 静态导出。登录页和业务请求通过 `/backend/*` 调用 FastAPI；宿主 Nginx 负责把 `/backend/` 反代到 API 容器。聊天不依赖 Next `/api/chat`，浏览器直接调用 `/backend/qa/text` 或 `/backend/qa/image`。
+
 ## 8. 关键配置
 
-- `AUTH_MODE=single_admin|static_roles`
+- `AUTH_TOKEN_SECRET`
 - `FILE_STORAGE_BACKEND=local|oss`
 - `RABBITMQ_PUBLISH_ENABLED=false|true`
 - `RABBITMQ_URL`
@@ -169,6 +172,8 @@ npm run dev --prefix frontend
 - `RERANK_ENABLED=true`
 - `FINAL_EVIDENCE_LIMIT=5`
 - `MAX_IMAGES_PER_QUESTION=1`
+
+认证读取数据库 `users` 表；`AUTH_TOKEN_SECRET` 只用于 token 签名。旧的 `AUTH_MODE`、`ADMIN_USERNAME`、`ADMIN_PASSWORD` 等静态账号环境变量不再参与运行时登录。
 
 ## 9. 运维检查
 

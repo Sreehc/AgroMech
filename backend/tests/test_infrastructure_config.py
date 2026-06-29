@@ -73,31 +73,19 @@ def test_embedding_retry_backoff_parses_to_floats() -> None:
     assert settings.embedding_retry_backoff == [1.0, 2.0, 4.0]
 
 
-def test_static_roles_auth_mode_requires_all_configured_credentials() -> None:
-    with pytest.raises(ValueError, match="USER_USERNAME, USER_PASSWORD required when AUTH_MODE=static_roles"):
-        local_settings(
-            auth_mode="static_roles",
-            maintainer_username="maintainer",
-            maintainer_password="maint-secret",
-            evaluator_username="evaluator",
-            evaluator_password="eval-secret",
-            user_username="",
-            user_password="",
-        )
+def test_unknown_legacy_environment_values_are_ignored() -> None:
+    settings = local_settings(
+        legacy_username="admin",
+        legacy_password="",
+    )
+
+    assert not hasattr(settings, "legacy_username")
+    assert not hasattr(settings, "legacy_password")
 
 
-def test_static_roles_auth_mode_requires_unique_usernames() -> None:
-    with pytest.raises(ValueError, match="AUTH role usernames must be unique"):
-        local_settings(
-            auth_mode="static_roles",
-            admin_username="shared",
-            maintainer_username="shared",
-            maintainer_password="maint-secret",
-            evaluator_username="evaluator",
-            evaluator_password="eval-secret",
-            user_username="operator",
-            user_password="user-secret",
-        )
+def test_auth_token_secret_remains_required_for_database_auth() -> None:
+    with pytest.raises(ValueError, match="AUTH_TOKEN_SECRET is required"):
+        local_settings(auth_token_secret="")
 
 
 def test_rerank_final_evidence_limit_cannot_exceed_top_k() -> None:

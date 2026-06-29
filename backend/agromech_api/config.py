@@ -13,23 +13,12 @@ class Settings(BaseSettings):
     worker_concurrency: int = 1
 
     # Auth and permissions
-    auth_mode: str = "single_admin"
-    admin_username: str = "admin"
-    admin_password: str = "change-me"
-    maintainer_username: str = ""
-    maintainer_password: str = ""
-    user_username: str = ""
-    user_password: str = ""
-    evaluator_username: str = ""
-    evaluator_password: str = ""
     auth_token_secret: str = "change-me"
     session_ttl_minutes: int = 720
 
     # Next.js frontend server-side adapter (consumed by the frontend, loaded here
     # so a single .env stays the source of truth and nothing is silently dropped).
     agromech_api_base_url: str = "http://127.0.0.1:8000"
-    agromech_admin_username: str = "admin"
-    agromech_admin_password: str = "change-me"
 
     # Upload limits
     upload_max_file_size_mb: int = 100
@@ -172,9 +161,6 @@ class Settings(BaseSettings):
         "neo4j_user",
         "neo4j_password",
         "local_file_storage_path",
-        "auth_mode",
-        "admin_username",
-        "admin_password",
         "auth_token_secret",
     )
     @classmethod
@@ -198,33 +184,6 @@ class Settings(BaseSettings):
                 ["oss_access_key_id", "oss_access_key_secret", "oss_bucket", "oss_endpoint"],
                 mode="FILE_STORAGE_BACKEND=oss",
             )
-        if self.auth_mode == "single_admin":
-            require_settings(self, ["admin_username", "admin_password"], mode="AUTH_MODE=single_admin")
-        elif self.auth_mode == "static_roles":
-            require_settings(
-                self,
-                [
-                    "admin_username",
-                    "admin_password",
-                    "maintainer_username",
-                    "maintainer_password",
-                    "user_username",
-                    "user_password",
-                    "evaluator_username",
-                    "evaluator_password",
-                ],
-                mode="AUTH_MODE=static_roles",
-            )
-            usernames = {
-                self.admin_username.strip(),
-                self.maintainer_username.strip(),
-                self.user_username.strip(),
-                self.evaluator_username.strip(),
-            }
-            if len(usernames) != 4:
-                raise ValueError("AUTH role usernames must be unique")
-        else:
-            raise ValueError("AUTH_MODE must be one of: single_admin, static_roles")
         if self.vector_backend == "zvec":
             require_settings(self, ["zvec_path", "zvec_collection"], mode="VECTOR_BACKEND=zvec")
         if self.graph_backend == "neo4j":

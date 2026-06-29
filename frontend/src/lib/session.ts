@@ -4,6 +4,7 @@ import type { UserRole } from "./frontend-api";
 
 export const SESSION_KEY = "agromech.session";
 export const RETURN_TO_KEY = "agromech.return_to";
+export const SESSION_CHANGE_EVENT = "agromech.session.change";
 
 export type Session = {
   token: string;
@@ -29,10 +30,12 @@ export function loadSession(): Session | null {
 
 export function saveSession(session: Session): void {
   window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  window.dispatchEvent(new Event(SESSION_CHANGE_EVENT));
 }
 
 export function clearSession(): void {
   window.localStorage.removeItem(SESSION_KEY);
+  window.dispatchEvent(new Event(SESSION_CHANGE_EVENT));
 }
 
 export function saveReturnToPath(path: string): void {

@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert, select
 
-from agromech_api.auth import create_access_token
+from auth_helpers import auth_token_for_user
 from agromech_api.answer_generation import AnswerGenerationError
 from agromech_api.config import Settings
 from agromech_api.db.enums import ChunkType, DocumentStatus, UserRole
@@ -17,8 +17,6 @@ from test_hybrid_retrieval import seed_retrieval_corpus
 
 def qa_settings(tmp_path: Path) -> Settings:
     return Settings(
-        admin_username="admin",
-        admin_password="secret",
         auth_token_secret="test-secret",
         local_file_storage_path=str(tmp_path / "files"),
         graph_backend="local",
@@ -33,7 +31,7 @@ def qa_client(tmp_path: Path, role: UserRole = UserRole.USER, username: str | No
     settings = qa_settings(tmp_path)
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
-    token = create_access_token(username=username or role.value, role=role, settings=settings)
+    token = auth_token_for_user(engine, settings, username=username or role.value, role=role)
     return TestClient(create_app(settings=settings, database_engine=engine)), engine, token
 
 
@@ -217,7 +215,7 @@ def test_text_qa_uses_configured_zvec_vector_search(tmp_path: Path) -> None:
     store = ZvecVectorStore.from_path(tmp_path / "zvec", expected_dimension=256)
     for document_id in ["doc-m7040", "doc-l3901", "doc-image"]:
         SearchIndexer(engine, vector_store=store, collection="agromech_chunks").index_document(document_id)
-    token = create_access_token(username=UserRole.USER.value, role=UserRole.USER, settings=settings)
+    token = auth_token_for_user(engine, settings, username=UserRole.USER.value, role=UserRole.USER)
     client = TestClient(create_app(settings=settings, database_engine=engine))
 
     response = client.post(
@@ -423,7 +421,7 @@ def test_text_qa_limits_final_evidence_and_citations_to_configured_count(tmp_pat
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
     seed_retrieval_corpus(engine)
-    token = create_access_token(username=UserRole.USER.value, role=UserRole.USER, settings=settings)
+    token = auth_token_for_user(engine, settings, username=UserRole.USER.value, role=UserRole.USER)
     client = TestClient(create_app(settings=settings, database_engine=engine))
 
     response = client.post(
@@ -471,7 +469,7 @@ def test_text_qa_uses_bailian_answer_generator_when_configured(tmp_path: Path, m
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
     seed_retrieval_corpus(engine)
-    token = create_access_token(username=UserRole.USER.value, role=UserRole.USER, settings=settings)
+    token = auth_token_for_user(engine, settings, username=UserRole.USER.value, role=UserRole.USER)
     client = TestClient(create_app(settings=settings, database_engine=engine))
 
     response = client.post(
@@ -503,7 +501,7 @@ def test_text_qa_does_not_initialize_graph_service_when_graph_is_out_of_scope(
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
     seed_retrieval_corpus(engine)
-    token = create_access_token(username=UserRole.USER.value, role=UserRole.USER, settings=settings)
+    token = auth_token_for_user(engine, settings, username=UserRole.USER.value, role=UserRole.USER)
     client = TestClient(create_app(settings=settings, database_engine=engine))
 
     response = client.post(
@@ -536,7 +534,7 @@ def test_text_qa_returns_readable_error_when_bailian_answer_generation_fails(
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
     seed_retrieval_corpus(engine)
-    token = create_access_token(username=UserRole.USER.value, role=UserRole.USER, settings=settings)
+    token = auth_token_for_user(engine, settings, username=UserRole.USER.value, role=UserRole.USER)
     client = TestClient(create_app(settings=settings, database_engine=engine))
 
     response = client.post(

@@ -60,27 +60,32 @@ describe("assistant workbench layout", () => {
     const page = readProjectFile("src/app/page.tsx");
 
     expect(assistant).toContain("AssistantRuntimeProvider");
-    expect(assistant).toContain("AssistantChatTransport");
+    expect(assistant).toContain("createAgroMechChatTransport");
     expect(assistant).toContain("<Thread");
     expect(assistant).toContain("makeAssistantDataUI");
     expect(assistant).toContain("agromech-payload");
     expect(assistant).toContain("StructuredAnswerCard");
     expect(assistant).toContain("onCitationSelect");
     expect(assistant).toContain("sessionId");
+    expect(assistant).toContain("token");
     expect(assistant).toContain("filters");
     expect(page).toContain("activeFilters");
     expect(page).toContain("selectedEvidence");
     expect(page).toContain("onCitationSelect");
     expect(page).toContain("filters={activeFilters}");
-    expect(assistant).toContain("prepareSendMessagesRequest");
+    expect(page).toContain("token={session?.token}");
+    expect(assistant).not.toContain("AssistantChatTransport");
   });
 
   it("passes context filters and session id through the assistant transport", () => {
     const assistant = readProjectFile("src/app/assistant.tsx");
+    const chatAdapter = readProjectFile("src/lib/agromech-chat.ts");
 
     expect(assistant).toContain("filters: filters ?? {}");
-    expect(assistant).toContain("session_id: sessionId");
-    expect(assistant).toContain("[filters, sessionId]");
+    expect(assistant).toContain("sessionId");
+    expect(chatAdapter).toContain("session_id: request.session_id");
+    expect(chatAdapter).toContain("Authorization: `Bearer ${context.token}`");
+    expect(assistant).toContain("[filters, sessionId, token]");
   });
 
   it("persists and clears context filters with the active chat session", () => {

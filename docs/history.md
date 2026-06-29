@@ -6,8 +6,8 @@
 
 截至当前代码状态：
 
-- 后端/worker 测试：`293 passed, 6 warnings`。
-- 前端测试：`92 passed`。
+- 后端/worker 测试：`304 passed, 6 warnings`。
+- 前端测试：`96 passed`。
 - 文档同步测试覆盖当前 docs 文件名、API 关键字段、RabbitMQ worker、Agent Controller。
 
 ## 2. 已确认技术决策
@@ -18,6 +18,7 @@
 - Zvec 作为嵌入式向量库，数据在本项目 `.agromech-data/zvec`。
 - 文件存储支持 local fallback 和阿里云 OSS。
 - LLM、embedding、vision、rerank 使用阿里云百炼。
+- 认证用户、角色、状态和 token version 存入 Postgres，不再依赖静态账号配置。
 - OCR 默认保留 legacy 路径；`OCR_TEXT_MODE=cloud_text` 时 PDF 可走 PaddleOCR 云 API。
 - RabbitMQ 只做分发和唤醒，`ingest_tasks` 是权威任务状态。
 - QA 使用 LangGraph 做受控工作流，不使用自由 ReAct agent。
@@ -28,7 +29,7 @@
 ### 基础系统
 
 - 配置加载、条件校验和 `.env.example` 已覆盖 OSS、Zvec、Bailian、RabbitMQ、评估等配置；Neo4j 配置保留为后续实验。
-- 认证支持 `single_admin` 和 `static_roles`。
+- 认证读取 `users` 表，登录审计写入 `auth_audit_logs`，token 校验会检查用户状态和 `token_version`。
 - 统一错误响应、trace id 和敏感信息脱敏已接入。
 
 ### 文档导入
@@ -73,13 +74,14 @@
 
 ## 5. 文档整理决策
 
-保留 7 个文档：
+保留 8 个文档：
 
 - `docs/README.md`
 - `docs/prd.md`
 - `docs/tech-design.md`
 - `docs/api-spec.md`
 - `docs/database-design.md`
+- `docs/deployment.md`
 - `docs/ux-spec.md`
 - `docs/history.md`
 
@@ -90,4 +92,4 @@
 - `archive/` 中已完成前端改造草案。
 - `superpowers/` 中临时实施计划和设计 spec。
 
-后续新增文档应优先合并到上述 7 份之一，除非出现新的长期维护主题。
+后续新增文档应优先合并到上述 8 份之一，除非出现新的长期维护主题。

@@ -801,7 +801,7 @@ function DocumentRow({
           </Button>
           <Link
             className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[0.8rem]"
-            href={`/library/${document.id}`}
+            href={`/library/document?id=${encodeURIComponent(document.id)}`}
           >
             查看详情
           </Link>
@@ -892,7 +892,7 @@ function ExpandedDocumentRow({
         <div className="mt-3 flex flex-wrap gap-2">
           <Link
             className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[0.8rem]"
-            href={`/library/${document.id}`}
+            href={`/library/document?id=${encodeURIComponent(document.id)}`}
           >
             查看详情
           </Link>

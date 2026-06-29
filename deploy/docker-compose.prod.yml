@@ -1,0 +1,35 @@
+services:
+  api:
+    image: ${AGROMECH_BACKEND_IMAGE}
+    container_name: agromech-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${AGROMECH_API_BIND:-127.0.0.1:8000}:8000"
+    volumes:
+      - ./data:/app/.agromech-data
+    command:
+      - python
+      - -m
+      - uvicorn
+      - agromech_api.main:app
+      - --app-dir
+      - backend
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+
+  worker:
+    image: ${AGROMECH_BACKEND_IMAGE}
+    container_name: agromech-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/.agromech-data
+    command:
+      - python
+      - -c
+      - "from agromech_worker.main import consume_forever; consume_forever()"

@@ -52,7 +52,7 @@ export function AssistantWorkbench({
   selectedEvidence: AgroMechEvidenceSelection | null;
   onEvidenceSelect: (citationIndex: number) => void;
   onEvidenceClose: () => void;
-  children: ReactNode;
+  children: ReactNode | ((session: Session | null) => ReactNode);
 }) {
   const [session] = useState<Session | null>(() => {
     if (typeof window === "undefined") return null;
@@ -263,7 +263,7 @@ export function AssistantWorkbench({
             </p>
           </div>
         </header>
-        <div className="min-h-0">{children}</div>
+        <div className="min-h-0">{typeof children === "function" ? children(session) : children}</div>
       </section>
 
       <aside

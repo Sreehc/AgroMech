@@ -12,10 +12,10 @@ import {
 } from "@phosphor-icons/react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState, type ComponentType, type ReactNode } from "react";
+import { useEffect, useState, useSyncExternalStore, type ComponentType, type ReactNode } from "react";
 
 import { useTheme } from "@/components/theme-provider";
-import { clearSession, loadSession, saveReturnToPath, type Session } from "@/lib/session";
+import { clearSession, loadSession, saveReturnToPath, SESSION_CHANGE_EVENT, type Session } from "@/lib/session";
 
 type NavItem = {
   href: string;
@@ -47,26 +47,16 @@ export function AppFrame({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { theme, toggleTheme } = useTheme();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [session, setSession] = useState<Session | null>(null);
-  const [hydrated, setHydrated] = useState(false);
+  const session = useSessionSnapshot();
 
   useEffect(() => {
-    setSession(loadSession());
-    setHydrated(true);
-  }, []);
-
-  useEffect(() => {
-    if (hydrated && !session && pathname !== "/login") {
+    if (!session && pathname !== "/login") {
       saveReturnToPath(pathname);
       router.replace("/login");
     }
-  }, [hydrated, pathname, router, session]);
+  }, [pathname, router, session]);
 
-  if (!hydrated && pathname !== "/login") {
-    return <main className="grid min-h-dvh place-items-center bg-surface-canvas text-sm text-text-muted">正在加载</main>;
-  }
-
-  if (hydrated && !session && pathname !== "/login") {
+  if (!session && pathname !== "/login") {
     return <main className="grid min-h-dvh place-items-center bg-surface-canvas text-sm text-text-muted">请先登录</main>;
   }
 
@@ -78,7 +68,6 @@ export function AppFrame({ children }: { children: ReactNode }) {
 
   function handleSignOut() {
     clearSession();
-    setSession(null);
     router.replace("/login");
   }
 
@@ -171,6 +160,19 @@ export function AppFrame({ children }: { children: ReactNode }) {
       </section>
     </main>
   );
+}
+
+function useSessionSnapshot(): Session | null {
+  return useSyncExternalStore(subscribeSession, loadSession, () => null);
+}
+
+function subscribeSession(onStoreChange: () => void): () => void {
+  window.addEventListener(SESSION_CHANGE_EVENT, onStoreChange);
+  window.addEventListener("storage", onStoreChange);
+  return () => {
+    window.removeEventListener(SESSION_CHANGE_EVENT, onStoreChange);
+    window.removeEventListener("storage", onStoreChange);
+  };
 }
 
 function ShellBrand({ compact = false }: { compact?: boolean }) {

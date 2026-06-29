@@ -1,4 +1,6 @@
 import type { UIMessage } from "ai";
+import type { ChatTransport } from "ai";
+import type { UIMessageChunk } from "ai";
 
 export type AgroMechImageAttachment = {
   dataUrl: string;
@@ -93,6 +95,12 @@ export type AgroMechPayloadDataPart = {
   type: "data-agromech-payload";
   id: "agromech-payload";
   data: AgroMechStructuredPayload;
+};
+
+export type AgroMechChatTransportContext = {
+  token?: string;
+  filters?: AgroMechContextFilters;
+  sessionId?: string;
 };
 
 function textFromMessage(message: UIMessage): string {
@@ -215,4 +223,101 @@ export function createAgroMechPayloadDataPart(payload: AgroMechQaResponse): Agro
 export function formatAgroMechAnswer(payload: AgroMechQaResponse): string {
   const structuredPayload = normalizeAgroMechPayload(payload);
   return structuredPayload.answer.trim() || "未返回回答内容。";
+}
+
+export function createAgroMechChatTransport(
+  context: AgroMechChatTransportContext,
+): ChatTransport<UIMessage> {
+  return {
+    async sendMessages({ messages, abortSignal }) {
+      const payload = await askAgroMechBackend(messages, context, abortSignal);
+      return qaPayloadStream(payload);
+    },
+    async reconnectToStream() {
+      return null;
+    },
+  };
+}
+
+async function askAgroMechBackend(
+  messages: UIMessage[],
+  context: AgroMechChatTransportContext,
+  abortSignal: AbortSignal | undefined,
+): Promise<AgroMechQaResponse> {
+  if (!context.token) {
+    throw new Error("Authentication required.");
+  }
+  const request = extractAgroMechRequest(messages, {
+    filters: context.filters,
+    session_id: context.sessionId,
+  });
+  const authorization = { Authorization: `Bearer ${context.token}` };
+
+  if (request.image) {
+    const formData = new FormData();
+    formData.append("image", await dataUrlToBlob(request.image.dataUrl), request.image.filename);
+    if (request.question) {
+      formData.append("question", request.question);
+    }
+    Object.entries(request.filters).forEach(([key, value]) => {
+      if (value) {
+        formData.append(key, value);
+      }
+    });
+    if (request.session_id) {
+      formData.append("session_id", request.session_id);
+    }
+    const response = await fetch("/backend/qa/image", {
+      method: "POST",
+      headers: authorization,
+      body: formData,
+      signal: abortSignal,
+    });
+    if (!response.ok) {
+      throw new Error("AgroMech image question failed.");
+    }
+    return {
+      ...((await response.json()) as AgroMechQaResponse),
+      question_image: request.image,
+    };
+  }
+
+  const response = await fetch("/backend/qa/text", {
+    method: "POST",
+    headers: {
+      ...authorization,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      question: request.question,
+      filters: request.filters,
+      session_id: request.session_id,
+    }),
+    signal: abortSignal,
+  });
+  if (!response.ok) {
+    throw new Error("AgroMech text question failed.");
+  }
+  return (await response.json()) as AgroMechQaResponse;
+}
+
+async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
+  const response = await fetch(dataUrl);
+  return response.blob();
+}
+
+function qaPayloadStream(payload: AgroMechQaResponse): ReadableStream<UIMessageChunk> {
+  const answer = formatAgroMechAnswer(payload);
+  const textId = "agromech-answer";
+  return new ReadableStream<UIMessageChunk>({
+    start(controller) {
+      controller.enqueue({ type: "start" });
+      controller.enqueue(createAgroMechPayloadDataPart(payload));
+      controller.enqueue({ type: "text-start", id: textId });
+      controller.enqueue({ type: "text-delta", id: textId, delta: answer });
+      controller.enqueue({ type: "text-end", id: textId });
+      controller.enqueue({ type: "finish", finishReason: "stop" });
+      controller.close();
+    },
+  });
 }

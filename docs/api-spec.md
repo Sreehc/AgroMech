@@ -55,6 +55,8 @@ http://127.0.0.1:8000
 
 ## 3. Auth
 
+认证读取 Postgres `users` 表。用户状态必须为 `active`，token 校验会比对用户状态、角色和 `token_version`；登录尝试写入 `auth_audit_logs`。首次部署后可用 `scripts/create-user.py` 创建管理员。
+
 ### `POST /auth/login`
 
 请求：

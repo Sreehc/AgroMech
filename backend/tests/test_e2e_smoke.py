@@ -3,8 +3,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 
+from agromech_api.auth import create_database_user
 from agromech_api.config import Settings
-from agromech_api.db.enums import DocumentStatus
+from agromech_api.db.enums import DocumentStatus, UserRole
 from agromech_api.db.models import documents, metadata
 from agromech_api.main import create_app
 from agromech_worker.main import run_once
@@ -13,8 +14,6 @@ from test_hybrid_retrieval import seed_retrieval_corpus
 
 def e2e_settings(tmp_path: Path) -> Settings:
     return Settings(
-        admin_username="admin",
-        admin_password="secret",
         auth_token_secret="test-secret",
         file_storage_backend="local",
         local_file_storage_path=str(tmp_path / "files"),
@@ -32,6 +31,7 @@ def test_e2e_login_upload_process_question_and_trace(tmp_path: Path) -> None:
     settings = e2e_settings(tmp_path)
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
+    create_database_user(engine, username="admin", password="secret", role=UserRole.ADMIN)
     client = TestClient(create_app(settings=settings, database_engine=engine))
 
     login = client.post("/auth/login", json={"username": "admin", "password": "secret"})

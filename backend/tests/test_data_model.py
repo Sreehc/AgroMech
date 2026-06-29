@@ -7,6 +7,8 @@ from agromech_api.db.models import metadata
 def test_core_tables_are_declared() -> None:
     expected_tables = {
         "documents",
+        "users",
+        "auth_audit_logs",
         "document_chunks",
         "document_assets",
         "ingest_tasks",
@@ -40,6 +42,8 @@ def test_key_indexes_are_declared() -> None:
     chat_sessions = metadata.tables["chat_sessions"]
     qa_messages = metadata.tables["qa_messages"]
     evaluation_questions = metadata.tables["evaluation_questions"]
+    users = metadata.tables["users"]
+    auth_audit_logs = metadata.tables["auth_audit_logs"]
 
     index_names = {
         index.name
@@ -55,6 +59,8 @@ def test_key_indexes_are_declared() -> None:
             chat_sessions,
             qa_messages,
             evaluation_questions,
+            users,
+            auth_audit_logs,
         ]
         for index in table.indexes
     }
@@ -72,7 +78,46 @@ def test_key_indexes_are_declared() -> None:
         "ix_chat_sessions_username_updated_at",
         "ix_qa_messages_session_id_created_at",
         "ix_evaluation_questions_dataset_version",
+        "ix_users_username",
+        "ix_auth_audit_logs_user_id_created_at",
     }.issubset(index_names)
+
+
+def test_users_table_declares_database_auth_fields() -> None:
+    users = metadata.tables["users"]
+
+    assert {
+        "id",
+        "username",
+        "password_hash",
+        "role",
+        "status",
+        "display_name",
+        "last_login_at",
+        "password_changed_at",
+        "token_version",
+        "created_at",
+        "updated_at",
+    }.issubset(users.c.keys())
+    assert users.c.username.nullable is False
+    assert users.c.password_hash.nullable is False
+    assert users.c.token_version.nullable is False
+
+
+def test_auth_audit_logs_table_declares_login_audit_fields() -> None:
+    audit_logs = metadata.tables["auth_audit_logs"]
+
+    assert {
+        "id",
+        "user_id",
+        "username",
+        "event_type",
+        "success",
+        "ip_address",
+        "user_agent",
+        "metadata",
+        "created_at",
+    }.issubset(audit_logs.c.keys())
 
 
 def test_embedding_tables_declare_version_fields() -> None:

@@ -58,7 +58,7 @@ describe("EvidencePanel", () => {
     expect(html).toContain("型号可能不完全一致");
     expect(html).toContain("安全提醒");
     expect(html).toContain("释放液压压力后再维修");
-    expect(html).toContain("/library/doc-1");
+    expect(html).toContain("/library/document?id=doc-1");
     expect(html).toContain(
       "rounded-2xl border border-border bg-surface-panel/65",
     );

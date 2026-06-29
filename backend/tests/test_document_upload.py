@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 
-from agromech_api.auth import create_access_token
+from auth_helpers import auth_token_for_user
 from agromech_api.config import Settings
 from agromech_api.db.enums import UserRole
 from agromech_api.db.models import documents, ingest_tasks, metadata
@@ -13,8 +13,6 @@ from agromech_api.task_queue import InMemoryTaskPublisher
 
 def upload_settings(tmp_path: Path) -> Settings:
     return Settings(
-        admin_username="admin",
-        admin_password="secret",
         auth_token_secret="test-secret",
         file_storage_backend="local",
         local_file_storage_path=str(tmp_path / "files"),
@@ -31,7 +29,7 @@ def upload_client(
     settings = upload_settings(tmp_path)
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
-    token = create_access_token(username="admin", role=UserRole.ADMIN, settings=settings)
+    token = auth_token_for_user(engine, settings, username="admin", role=UserRole.ADMIN)
     return TestClient(
         create_app(settings=settings, database_engine=engine, task_publisher=task_publisher)
     ), engine, token
@@ -153,8 +151,6 @@ def test_upload_rejects_files_over_configured_limit(tmp_path: Path) -> None:
 
 def test_upload_uses_image_size_limit_for_supported_images(tmp_path: Path) -> None:
     settings = Settings(
-        admin_username="admin",
-        admin_password="secret",
         auth_token_secret="test-secret",
         file_storage_backend="local",
         local_file_storage_path=str(tmp_path / "files"),
@@ -163,7 +159,7 @@ def test_upload_uses_image_size_limit_for_supported_images(tmp_path: Path) -> No
     )
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech-images.db'}")
     metadata.create_all(engine)
-    token = create_access_token(username="admin", role=UserRole.ADMIN, settings=settings)
+    token = auth_token_for_user(engine, settings, username="admin", role=UserRole.ADMIN)
     client = TestClient(create_app(settings=settings, database_engine=engine))
 
     response = client.post(
@@ -179,8 +175,6 @@ def test_upload_uses_image_size_limit_for_supported_images(tmp_path: Path) -> No
 
 def test_upload_does_not_apply_image_limit_to_non_image_files(tmp_path: Path) -> None:
     settings = Settings(
-        admin_username="admin",
-        admin_password="secret",
         auth_token_secret="test-secret",
         file_storage_backend="local",
         local_file_storage_path=str(tmp_path / "files"),
@@ -189,7 +183,7 @@ def test_upload_does_not_apply_image_limit_to_non_image_files(tmp_path: Path) ->
     )
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech-docs.db'}")
     metadata.create_all(engine)
-    token = create_access_token(username="admin", role=UserRole.ADMIN, settings=settings)
+    token = auth_token_for_user(engine, settings, username="admin", role=UserRole.ADMIN)
     client = TestClient(create_app(settings=settings, database_engine=engine))
 
     response = client.post(

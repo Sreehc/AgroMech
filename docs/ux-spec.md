@@ -34,7 +34,7 @@
 - 输入文本问题。
 - 附加单张图片并走 `/qa/image`。
 - 设置上下文筛选：brand、model、document_type、language。
-- 通过 assistant-ui runtime 调用前端 `/api/chat`，由该路由转发后端 `/qa/text` 或 `/qa/image`。
+- 通过 assistant-ui runtime 直接调用 `/backend/qa/text` 或 `/backend/qa/image`；部署时 `/backend/` 由 Nginx 反代到 FastAPI。
 - 展示 answer、sections、citations、uncertainty、safety_warnings。
 - 点击引用打开证据面板。
 - 通过 `trace_id` 拉取 retrieval trace 摘要。

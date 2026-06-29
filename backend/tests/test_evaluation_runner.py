@@ -21,8 +21,6 @@ def create_test_engine(tmp_path):
 
 def evaluation_settings(tmp_path) -> Settings:
     return Settings(
-        admin_username="admin",
-        admin_password="secret",
         auth_token_secret="test-secret",
         local_file_storage_path=str(tmp_path / "files"),
         graph_backend="local",

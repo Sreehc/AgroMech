@@ -8,6 +8,7 @@
 - [tech-design.md](tech-design.md)：当前后端、worker、RAG、Agentic QA、部署和运维设计。
 - [api-spec.md](api-spec.md)：当前真实后端接口、请求响应、权限和错误码。
 - [database-design.md](database-design.md)：当前关系表、状态机、暂存图谱表和索引数据结构。
+- [deployment.md](deployment.md)：静态前端、Docker 后端/worker 和 GitHub Actions 部署说明。
 - [ux-spec.md](ux-spec.md)：当前前端页面、交互、角色权限和主要状态。
 - [history.md](history.md)：关键决策、完成记录、当前测试基线和后续增强项。
 
@@ -15,7 +16,7 @@
 
 AgroMech 是面向农机资料的多模态 RAG 应用，当前已具备：
 
-- 登录和角色权限：`admin`、`maintainer`、`user`、`evaluator`。
+- 登录和角色权限：用户存入 Postgres `users` 表，支持 `admin`、`maintainer`、`user`、`evaluator`，登录写入 `auth_audit_logs`。
 - 资料库：上传、筛选、详情、预览、重新处理、删除。
 - Worker 导入链路：文本、表格、PDF 页面、图片、OCR、视觉观察、LLM 元数据回填、实体、全文索引和 Zvec 向量索引。
 - RabbitMQ 上传分发：API 创建 DB task 后可发布消息，worker 可常驻消费；DB `ingest_tasks` 仍是权威状态。
@@ -35,6 +36,7 @@ docker compose --env-file env/.env -f compose/docker-compose.mq.yml up -d rabbit
 cd ../AgroMech
 
 .venv/bin/python -m alembic upgrade head
+.venv/bin/python scripts/create-user.py --username admin --role admin --display-name "Administrator"
 .venv/bin/python -m uvicorn agromech_api.main:app --app-dir backend --host 0.0.0.0 --port 8000
 .venv/bin/python -m agromech_worker.main
 npm run dev --prefix frontend
