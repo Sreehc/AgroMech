@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     zvec_backup_retention_days: int = 7
 
     # Embedding
-    embedding_provider: str = "bailian"
+    embedding_provider: str = "local"
     embedding_model: str = "text-embedding-v4"
     embedding_dimension: int = 1024
     embedding_batch_size: int = 8
@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     graph_review_min_confidence: float = 0.65
 
     # Model services: Aliyun Bailian
-    model_provider: str = "bailian"
+    model_provider: str = "local"
     bailian_api_key: str = ""
     bailian_base_url: str = ""
     llm_model: str = "qwen3.7-plus"
@@ -154,6 +154,19 @@ class Settings(BaseSettings):
     evaluation_target_model_confusion_rate: float = 0.10
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        if os.getenv("CI", "").lower() == "true":
+            return init_settings, env_settings, file_secret_settings
+        return init_settings, env_settings, dotenv_settings, file_secret_settings
 
     @field_validator(
         "database_url",
@@ -189,7 +202,7 @@ class Settings(BaseSettings):
             require_settings(self, ["zvec_path", "zvec_collection"], mode="VECTOR_BACKEND=zvec")
         if self.graph_backend == "neo4j":
             require_settings(self, ["neo4j_uri", "neo4j_user", "neo4j_password"], mode="GRAPH_BACKEND=neo4j")
-        if self.app_env != "test" and "bailian" in {self.model_provider, self.embedding_provider}:
+        if "bailian" in {self.model_provider, self.embedding_provider}:
             require_settings(self, ["bailian_api_key", "bailian_base_url"], mode="provider=bailian")
         if self.final_evidence_limit > self.rerank_top_k:
             raise ValueError("FINAL_EVIDENCE_LIMIT must be <= RERANK_TOP_K")
@@ -254,10 +267,4 @@ def ensure_probability(value: float, env_name: str) -> None:
 
 @lru_cache
 def get_settings() -> Settings:
-    if os.getenv("CI", "").lower() == "true":
-        return Settings(
-            _env_file=None,
-            model_provider="local",
-            embedding_provider="local",
-        )
     return Settings()

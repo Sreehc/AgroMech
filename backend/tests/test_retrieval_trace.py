@@ -46,6 +46,8 @@ def test_retrieve_with_trace_logs_query_filters_channels_rerank_and_final_eviden
         bailian_base_url="https://bailian.example",
         graph_backend="neo4j",
         vector_backend="zvec",
+        model_provider="bailian",
+        embedding_provider="bailian",
     )
 
     result = hybrid_retrieve_with_trace(

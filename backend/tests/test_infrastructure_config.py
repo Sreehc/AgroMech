@@ -74,6 +74,15 @@ def test_get_settings_uses_local_backends_in_ci(monkeypatch: pytest.MonkeyPatch)
     assert settings.bailian_api_key == ""
 
 
+def test_ci_settings_ignore_populated_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CI", "true")
+    settings = Settings()
+
+    assert settings.model_provider == "local"
+    assert settings.embedding_provider == "local"
+    assert settings.bailian_api_key == ""
+
+
 def test_neo4j_connection_settings_are_always_required() -> None:
     # neo4j_uri/user/password are enforced unconditionally by the field validator.
     with pytest.raises(ValueError, match="NEO4J_PASSWORD is required"):
