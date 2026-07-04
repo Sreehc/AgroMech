@@ -53,7 +53,7 @@ describe("frontend API helpers", () => {
     }
 
     expect(documentStatusPresentation("indexed")).toEqual({
-      label: "已索引",
+      label: "入库完成",
       tone: "success",
       known: true,
     });

@@ -70,7 +70,7 @@ describe("DocumentDetailView", () => {
 
     expect(html).toContain("Kubota M7040 Manual");
     expect(html).toContain("m7040.pdf");
-    expect(html).toContain("已索引");
+    expect(html).toContain("入库完成");
     expect(html).toContain("Kubota");
     expect(html).toContain("M7040");
     expect(html).toContain("manual");

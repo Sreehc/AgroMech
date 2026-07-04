@@ -2,7 +2,7 @@ from sqlalchemy import create_engine, insert
 
 from agromech_api.db.enums import ChunkType, DocumentStatus
 from agromech_api.db.models import chunk_entity_links, document_chunks, documents, metadata
-from agromech_api.query_understanding import parse_query, structured_filter_chunks
+from agromech_api.rag.retrieval.query_understanding import parse_query, structured_filter_chunks
 
 
 def create_test_engine(tmp_path):

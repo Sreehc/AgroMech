@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from agromech_api.infrastructure import DependencyCheck
+from agromech_api.core.infrastructure import DependencyCheck
 from agromech_api.main import create_app
 
 

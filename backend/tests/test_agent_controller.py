@@ -1,4 +1,4 @@
-from agromech_api.agent_controller import AgentController
+from agromech_api.rag.agent.controller import AgentController
 
 
 def test_agent_controller_runs_text_only_minimum_loop() -> None:
@@ -25,6 +25,40 @@ def test_agent_controller_runs_text_only_minimum_loop() -> None:
     assert payload["answer"] == "ok"
     assert calls == ["parse", "retrieve", "answer"]
     assert payload["agent_trace"][0]["step"] == "route"
+    trace_agents = [entry.get("agent") for entry in payload["agent_trace"]]
+    assert "QueryAnalystAgent" in trace_agents
+    assert "RouterAgent" in trace_agents
+    assert "RetrievalAgent" in trace_agents
+    assert "PlanningAgent" in trace_agents
+    assert "EvidenceReviewerAgent" in trace_agents
+    assert any(agent in trace_agents for agent in ["MaintenanceAgent", "FaultDiagnosisAgent", "PartsAgent", "VisualInspectionAgent"])
+    assert "AnswerWriterAgent" in trace_agents
+    assert "SafetyReviewerAgent" in trace_agents
+
+
+def test_agent_controller_passes_domain_context_to_answer_function() -> None:
+    seen_domain_contexts: list[dict[str, object]] = []
+    controller = AgentController(
+        parse_query_fn=lambda question, engine=None: object(),
+        retrieve_fn=lambda **_kwargs: {
+            "status": "ok",
+            "final_evidence": [{"chunk_id": "chunk-1", "document_id": "doc-1"}],
+            "citations": [{"chunk_id": "chunk-1", "document_id": "doc-1"}],
+        },
+        answer_fn=lambda **kwargs: seen_domain_contexts.append(kwargs["domain_context"])
+        or {"answer": "ok", "citations": [], "trace_id": kwargs["trace_id"], "sections": {}},
+    )
+
+    payload = controller.answer_text(
+        engine=None,
+        question="滤芯配件号是多少？",
+        trace_id="trace-domain",
+        filters={},
+    )
+
+    assert payload["answer"] == "ok"
+    assert seen_domain_contexts[0]["question_type"] == "parts"
+    assert seen_domain_contexts[0]["domain_agent"] == "PartsAgent"
 
 
 def test_agent_controller_rewrites_and_retries_when_evidence_is_insufficient() -> None:
@@ -67,6 +101,106 @@ def test_agent_controller_rewrites_and_retries_when_evidence_is_insufficient() -
     assert any(entry["step"] == "rewrite" for entry in payload["agent_trace"])
 
 
+def test_agent_controller_calls_visual_retrieval_when_planner_requests_visual_evidence() -> None:
+    visual_calls: list[str] = []
+
+    def planner_fn(**_kwargs):
+        return {
+            "evidence_sufficient": False,
+            "need_visual": True,
+            "need_query_rewrite": False,
+            "next_action": "VISUAL_PAGE_RETRIEVAL",
+            "missing_slots": ["图示位置"],
+            "reason": "文本证据缺少页面图示。",
+        }
+
+    controller = AgentController(
+        parse_query_fn=lambda question, engine=None: object(),
+        retrieve_fn=lambda **_kwargs: {
+            "status": "ok",
+            "final_evidence": [{"chunk_id": "chunk-1", "document_id": "doc-1", "evidence_type": "text"}],
+            "citations": [{"chunk_id": "chunk-1", "document_id": "doc-1"}],
+        },
+        visual_retrieve_fn=lambda **kwargs: visual_calls.append(kwargs["question"])
+        or {
+            "status": "ok",
+            "final_evidence": [
+                {
+                    "asset_id": "asset-page-1",
+                    "document_id": "doc-1",
+                    "page_number": 3,
+                    "evidence_type": "visual_page",
+                }
+            ],
+            "citations": [
+                {
+                    "asset_id": "asset-page-1",
+                    "document_id": "doc-1",
+                    "page_number": 3,
+                    "evidence_type": "visual_page",
+                }
+            ],
+        },
+        planner_fn=planner_fn,
+        answer_fn=lambda **kwargs: {
+            "answer": "ok",
+            "citations": kwargs["retrieval"]["citations"],
+            "trace_id": kwargs["trace_id"],
+        },
+    )
+
+    payload = controller.answer_text(
+        engine=None,
+        question="液压泵在图中哪里？",
+        trace_id="trace-visual",
+        filters={},
+    )
+
+    assert visual_calls == ["液压泵在图中哪里？"]
+    assert any(citation.get("evidence_type") == "visual_page" for citation in payload["citations"])
+    assert any(entry["step"] == "planner" for entry in payload["agent_trace"])
+    assert any(entry["step"] == "visual_retrieve" for entry in payload["agent_trace"])
+
+
+def test_agent_controller_uses_multimodal_answer_when_visual_evidence_is_present() -> None:
+    answer_modes: list[str] = []
+
+    controller = AgentController(
+        parse_query_fn=lambda question, engine=None: object(),
+        retrieve_fn=lambda **_kwargs: {
+            "status": "ok",
+            "final_evidence": [{"chunk_id": "chunk-1", "document_id": "doc-1", "evidence_type": "text"}],
+            "citations": [{"chunk_id": "chunk-1", "document_id": "doc-1"}],
+        },
+        visual_retrieve_fn=lambda **_kwargs: {
+            "status": "ok",
+            "final_evidence": [{"asset_id": "asset-page-1", "document_id": "doc-1", "evidence_type": "visual_page"}],
+            "citations": [{"asset_id": "asset-page-1", "document_id": "doc-1", "evidence_type": "visual_page"}],
+        },
+        planner_fn=lambda **_kwargs: {
+            "evidence_sufficient": False,
+            "need_visual": True,
+            "need_query_rewrite": False,
+            "next_action": "VISUAL_PAGE_RETRIEVAL",
+            "missing_slots": [],
+            "reason": "needs page image",
+        },
+        answer_fn=lambda **kwargs: answer_modes.append("text") or {"answer": "text"},
+        multimodal_answer_fn=lambda **kwargs: answer_modes.append("visual")
+        or {"answer": "visual", "citations": kwargs["retrieval"]["citations"], "trace_id": kwargs["trace_id"]},
+    )
+
+    payload = controller.answer_text(
+        engine=None,
+        question="图中液压泵位置在哪里？",
+        trace_id="trace-mm",
+        filters={},
+    )
+
+    assert payload["answer"] == "visual"
+    assert answer_modes == ["visual"]
+
+
 def test_agent_controller_generation_guard_skips_answer_when_evidence_remains_insufficient() -> None:
     calls: list[str] = []
     controller = AgentController(
@@ -89,4 +223,8 @@ def test_agent_controller_generation_guard_skips_answer_when_evidence_remains_in
     assert calls == []
     assert payload["answer"] == "未找到足够来源证据，无法给出确定性结论。"
     assert payload["citations"] == []
-    assert payload["agent_trace"][-1]["decision"] == "insufficient"
+    assert any(
+        entry["step"] == "generation_guard" and entry["decision"] == "insufficient"
+        for entry in payload["agent_trace"]
+    )
+    assert payload["agent_trace"][-1]["agent"] == "SafetyReviewerAgent"

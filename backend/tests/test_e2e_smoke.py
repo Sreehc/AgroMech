@@ -3,8 +3,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 
-from agromech_api.auth import create_database_user
-from agromech_api.config import Settings
+from agromech_api.security.auth import create_database_user
+from agromech_api.core.config import Settings
 from agromech_api.db.enums import DocumentStatus, UserRole
 from agromech_api.db.models import documents, metadata
 from agromech_api.main import create_app

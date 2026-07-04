@@ -5,11 +5,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert, select
 
 from auth_helpers import auth_token_for_user
-from agromech_api.config import Settings
+from agromech_api.core.config import Settings
 from agromech_api.db.enums import AssetType, ChunkType, DocumentStatus, IngestTaskStatus, TaskType, UserRole
 from agromech_api.db.models import answer_citations, chunk_search_index, document_assets, document_chunks, documents, ingest_tasks, metadata, qa_records
 from agromech_api.main import create_app
-from agromech_api.task_queue import InMemoryTaskPublisher
+from agromech_api.integrations.queue.task_queue import InMemoryTaskPublisher
 
 
 def library_settings(tmp_path: Path) -> Settings:

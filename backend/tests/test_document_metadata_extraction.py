@@ -3,7 +3,7 @@ from sqlalchemy import create_engine, insert, select
 
 from agromech_api.db.enums import ChunkType, DocumentStatus
 from agromech_api.db.models import document_chunks, documents, metadata
-from agromech_api.document_metadata_extraction import (
+from agromech_api.ingestion.metadata import (
     MetadataExtractionError,
     backfill_document_metadata,
     parse_metadata_response,

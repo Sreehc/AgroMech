@@ -21,7 +21,15 @@
 
 ## 2. Nginx
 
-前端静态文件部署到 `/var/www/agromech`。宿主 Nginx 需要把 `/backend/` 反代到后端容器：
+前端静态文件部署到 `/var/www/agromech`。正式访问域名当前为 `agromech.wandcheers.xyz`；需要先在 DNS 中把它解析到服务器公网 IP。
+
+宿主 Nginx 使用 HTTPS 对外服务，HTTP 自动跳转到 HTTPS。证书由 Certbot/Let's Encrypt 管理：
+
+```bash
+certbot --nginx -d agromech.wandcheers.xyz --redirect
+```
+
+服务器已有 `certbot-renew.timer` 时会自动续期。宿主 Nginx 需要把 `/backend/` 反代到后端容器：
 
 ```nginx
 location /backend/ {

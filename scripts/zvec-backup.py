@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from agromech_api.config import Settings
+from agromech_api.core.config import Settings
 from agromech_api.zvec_backup import (  # noqa: E402
     RestoreStatus,
     backup_zvec,

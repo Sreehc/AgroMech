@@ -1,37 +1,21 @@
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Request
-from pydantic import BaseModel
+from fastapi import FastAPI, Request
 from sqlalchemy import Engine
 
-from agromech_api.auth import (
-    UserContext,
-    authenticate_database_user,
-    create_access_token,
-    current_user_dependency,
-    require_authenticated_write,
-)
-from agromech_api.chat_sessions import register_chat_session_routes
-from agromech_api.config import Settings, get_settings
-from agromech_api.database import get_engine
-from agromech_api.documents import register_document_routes
-from agromech_api.errors import register_error_handlers
-from agromech_api.image_qa import register_image_qa_routes
-from agromech_api.infrastructure import DependencyCheck, check_infrastructure
-from agromech_api.retrieval_traces import register_retrieval_trace_routes
-from agromech_api.task_queue import build_task_publisher
-from agromech_api.text_qa import register_text_qa_routes
-
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-class LoginResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
+from agromech_api.api.auth import register_auth_routes
+from agromech_api.api.health import register_health_routes
+from agromech_api.security.auth import require_authenticated_write
+from agromech_api.sessions.routes import register_chat_session_routes
+from agromech_api.core.config import Settings, get_settings
+from agromech_api.core.database import get_engine
+from agromech_api.documents.routes import register_document_routes
+from agromech_api.core.errors import register_error_handlers
+from agromech_api.qa.image_routes import register_image_qa_routes
+from agromech_api.core.infrastructure import check_infrastructure
+from agromech_api.rag.traces import register_retrieval_trace_routes
+from agromech_api.integrations.queue.task_queue import build_task_publisher
+from agromech_api.qa.text_routes import register_text_qa_routes
 
 
 def create_app(
@@ -62,47 +46,8 @@ def create_app(
         return response
 
     app.middleware("http")(require_authenticated_write)
-
-    @app.post("/auth/login", response_model=LoginResponse, tags=["auth"])
-    def login(payload: LoginRequest, request: Request) -> LoginResponse:
-        user = authenticate_database_user(
-            payload.username,
-            payload.password,
-            engine=database_engine,
-            request=request,
-        )
-        token = create_access_token(
-            username=user.username,
-            role=user.role,
-            settings=settings,
-            user_id=user.user_id,
-            token_version=user.token_version,
-        )
-        return LoginResponse(
-            access_token=token,
-            expires_in=settings.session_ttl_minutes * 60,
-        )
-
-    @app.get("/auth/me", tags=["auth"])
-    def me(user: UserContext = Depends(current_user_dependency())) -> dict[str, str]:
-        return {"username": user.username, "role": user.role.value}
-
-    @app.get("/health", tags=["system"])
-    def health() -> dict[str, str]:
-        return {
-            "status": "ok",
-            "service": "api",
-            "environment": settings.app_env,
-        }
-
-    @app.get("/health/dependencies", tags=["system"])
-    def dependency_health() -> dict[str, object]:
-        checks: list[DependencyCheck] = checker()
-        status = "ok" if all(check.status == "ok" for check in checks) else "degraded"
-        return {
-            "status": status,
-            "dependencies": [check.to_dict() for check in checks],
-        }
+    register_auth_routes(app, settings=settings, engine=database_engine)
+    register_health_routes(app, settings=settings, dependency_checker=checker)
 
     return app
 

@@ -1,7 +1,7 @@
 from sqlalchemy import select
 
-from agromech_api.auth import create_access_token, create_database_user
-from agromech_api.config import Settings
+from agromech_api.security.auth import create_access_token, create_database_user
+from agromech_api.core.config import Settings
 from agromech_api.db.enums import UserRole
 from agromech_api.db.models import users
 

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agromech_api.errors import AppError, ErrorCode, register_error_handlers
+from agromech_api.core.errors import AppError, ErrorCode, register_error_handlers
 
 
 def app_with_error_routes() -> FastAPI:

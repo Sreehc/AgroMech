@@ -5,10 +5,10 @@ import pytest
 from sqlalchemy import create_engine, insert, select
 
 from auth_helpers import auth_token_for_user
-from agromech_api.config import Settings
+from agromech_api.core.config import Settings
 from agromech_api.db.enums import UserRole
 from agromech_api.db.models import chat_sessions, metadata, qa_messages, retrieval_logs
-from agromech_api.image_qa import visual_annotation_status, visual_search_query
+from agromech_api.qa.image import visual_annotation_status, visual_search_query
 from agromech_api.main import create_app
 from test_hybrid_retrieval import seed_retrieval_corpus
 
@@ -250,7 +250,7 @@ def test_image_qa_uses_ocr_and_vision_results_in_payload_and_retrieval_query(
     seed_retrieval_corpus(engine)
 
     monkeypatch.setattr(
-        "agromech_api.image_qa.default_ocr_reader",
+        "agromech_api.qa.image.default_ocr_reader",
         lambda _path: "OCR plate: Kubota M7040 E01",
     )
 
@@ -266,7 +266,7 @@ def test_image_qa_uses_ocr_and_vision_results_in_payload_and_retrieval_query(
         }
 
     monkeypatch.setattr(
-        "agromech_api.image_qa.build_visual_reader",
+        "agromech_api.qa.image.build_visual_reader",
         lambda _settings: fake_visual_reader,
     )
 
@@ -309,7 +309,7 @@ def test_image_qa_degrades_to_ocr_when_vision_reader_is_unavailable(
     seed_retrieval_corpus(engine)
 
     monkeypatch.setattr(
-        "agromech_api.image_qa.default_ocr_reader",
+        "agromech_api.qa.image.default_ocr_reader",
         lambda _path: "OCR warning: Kubota M7040 E01 hydraulic",
     )
 
@@ -317,7 +317,7 @@ def test_image_qa_degrades_to_ocr_when_vision_reader_is_unavailable(
         raise RuntimeError("Vision model unavailable")
 
     monkeypatch.setattr(
-        "agromech_api.image_qa.build_visual_reader",
+        "agromech_api.qa.image.build_visual_reader",
         lambda _settings: unavailable_visual_reader,
     )
 

@@ -45,6 +45,7 @@ import {
   errorMessage,
   listDocuments,
   reprocessDocument,
+  documentTaskStagePresentation,
   uploadDocument,
   type DocumentFilters,
   type DocumentSummary,
@@ -598,9 +599,7 @@ export function LibraryStatusOverview({
   const processing = documents.filter((document) =>
     ["queued", "processing", "reprocessing"].includes(document.status),
   ).length;
-  const indexed = documents.filter(
-    (document) => document.status === "indexed",
-  ).length;
+  const indexed = documents.filter((document) => document.status === "indexed").length;
   const failed = documents.filter(
     (document) => document.status === "failed",
   ).length;
@@ -618,7 +617,7 @@ export function LibraryStatusOverview({
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <OverviewItem label="总资料数" value={total} />
         <OverviewItem label="处理中" value={processing} />
-        <OverviewItem label="已索引" value={indexed} />
+        <OverviewItem label="入库完成" value={indexed} />
         <OverviewItem label="失败" value={failed} tone="danger" />
       </div>
     </section>
@@ -871,7 +870,9 @@ function ExpandedDocumentRow({
             : "未返回最近任务。"}
         </p>
         {recentTask?.stage ? (
-          <p className="mt-1 text-text-muted">阶段：{recentTask.stage}</p>
+          <p className="mt-1 text-text-muted">
+            阶段：{documentTaskStagePresentation(recentTask.stage)}
+          </p>
         ) : null}
       </div>
       <div className="rounded-2xl border border-border/70 bg-surface-raised/85 p-3">
@@ -887,7 +888,9 @@ function ExpandedDocumentRow({
             : "未返回错误。"}
         </p>
         {failure?.stage ? (
-          <p className="mt-1 text-status-danger">阶段：{failure.stage}</p>
+          <p className="mt-1 text-status-danger">
+            阶段：{documentTaskStagePresentation(failure.stage)}
+          </p>
         ) : null}
         <div className="mt-3 flex flex-wrap gap-2">
           <Link

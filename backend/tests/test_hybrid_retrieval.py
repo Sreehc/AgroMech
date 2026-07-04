@@ -2,11 +2,23 @@ from sqlalchemy import create_engine, insert, select
 
 from agromech_api.db.enums import ChunkType, DocumentStatus
 from agromech_api.db.models import document_chunks, documents, metadata, retrieval_logs
-from agromech_api.entity_extraction import process_document_entities
-from agromech_api.hybrid_retrieval import CHANNEL_WEIGHTS, add_candidate, hybrid_retrieve, hybrid_retrieve_with_trace
-from agromech_api.rerank import RerankError
-from agromech_api.search_indexing import SearchIndexer
-from agromech_api.zvec_store import ZvecVectorStore
+from agromech_api.domain.entities import process_document_entities
+from agromech_api.rag.retrieval.hybrid import (
+    CHANNEL_WEIGHTS,
+    EvidenceMergeAgent,
+    KeywordRetrievalAgent,
+    RerankAgent,
+    StructuredRetrievalAgent,
+    VectorRetrievalAgent,
+    VisualRetrievalAgent,
+    add_candidate,
+    hybrid_retrieve,
+    hybrid_retrieve_with_trace,
+)
+from agromech_api.rag.retrieval.query_understanding import parse_query
+from agromech_api.rag.retrieval.rerank import RerankError
+from agromech_api.rag.retrieval.indexing import SearchIndexer
+from agromech_api.integrations.vectorstores.zvec import ZvecVectorStore
 
 
 def create_test_engine(tmp_path):
@@ -129,6 +141,55 @@ def test_candidate_merge_keeps_highest_score_per_channel_without_double_counting
     candidate = candidates["chunk-m7040"]
     assert candidate["channels"] == ["keyword"]
     assert candidate["score"] == 0.9 * CHANNEL_WEIGHTS["keyword"]
+
+
+def test_channel_retrieval_agents_return_independent_channel_results(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    parsed = parse_query("M7040 E01 hydraulic pump", engine=engine)
+
+    keyword = KeywordRetrievalAgent().run(engine, "M7040 E01 hydraulic pump", parsed, limit=5)
+    structured = StructuredRetrievalAgent().run(engine, "M7040 E01 hydraulic pump", parsed, limit=5)
+    vector = VectorRetrievalAgent().run(engine, "M7040 E01 hydraulic pump", parsed, limit=5)
+
+    assert keyword["channel"] == "keyword"
+    assert keyword["status"] == "ok"
+    assert any(result["chunk_id"] == "chunk-m7040" for result in keyword["results"])
+    assert structured["channel"] == "structured"
+    assert any(result["chunk_id"] == "chunk-m7040" for result in structured["results"])
+    assert vector["channel"] == "vector"
+    assert vector["status"] == "ok"
+
+
+def test_evidence_merge_and_visual_agents_combine_channel_results(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    parsed = parse_query("dashboard hydraulic warning image", engine=engine)
+    keyword = KeywordRetrievalAgent().run(engine, "dashboard hydraulic warning image", parsed, limit=5)
+
+    candidates = EvidenceMergeAgent().run(engine, [keyword], parsed)
+    with_visual = VisualRetrievalAgent().run(candidates)
+
+    image_candidate = next(candidate for candidate in with_visual if candidate["chunk_id"] == "chunk-image")
+    assert "keyword" in image_candidate["channels"]
+    assert "vision" in image_candidate["channels"]
+
+
+def test_rerank_agent_returns_ranked_candidates_and_trace(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    parsed = parse_query("M7040 E01 hydraulic pump", engine=engine)
+    candidates = EvidenceMergeAgent().run(
+        engine,
+        [KeywordRetrievalAgent().run(engine, "M7040 E01 hydraulic pump", parsed, limit=5)],
+        parsed,
+    )
+
+    ranked, trace = RerankAgent().run(candidates, parsed, limit=2, query="M7040 E01 hydraulic pump")
+
+    assert ranked
+    assert trace["strategy"] == "deterministic_evidence_rerank"
+    assert trace["items"]
 
 
 def test_hybrid_retrieval_marks_unrelated_model_candidates_not_applicable(tmp_path) -> None:

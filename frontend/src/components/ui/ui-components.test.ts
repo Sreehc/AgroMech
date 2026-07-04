@@ -48,7 +48,7 @@ describe("base ui components", () => {
     const indexedHtml = renderToStaticMarkup(createElement(StatusBadge, { status: "indexed" }));
     const unknownHtml = renderToStaticMarkup(createElement(StatusBadge, { status: "archived" }));
 
-    expect(indexedHtml).toContain("已索引");
+    expect(indexedHtml).toContain("入库完成");
     expect(unknownHtml).toContain("未知状态");
     expect(unknownHtml).toContain("未知后端状态：archived");
   });

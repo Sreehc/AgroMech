@@ -186,6 +186,36 @@ embedding_references = Table(
 Index("ix_embedding_references_chunk_id", embedding_references.c.chunk_id)
 Index("ix_embedding_references_vector", embedding_references.c.vector_store, embedding_references.c.vector_id)
 
+visual_page_embeddings = Table(
+    "visual_page_embeddings",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("asset_id", ForeignKey("document_assets.id", ondelete="CASCADE"), nullable=False),
+    Column("document_id", ForeignKey("documents.id", ondelete="CASCADE"), nullable=False),
+    Column("page_number", Integer),
+    Column("provider", String(80), nullable=False),
+    Column("model", String(120), nullable=False),
+    Column("embedding_version", String(160), nullable=False, default="vis_emb_local_256_page-v1"),
+    Column("embedding_dimension", Integer, nullable=False, default=256),
+    Column("vector_store", String(80), nullable=False),
+    Column("collection", String(120), nullable=False),
+    Column("vector_id", String(255), nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+Index(
+    "ix_visual_page_embeddings_asset_id_version",
+    visual_page_embeddings.c.asset_id,
+    visual_page_embeddings.c.embedding_version,
+    unique=True,
+)
+Index("ix_visual_page_embeddings_document_id", visual_page_embeddings.c.document_id)
+Index(
+    "ix_visual_page_embeddings_vector",
+    visual_page_embeddings.c.vector_store,
+    visual_page_embeddings.c.vector_id,
+)
+
 chunk_search_index = Table(
     "chunk_search_index",
     metadata,
@@ -306,6 +336,8 @@ answer_citations = Table(
     Column("qa_record_id", ForeignKey("qa_records.id", ondelete="CASCADE"), nullable=False),
     Column("document_id", ForeignKey("documents.id", ondelete="SET NULL")),
     Column("chunk_id", ForeignKey("document_chunks.id", ondelete="SET NULL")),
+    Column("asset_id", ForeignKey("document_assets.id", ondelete="SET NULL")),
+    Column("page_number", Integer),
     Column("citation_payload", JSON, nullable=False),
     Column("accessible", Boolean, nullable=False, default=True),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),

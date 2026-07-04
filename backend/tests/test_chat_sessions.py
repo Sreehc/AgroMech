@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert, select
 
 from auth_helpers import auth_token_for_user
-from agromech_api.config import Settings
+from agromech_api.core.config import Settings
 from agromech_api.db.enums import UserRole
 from agromech_api.db.models import chat_sessions, metadata
 from agromech_api.main import create_app

@@ -9,9 +9,9 @@ from agromech_api.db.models import (
     graph_nodes,
     metadata,
 )
-from agromech_api.entity_extraction import process_document_entities
-from agromech_api.config import Settings
-from agromech_api.graph_rag import GraphRagService, GraphSyncError, build_graph_service
+from agromech_api.domain.entities import process_document_entities
+from agromech_api.core.config import Settings
+from agromech_api.integrations.graph.rag import GraphRagService, GraphSyncError, build_graph_service
 from agromech_api.ingestion import IngestFailure
 from agromech_api.ingestion import QueuedTask
 from agromech_worker.main import process_ingest_task

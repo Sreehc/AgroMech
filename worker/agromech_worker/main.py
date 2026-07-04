@@ -6,18 +6,18 @@ from pathlib import Path
 from sqlalchemy import Engine
 from sqlalchemy import select
 
-from agromech_api.config import get_settings
-from agromech_api.database import get_engine
+from agromech_api.core.config import get_settings
+from agromech_api.core.database import get_engine
 from agromech_api.db.models import documents
-from agromech_api.document_metadata_extraction import backfill_document_metadata, build_metadata_extractor
-from agromech_api.entity_extraction import process_document_entities
-from agromech_api.image_ingestion import is_image_document, is_pdf_document, process_image_document
-from agromech_api.ingestion import IngestFailure, IngestTaskRunner, QueuedTask
-from agromech_api.ocr_ingestion import process_ocr_document
-from agromech_api.search_indexing import SearchIndexer
-from agromech_api.table_ingestion import is_table_document, process_table_document
-from agromech_api.text_ingestion import process_text_document
-from agromech_api.vision_ingestion import build_visual_reader, process_visual_observations
+from agromech_api.domain.entities import process_document_entities
+from agromech_api.ingestion.image import is_image_document, is_pdf_document, process_image_document
+from agromech_api.ingestion.metadata import backfill_document_metadata, build_metadata_extractor
+from agromech_api.ingestion.ocr import process_ocr_document
+from agromech_api.ingestion.runner import IngestFailure, IngestTaskRunner, QueuedTask
+from agromech_api.ingestion.table import is_table_document, process_table_document
+from agromech_api.ingestion.text import process_text_document
+from agromech_api.ingestion.vision import build_visual_reader, process_visual_observations
+from agromech_api.rag.retrieval.indexing import SearchIndexer, VisualPageIndexer
 
 
 LOGGER = logging.getLogger("agromech.worker")
@@ -38,6 +38,7 @@ def process_ingest_task(
     graph_service=None,
     ocr_document_processor=None,
     metadata_extractor=SKIP_METADATA_EXTRACTION,
+    asset_root: Path | None = None,
 ) -> None:
     settings = get_settings()
     with engine.connect() as connection:
@@ -57,9 +58,7 @@ def process_ingest_task(
             engine,
             task.document_id,
             persist_visual=True,
-            asset_root=Path(settings.local_file_storage_path)
-            if settings.file_storage_backend == "local"
-            else None,
+            asset_root=asset_root,
         )
         # Run the visual-understanding pass over the page + region assets the OCR
         # step just persisted so figures/tables get searchable image chunks too.
@@ -84,7 +83,7 @@ def process_ingest_task(
             task.document_id,
             ocr_reader=ocr_reader,
             fail_on_all_ocr_failure=False,
-            asset_root=Path(settings.local_file_storage_path) if settings.file_storage_backend == "local" else None,
+            asset_root=asset_root,
         )
         visual_result = process_visual_observations(
             engine,
@@ -117,7 +116,7 @@ def process_ingest_task(
             task.document_id,
             ocr_reader=ocr_reader,
             fail_on_all_ocr_failure=False,
-            asset_root=Path(settings.local_file_storage_path) if settings.file_storage_backend == "local" else None,
+            asset_root=asset_root,
         )
         visual_result = process_visual_observations(
             engine,
@@ -148,9 +147,14 @@ def process_ingest_task(
     entity_result = process_document_entities(engine, task.document_id)
     # Graph RAG is intentionally disabled in the current main ingest path.
     # Keep graph modules available for future work, but do not sync graph edges here.
-    index_result = (indexer or SearchIndexer(engine)).index_document(task.document_id)
+    active_indexer = indexer or SearchIndexer(engine)
+    index_result = active_indexer.index_document(task.document_id)
+    visual_index_result = None
+    if any(asset["asset_type"] == "page_image" for asset in _document_page_assets(engine, task.document_id)):
+        visual_indexer = VisualPageIndexer(engine)
+        visual_index_result = visual_indexer.index_document(task.document_id)
     LOGGER.info(
-        "Processed ingest task: task_id=%s document_id=%s task_type=%s chunk_kind=%s chunks=%s metadata_fields=%s entity_links=%s indexed_chunks=%s",
+        "Processed ingest task: task_id=%s document_id=%s task_type=%s chunk_kind=%s chunks=%s metadata_fields=%s entity_links=%s indexed_chunks=%s visual_indexed=%s",
         task.id,
         task.document_id,
         task.task_type,
@@ -159,7 +163,17 @@ def process_ingest_task(
         sorted(metadata_result.updated_fields) if metadata_result is not None else [],
         entity_result.link_count,
         index_result.chunk_count,
+        visual_index_result.chunk_count if visual_index_result is not None else 0,
     )
+
+
+def _document_page_assets(engine: Engine, document_id: str):
+    from agromech_api.db.models import document_assets
+
+    with engine.connect() as connection:
+        return connection.execute(
+            select(document_assets.c.asset_type).where(document_assets.c.document_id == document_id)
+        ).mappings().all()
 
 
 def run_once(*, engine: Engine | None = None, processor=None) -> str:
@@ -168,15 +182,22 @@ def run_once(*, engine: Engine | None = None, processor=None) -> str:
         # Production path: build the indexer from the configured embedding
         # provider (Bailian when selected) so real ingestion uses real vectors.
         # Direct process_ingest_task callers keep the deterministic default.
-        from agromech_api.embedding import build_embedding_provider
-        from agromech_api.zvec_store import build_vector_store
+        from agromech_api.rag.langchain.adapters import build_text_vector_components
+        from agromech_api.integrations.vectorstores.zvec import build_vector_store
 
         settings = get_settings()
+        text_embeddings, text_vector_store, text_collection = build_text_vector_components(settings)
+        if settings.vector_backend != "zvec":
+            from agromech_api.integrations.embeddings.text import build_embedding_provider
+
+            text_embeddings = build_embedding_provider(settings)
+            text_vector_store = build_vector_store(settings)
+            text_collection = None
         indexer = SearchIndexer(
             active_engine,
-            embedding_provider=build_embedding_provider(settings),
-            vector_store=build_vector_store(settings),
-            collection=settings.zvec_collection if settings.vector_backend == "zvec" else None,
+            embedding_provider=text_embeddings,
+            vector_store=text_vector_store,
+            collection=text_collection,
         )
         visual_reader = build_visual_reader(settings)
         metadata_extractor = build_metadata_extractor(settings)
@@ -186,6 +207,7 @@ def run_once(*, engine: Engine | None = None, processor=None) -> str:
             indexer=indexer,
             visual_reader=visual_reader,
             metadata_extractor=metadata_extractor,
+            asset_root=Path(settings.local_file_storage_path) if settings.file_storage_backend == "local" else None,
         )
     else:
         active_processor = processor

@@ -107,6 +107,25 @@ export type DocumentTaskSummary = {
   finished_at: string | null;
 };
 
+export function documentTaskStagePresentation(stage: string | null): string {
+  if (!stage) return "未标注";
+  const labels: Record<string, string> = {
+    queued: "已排队",
+    processing: "处理中",
+    uploading: "上传中",
+    ocr: "OCR 中",
+    chunking: "文本切分中",
+    text_embedding: "文本向量化中",
+    visual_embedding: "页面向量化中",
+    indexed: "入库完成",
+    deleted: "已删除",
+    parse: "解析中",
+    render: "渲染中",
+    vision: "视觉理解中",
+  };
+  return labels[stage] ?? stage;
+}
+
 export type DocumentChunkSummary = {
   id: string;
   chunk_type: string;
@@ -149,7 +168,7 @@ export type DocumentStatusPresentation = {
 const documentStatusPresentations: Record<DocumentStatus, DocumentStatusPresentation> = {
   queued: { label: "已排队", tone: "info", known: true },
   processing: { label: "处理中", tone: "info", known: true },
-  indexed: { label: "已索引", tone: "success", known: true },
+  indexed: { label: "入库完成", tone: "success", known: true },
   failed: { label: "处理失败", tone: "danger", known: true },
   reprocessing: { label: "重新处理中", tone: "warning", known: true },
   deleting: { label: "删除中", tone: "warning", known: true },

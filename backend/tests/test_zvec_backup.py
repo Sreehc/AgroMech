@@ -1,8 +1,8 @@
 import tarfile
 from datetime import datetime, timedelta, timezone
 
-from agromech_api.config import Settings
-from agromech_api.zvec_backup import (
+from agromech_api.core.config import Settings
+from agromech_api.integrations.vectorstores.zvec_backup import (
     RestoreStatus,
     backup_zvec,
     cleanup_zvec_backups,

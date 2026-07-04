@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from agromech_api.config import Settings
-from agromech_api.task_queue import InMemoryTaskPublisher, TaskMessage, build_task_publisher
+from agromech_api.core.config import Settings
+from agromech_api.integrations.queue.task_queue import InMemoryTaskPublisher, TaskMessage, build_task_publisher
 
 
 def test_in_memory_task_publisher_records_serializable_message() -> None:

@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, insert, select
 
 from agromech_api.db.enums import AssetType, ChunkType, DocumentStatus, TaskType
 from agromech_api.db.models import document_assets, document_chunks, documents, metadata
-from agromech_api.image_ingestion import (
+from agromech_api.ingestion.image import (
     ImageAssetCandidate,
     OcrUnavailable,
     replace_image_assets_and_chunks,

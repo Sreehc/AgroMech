@@ -1,4 +1,4 @@
-from agromech_api.evidence_check import check_evidence_sufficiency
+from agromech_api.rag.retrieval.evidence_check import check_evidence_sufficiency
 
 
 def test_empty_evidence_is_insufficient() -> None:

@@ -35,6 +35,7 @@ def test_docs_directory_only_contains_curated_markdown_set() -> None:
         "tech-design.md",
         "api-spec.md",
         "database-design.md",
+        "multi-agent-roadmap.md",
         "deployment.md",
         "ux-spec.md",
         "history.md",

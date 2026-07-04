@@ -3,8 +3,8 @@ import urllib.error
 
 import pytest
 
-from agromech_api.config import Settings
-from agromech_api.rerank import (
+from agromech_api.core.config import Settings
+from agromech_api.rag.retrieval.rerank import (
     BailianRerankProvider,
     RerankError,
     build_rerank_provider,

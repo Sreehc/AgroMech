@@ -5,10 +5,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert, select
 
 from auth_helpers import auth_token_for_user
-from agromech_api.config import Settings
+from agromech_api.core.config import Settings
 from agromech_api.db.enums import UserRole
 from agromech_api.db.models import metadata, retrieval_logs
-from agromech_api.hybrid_retrieval import hybrid_retrieve_with_trace
+from agromech_api.rag.retrieval.hybrid import hybrid_retrieve_with_trace
 from agromech_api.main import create_app
 from test_hybrid_retrieval import create_test_engine, seed_retrieval_corpus
 

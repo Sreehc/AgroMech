@@ -4,8 +4,8 @@ from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, update
 
-from agromech_api.auth import create_access_token, create_database_user, hash_password, require_roles, verify_password
-from agromech_api.config import Settings
+from agromech_api.security.auth import create_access_token, create_database_user, hash_password, require_roles, verify_password
+from agromech_api.core.config import Settings
 from agromech_api.db.enums import UserRole
 from agromech_api.db.models import auth_audit_logs, metadata, users
 from agromech_api.main import create_app

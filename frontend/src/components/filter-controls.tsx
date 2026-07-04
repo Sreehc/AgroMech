@@ -15,7 +15,7 @@ export const statusOptions: SelectOption[] = [
   { value: "", label: "全部状态" },
   { value: "queued", label: "已排队" },
   { value: "processing", label: "处理中" },
-  { value: "indexed", label: "已索引" },
+  { value: "indexed", label: "入库完成" },
   { value: "failed", label: "处理失败" },
   { value: "reprocessing", label: "重新处理中" },
   { value: "deleting", label: "删除中" },

@@ -3,12 +3,12 @@ import urllib.error
 
 import pytest
 
-from agromech_api.answer_generation import (
+from agromech_api.rag.generation.answer import (
     AnswerGenerationError,
     BailianAnswerGenerator,
     build_answer_generator,
 )
-from agromech_api.config import Settings
+from agromech_api.core.config import Settings
 
 
 def bailian_settings(**overrides) -> Settings:

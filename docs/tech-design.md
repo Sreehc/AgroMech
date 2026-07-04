@@ -29,6 +29,25 @@ Frontend
      -> wakes worker; DB ingest_tasks remains source of truth
 ```
 
+后端包结构：
+
+```text
+backend/agromech_api/
+  main.py                  # FastAPI app 入口
+  core/                    # 配置、数据库、错误、依赖健康检查
+  security/                # 认证、token、角色权限
+  sessions/                # 会话 API 和问答消息历史
+  domain/                  # 领域实体抽取、型号别名归一
+  evaluation/              # 评测数据集 runner
+  api/                     # auth/health 等薄路由
+  db/                      # SQLAlchemy Core 表和枚举
+  documents/               # 资料库上传、查询、详情服务
+  ingestion/               # 文档解析、OCR、视觉观察、元数据回填
+  integrations/            # 外部服务适配器、队列、存储、向量库
+  qa/                      # /qa/text 和 /qa/image 路由及响应组织
+  rag/                     # Agent、检索、生成、LangChain/LangGraph 组件
+```
+
 ## 3. 上传和导入链路
 
 ```text
@@ -45,8 +64,9 @@ POST /documents
 
 关键实现：
 
-- `backend/agromech_api/task_queue.py`：`TaskMessage`、Noop/InMemory/RabbitMQ publisher。
-- `backend/agromech_api/documents.py`：上传、重处理、删除后发布 task message。
+- `backend/agromech_api/integrations/queue/task_queue.py`：`TaskMessage`、Noop/InMemory/RabbitMQ publisher。
+- `backend/agromech_api/documents/routes.py`：上传、重处理、删除后发布 task message。
+- `backend/agromech_api/documents/service.py`：文档库查询、文档详情和导入状态服务。
 - `worker/agromech_worker/rabbitmq.py`：消费 RabbitMQ 消息，调用 runner，按 DB 状态 ack/nack。
 - `worker/agromech_worker/main.py`：`run_once()` 一次性 DB 调度；`consume_forever()` 常驻 RabbitMQ 消费。
 
@@ -110,13 +130,13 @@ parse_query
 
 模块：
 
-- `agent_state.py`：LangGraph state。
-- `agent_router.py`：规则优先 Text-only / Text+Visual 路由，保留可注入 LLM seam。
-- `agent_tools.py`：用 `langchain-core` tool 包装检索调用。
-- `agent_graph.py`：LangGraph `StateGraph`。
-- `agent_controller.py`：路由模块调用的编排边界。
-- `evidence_check.py`：规则证据充足性检查。
-- `query_rewrite.py`：确定性领域同义词扩展。
+- `backend/agromech_api/rag/agent/state.py`：LangGraph state。
+- `backend/agromech_api/rag/agent/router.py`：规则优先 Text-only / Text+Visual 路由，保留可注入 LLM seam。
+- `backend/agromech_api/rag/agent/tools.py`：用 `langchain-core` tool 包装检索调用。
+- `backend/agromech_api/rag/agent/graph.py`：LangGraph `StateGraph`。
+- `backend/agromech_api/rag/agent/controller.py`：路由模块调用的编排边界。
+- `backend/agromech_api/rag/retrieval/evidence_check.py`：规则证据充足性检查。
+- `backend/agromech_api/rag/retrieval/query_rewrite.py`：确定性领域同义词扩展。
 
 当前实现边界：
 

@@ -8,7 +8,7 @@ from agromech_api.db.models import (
     documents,
     metadata,
 )
-from agromech_api.entity_extraction import EntityExtractor, filter_chunks_by_entity, process_document_entities
+from agromech_api.domain.entities import EntityExtractor, filter_chunks_by_entity, process_document_entities
 from agromech_api.ingestion import QueuedTask
 from agromech_worker.main import process_ingest_task
 

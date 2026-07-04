@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine
 
 from agromech_api.db.models import metadata
-from agromech_api.model_aliases import (
+from agromech_api.domain.model_aliases import (
     STATUS_ACTIVE,
     STATUS_CANDIDATE,
     add_llm_candidate,
@@ -12,7 +12,7 @@ from agromech_api.model_aliases import (
     resolve_model,
     resolve_models,
 )
-from agromech_api.query_understanding import parse_query
+from agromech_api.rag.retrieval.query_understanding import parse_query
 
 
 def create_test_engine(tmp_path):

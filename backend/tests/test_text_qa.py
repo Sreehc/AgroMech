@@ -5,13 +5,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert, select
 
 from auth_helpers import auth_token_for_user
-from agromech_api.answer_generation import AnswerGenerationError
-from agromech_api.config import Settings
+from agromech_api.rag.generation.answer import AnswerGenerationError
+from agromech_api.core.config import Settings
 from agromech_api.db.enums import ChunkType, DocumentStatus, UserRole
 from agromech_api.db.models import answer_citations, chat_sessions, document_chunks, documents, metadata, qa_messages, qa_records, retrieval_logs
 from agromech_api.main import create_app
-from agromech_api.search_indexing import SearchIndexer
-from agromech_api.zvec_store import ZvecVectorStore
+from agromech_api.rag.retrieval.indexing import SearchIndexer
+from agromech_api.integrations.vectorstores.zvec import ZvecVectorStore
 from test_hybrid_retrieval import seed_retrieval_corpus
 
 
@@ -69,6 +69,8 @@ def test_text_qa_returns_answer_sections_citations_trace_and_persists_records(tm
     assert "证据" in payload["answer"]
     assert payload["sections"]["conclusion"]
     assert payload["sections"]["uncertainty"]
+    assert payload["sections"]["domain_strategy"]["domain_agent"] == "FaultDiagnosisAgent"
+    assert payload["sections"]["domain_strategy"]["question_type"] == "fault_diagnosis"
     assert payload["citations"][0]["document_id"] == "doc-m7040"
     assert payload["citations"][0]["document_title"] == "M7040 Manual"
     assert payload["citations"][0]["chunk_id"] == "chunk-m7040"
@@ -205,7 +207,7 @@ def test_text_qa_uses_configured_zvec_vector_search(tmp_path: Path) -> None:
     settings = qa_settings(tmp_path)
     settings.vector_backend = "zvec"
     settings.zvec_path = str(tmp_path / "zvec")
-    settings.zvec_collection = "agromech_chunks"
+    settings.zvec_text_collection = "agromech_text_chunks"
     settings.embedding_provider = "local"
     settings.model_provider = "local"
     settings.embedding_dimension = 256
@@ -214,7 +216,7 @@ def test_text_qa_uses_configured_zvec_vector_search(tmp_path: Path) -> None:
     seed_retrieval_corpus(engine)
     store = ZvecVectorStore.from_path(tmp_path / "zvec", expected_dimension=256)
     for document_id in ["doc-m7040", "doc-l3901", "doc-image"]:
-        SearchIndexer(engine, vector_store=store, collection="agromech_chunks").index_document(document_id)
+        SearchIndexer(engine, vector_store=store, collection="agromech_text_chunks").index_document(document_id)
     token = auth_token_for_user(engine, settings, username=UserRole.USER.value, role=UserRole.USER)
     client = TestClient(create_app(settings=settings, database_engine=engine))
 
@@ -462,7 +464,7 @@ def test_text_qa_uses_bailian_answer_generator_when_configured(tmp_path: Path, m
             }
 
     monkeypatch.setattr(
-        "agromech_api.text_qa.build_answer_generator",
+        "agromech_api.qa.text.build_answer_generator",
         lambda _settings: FakeAnswerGenerator(),
     )
 
@@ -496,7 +498,7 @@ def test_text_qa_does_not_initialize_graph_service_when_graph_is_out_of_scope(
     def fail_build_graph_service(*_args, **_kwargs):
         raise AssertionError("graph service should not be initialized")
 
-    monkeypatch.setattr("agromech_api.graph_rag.build_graph_service", fail_build_graph_service)
+    monkeypatch.setattr("agromech_api.integrations.graph.rag.build_graph_service", fail_build_graph_service)
 
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
@@ -527,7 +529,7 @@ def test_text_qa_returns_readable_error_when_bailian_answer_generation_fails(
             raise AnswerGenerationError("LLM request failed: upstream unavailable")
 
     monkeypatch.setattr(
-        "agromech_api.text_qa.build_answer_generator",
+        "agromech_api.qa.text.build_answer_generator",
         lambda _settings: FailingAnswerGenerator(),
     )
 

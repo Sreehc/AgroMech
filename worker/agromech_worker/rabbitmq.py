@@ -5,7 +5,7 @@ import logging
 import time
 from collections.abc import Callable
 
-from agromech_api.config import Settings
+from agromech_api.core.config import Settings
 
 
 LOGGER = logging.getLogger("agromech.worker.rabbitmq")

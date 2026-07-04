@@ -1,4 +1,4 @@
-from agromech_api.agent_router import route_question
+from agromech_api.rag.agent.router import route_question
 
 
 def test_maintenance_period_question_routes_text_only() -> None:

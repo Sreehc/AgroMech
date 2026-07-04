@@ -13,7 +13,7 @@ from agromech_api.db.models import (
     metadata,
     qa_records,
 )
-from agromech_api.errors import AppError, ErrorCode
+from agromech_api.core.errors import AppError, ErrorCode
 from agromech_api.ingestion import IngestFailure, IngestTaskRunner, retry_failed_task
 
 

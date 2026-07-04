@@ -13,6 +13,7 @@ def test_core_tables_are_declared() -> None:
         "document_assets",
         "ingest_tasks",
         "embedding_references",
+        "visual_page_embeddings",
         "chunk_search_index",
         "chunk_entity_links",
         "document_entity_extractions",
@@ -35,6 +36,7 @@ def test_key_indexes_are_declared() -> None:
     chunks = metadata.tables["document_chunks"]
     tasks = metadata.tables["ingest_tasks"]
     search_index = metadata.tables["chunk_search_index"]
+    visual_page_embeddings = metadata.tables["visual_page_embeddings"]
     entity_links = metadata.tables["chunk_entity_links"]
     graph_nodes = metadata.tables["graph_nodes"]
     graph_edges = metadata.tables["graph_edges"]
@@ -52,6 +54,7 @@ def test_key_indexes_are_declared() -> None:
             chunks,
             tasks,
             search_index,
+            visual_page_embeddings,
             entity_links,
             graph_nodes,
             graph_edges,
@@ -70,6 +73,7 @@ def test_key_indexes_are_declared() -> None:
         "ix_documents_brand_model",
         "ix_document_chunks_document_id",
         "ix_chunk_search_index_chunk_id_version",
+        "ix_visual_page_embeddings_asset_id_version",
         "ix_chunk_entity_links_lookup",
         "ix_graph_nodes_lookup",
         "ix_graph_edges_chunk",
@@ -129,6 +133,30 @@ def test_embedding_tables_declare_version_fields() -> None:
         assert table.c.embedding_version.nullable is False
         assert table.c.chunk_profile.nullable is False
         assert table.c.embedding_dimension.nullable is False
+
+
+def test_visual_page_embeddings_table_declares_visual_index_fields() -> None:
+    visual_embeddings = metadata.tables["visual_page_embeddings"]
+
+    assert {
+        "id",
+        "asset_id",
+        "document_id",
+        "page_number",
+        "provider",
+        "model",
+        "embedding_version",
+        "embedding_dimension",
+        "vector_store",
+        "collection",
+        "vector_id",
+        "status",
+        "created_at",
+    }.issubset(visual_embeddings.c.keys())
+    assert visual_embeddings.c.asset_id.nullable is False
+    assert visual_embeddings.c.document_id.nullable is False
+    assert visual_embeddings.c.embedding_version.nullable is False
+    assert visual_embeddings.c.embedding_dimension.nullable is False
 
 
 def test_retrieval_logs_declare_model_config_field() -> None:

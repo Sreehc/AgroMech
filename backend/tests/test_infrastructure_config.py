@@ -1,7 +1,7 @@
 import pytest
 
-from agromech_api.config import Settings
-from agromech_api.infrastructure import dependency_targets
+from agromech_api.core.config import Settings
+from agromech_api.core.infrastructure import dependency_targets
 
 
 # Local-fallback settings that do not require any real backend credentials.
@@ -62,7 +62,7 @@ def test_bailian_provider_requires_api_key() -> None:
 
 
 def test_get_settings_uses_local_backends_in_ci(monkeypatch: pytest.MonkeyPatch) -> None:
-    from agromech_api.config import get_settings
+    from agromech_api.core.config import get_settings
 
     monkeypatch.setenv("CI", "true")
     get_settings.cache_clear()
@@ -161,7 +161,7 @@ def test_dependency_targets_skip_neo4j_when_graph_backend_is_local() -> None:
 
 
 def test_local_storage_health_check_reports_ok(tmp_path) -> None:
-    from agromech_api.infrastructure import check_file_storage
+    from agromech_api.core.infrastructure import check_file_storage
 
     settings = local_settings(local_file_storage_path=str(tmp_path / "files"))
 
@@ -173,7 +173,7 @@ def test_local_storage_health_check_reports_ok(tmp_path) -> None:
 
 
 def test_local_storage_health_check_reports_unavailable_on_unwritable_path(tmp_path) -> None:
-    from agromech_api.infrastructure import check_file_storage
+    from agromech_api.core.infrastructure import check_file_storage
 
     blocker = tmp_path / "blocker"
     blocker.write_bytes(b"not a directory")
@@ -186,7 +186,7 @@ def test_local_storage_health_check_reports_unavailable_on_unwritable_path(tmp_p
 
 
 def test_oss_error_sanitizer_omits_credentials() -> None:
-    from agromech_api.infrastructure import sanitize_oss_error
+    from agromech_api.core.infrastructure import sanitize_oss_error
 
     class FakeOssError(Exception):
         status = 403
@@ -200,7 +200,7 @@ def test_oss_error_sanitizer_omits_credentials() -> None:
 
 
 def test_zvec_health_check_reports_ok_when_storage_paths_are_available(tmp_path) -> None:
-    from agromech_api.infrastructure import check_zvec_storage
+    from agromech_api.core.infrastructure import check_zvec_storage
 
     settings = local_settings(
         vector_backend="zvec",
@@ -216,7 +216,7 @@ def test_zvec_health_check_reports_ok_when_storage_paths_are_available(tmp_path)
 
 
 def test_zvec_health_check_reports_unavailable_on_unwritable_storage_path(tmp_path) -> None:
-    from agromech_api.infrastructure import check_zvec_storage
+    from agromech_api.core.infrastructure import check_zvec_storage
 
     blocker = tmp_path / "zvec-blocker"
     blocker.write_bytes(b"not a directory")
@@ -233,7 +233,7 @@ def test_zvec_health_check_reports_unavailable_on_unwritable_storage_path(tmp_pa
 
 
 def test_bailian_health_check_reports_unavailable_when_required_config_is_missing() -> None:
-    from agromech_api.infrastructure import check_bailian_config
+    from agromech_api.core.infrastructure import check_bailian_config
 
     settings = local_settings(
         model_provider="local",
@@ -250,7 +250,7 @@ def test_bailian_health_check_reports_unavailable_when_required_config_is_missin
 
 
 def test_bailian_health_check_reports_ok_when_any_bailian_provider_is_configured() -> None:
-    from agromech_api.infrastructure import check_bailian_config
+    from agromech_api.core.infrastructure import check_bailian_config
 
     settings = local_settings(
         model_provider="bailian",

@@ -6,8 +6,8 @@ from sqlalchemy import create_engine, insert, select
 from agromech_api.db.enums import AssetType, ChunkType, DocumentStatus
 from agromech_api.db.models import document_assets, document_chunks, documents, metadata
 from agromech_api.ingestion import IngestFailure
-from agromech_api.ocr_ingestion import OcrIngestionResult, process_ocr_document
-from agromech_api.paddleocr_client import OcrPage, OcrRegion, OcrResult
+from agromech_api.ingestion.ocr import OcrIngestionResult, process_ocr_document
+from agromech_api.integrations.ocr.paddleocr import OcrPage, OcrRegion, OcrResult
 
 
 def create_test_engine(tmp_path: Path):

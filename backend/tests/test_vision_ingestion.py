@@ -7,11 +7,11 @@ from urllib.request import Request
 import pytest
 from sqlalchemy import create_engine, insert, select
 
-from agromech_api.config import Settings, get_settings
+from agromech_api.core.config import Settings, get_settings
 from agromech_api.db.enums import AssetType, ChunkType, DocumentStatus, TaskType
 from agromech_api.db.models import document_assets, document_chunks, documents, ingest_tasks, metadata
 from agromech_api.ingestion import QueuedTask
-from agromech_api.vision_ingestion import (
+from agromech_api.ingestion.vision import (
     BailianVisionReader,
     VisionModelError,
     build_visual_reader,

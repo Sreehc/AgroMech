@@ -11,8 +11,8 @@ from sqlalchemy import create_engine
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from agromech_api.auth import create_database_user  # noqa: E402
-from agromech_api.config import get_settings  # noqa: E402
+from agromech_api.security.auth import create_database_user  # noqa: E402
+from agromech_api.core.config import get_settings  # noqa: E402
 from agromech_api.db.enums import UserRole  # noqa: E402
 
 

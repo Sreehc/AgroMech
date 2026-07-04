@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, insert, select
 from agromech_api.db.enums import ChunkType, DocumentStatus, TaskType
 from agromech_api.db.models import document_chunks, documents, metadata
 from agromech_api.ingestion import QueuedTask
-from agromech_api.table_ingestion import ParsedTableSegment, parse_table_document, replace_table_chunks
+from agromech_api.ingestion.table import ParsedTableSegment, parse_table_document, replace_table_chunks
 from agromech_worker.main import process_ingest_task
 
 

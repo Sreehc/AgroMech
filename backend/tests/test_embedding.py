@@ -1,13 +1,13 @@
 import pytest
 
-from agromech_api.config import Settings
-from agromech_api.embedding import (
+from agromech_api.core.config import Settings
+from agromech_api.integrations.embeddings.text import (
     BailianEmbeddingProvider,
     EmbeddingDimensionError,
     EmbeddingError,
     build_embedding_provider,
 )
-from agromech_api.search_indexing import DeterministicEmbeddingProvider
+from agromech_api.rag.retrieval.indexing import DeterministicEmbeddingProvider
 
 
 def bailian_settings(**overrides) -> Settings:

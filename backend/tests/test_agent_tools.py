@@ -1,4 +1,4 @@
-from agromech_api.agent_tools import build_text_retrieval_tool
+from agromech_api.rag.agent.tools import build_text_retrieval_tool
 
 
 def test_build_text_retrieval_tool_wraps_retrieve_callable() -> None:

@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from agromech_api.config import Settings
-from agromech_api.file_storage import (
+from agromech_api.core.config import Settings
+from agromech_api.integrations.storage.file_storage import (
     LocalFileStorage,
     OSSFileStorage,
     build_file_storage,

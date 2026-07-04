@@ -1,8 +1,8 @@
 from sqlalchemy import create_engine, select
 
-from agromech_api.config import Settings
+from agromech_api.core.config import Settings
 from agromech_api.db.models import evaluation_questions, evaluation_runs, metadata
-from agromech_api.evaluation import (
+from agromech_api.evaluation.runner import (
     EvaluationQuestion,
     import_evaluation_questions,
     load_evaluation_questions,

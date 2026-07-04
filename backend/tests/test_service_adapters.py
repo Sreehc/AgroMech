@@ -1,5 +1,5 @@
-from agromech_api.config import Settings
-from agromech_api.service_adapters import ServiceTimeouts
+from agromech_api.core.config import Settings
+from agromech_api.integrations.service_adapters import ServiceTimeouts
 
 
 def test_external_service_timeouts_are_loaded_from_settings() -> None:

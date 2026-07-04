@@ -1,4 +1,4 @@
-from agromech_api.query_rewrite import rewrite_query_for_evidence
+from agromech_api.rag.retrieval.query_rewrite import rewrite_query_for_evidence
 
 
 def test_query_rewrite_expands_domain_synonyms_and_preserves_filters() -> None:

@@ -1,4 +1,4 @@
-from agromech_api.agent_state import append_agent_trace, initial_agent_state
+from agromech_api.rag.agent.state import append_agent_trace, initial_agent_state
 
 
 def test_initial_agent_state_contains_question_filters_and_trace() -> None:

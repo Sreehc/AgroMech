@@ -21,6 +21,7 @@ import {
   getDocument,
   getDocumentPreview,
   reprocessDocument,
+  documentTaskStagePresentation,
   type DocumentDetail,
   type DocumentFailure,
   type DocumentPreviewResponse,
@@ -373,7 +374,7 @@ function TaskCard({ task }: { task: DocumentTaskSummary | null }) {
           <MetadataItem label="任务 ID" value={task.id} />
           <MetadataItem label="类型" value={task.task_type} />
           <MetadataItem label="状态" value={task.status} />
-          <MetadataItem label="阶段" value={task.stage} />
+          <MetadataItem label="阶段" value={documentTaskStagePresentation(task.stage)} />
           <MetadataItem label="尝试次数" value={task.attempt_count} />
           <MetadataItem label="完成时间" value={task.finished_at} />
         </dl>

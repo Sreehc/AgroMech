@@ -112,14 +112,14 @@ describe("library document list", () => {
     );
 
     expect(overviewHtml).toContain("总资料数");
-    expect(overviewHtml).toContain("已索引");
+    expect(overviewHtml).toContain("入库完成");
     expect(overviewHtml).toContain("失败");
     expect(overviewHtml).toContain("当前资料状态");
     expect(listHtml).toContain("M7040 Hydraulic Manual");
     expect(listHtml).toContain("m7040-hydraulic.pdf");
     expect(listHtml).toContain("Kubota / M7040");
     expect(listHtml).toContain("manual / zh-CN");
-    expect(listHtml).toContain("已索引");
+    expect(listHtml).toContain("入库完成");
     expect(listHtml).toContain("查看详情");
     expect(listHtml).toContain("展开");
   });
