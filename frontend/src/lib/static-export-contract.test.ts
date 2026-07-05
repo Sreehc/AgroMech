@@ -10,8 +10,13 @@ describe("static frontend deployment contract", () => {
   it("builds as a static Next export without server routes", () => {
     const nextConfig = readFrontendFile("next.config.ts");
 
+    // 生产构建必须是纯静态导出。dev 下为了本地 /backend 代理关闭 export、
+    // 启用 rewrites，因此 export 与 rewrites 都必须由 isDev 门控，
+    // 保证 `next build`（NODE_ENV=production）时只有 export、没有 server route。
     expect(nextConfig).toContain('output: "export"');
-    expect(nextConfig).not.toContain("rewrites()");
+    expect(nextConfig).toContain("const isDev = process.env.NODE_ENV === \"development\"");
+    expect(nextConfig).toContain("isDev ? {} : { output: \"export\" }");
+    expect(nextConfig).toMatch(/isDev[\s\S]*rewrites\(\)/);
     expect(existsSync(new URL("../app/api/chat/route.ts", import.meta.url))).toBe(false);
   });
 

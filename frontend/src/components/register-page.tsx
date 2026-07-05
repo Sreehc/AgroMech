@@ -1,8 +1,8 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   Books,
   CheckCircle,
@@ -15,7 +15,12 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ApiRequestError, currentUser, errorMessage, login } from "@/lib/frontend-api";
+import {
+  ApiRequestError,
+  currentUser,
+  errorMessage,
+  register,
+} from "@/lib/frontend-api";
 import { clearReturnToPath, loadReturnToPath, saveSession } from "@/lib/session";
 
 const capabilityCards = [
@@ -24,13 +29,24 @@ const capabilityCards = [
   { title: "安全提醒优先", icon: ShieldCheck },
 ];
 
-export function LoginPage() {
+// 用户名 3-120 字符、密码至少 8 位，与后端 /auth/register 约束保持一致。
+const USERNAME_MIN_LENGTH = 3;
+const PASSWORD_MIN_LENGTH = 8;
+
+export function RegisterPage() {
   const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const disabled = username.trim() === "" || password === "" || submitting;
+
+  const trimmedUsername = username.trim();
+  const usernameValid = trimmedUsername.length >= USERNAME_MIN_LENGTH;
+  const passwordValid = password.length >= PASSWORD_MIN_LENGTH;
+  const passwordsMatch = password === confirmPassword;
+  const disabled =
+    !usernameValid || !passwordValid || !passwordsMatch || submitting;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -38,15 +54,24 @@ export function LoginPage() {
     setSubmitting(true);
     setError(null);
     try {
-      const token = await login(username.trim(), password);
+      const token = await register(trimmedUsername, password);
       const user = await currentUser(token.access_token);
-      saveSession({ token: token.access_token, username: user.username, role: user.role });
+      saveSession({
+        token: token.access_token,
+        username: user.username,
+        role: user.role,
+      });
       const returnTo = loadReturnToPath();
       clearReturnToPath();
       router.replace(returnTo || "/");
     } catch (caught) {
-      setError(caught instanceof ApiRequestError ? errorMessage(caught.response) : "服务暂时不可用，请稍后重试。");
+      setError(
+        caught instanceof ApiRequestError
+          ? errorMessage(caught.response)
+          : "服务暂时不可用，请稍后重试。",
+      );
       setPassword("");
+      setConfirmPassword("");
     } finally {
       setSubmitting(false);
     }
@@ -71,7 +96,7 @@ export function LoginPage() {
               农机维修 AI 资料工作台
             </h1>
             <p className="mt-5 max-w-xl text-base leading-7 text-text-muted">
-              基于可信来源作答，可追溯依据，高风险维修保留安全边界。
+              注册后可保存问答记录、管理个人知识库并上传资料。
             </p>
           </div>
 
@@ -92,11 +117,13 @@ export function LoginPage() {
           </div>
         </div>
 
-        {/* Right: sign-in card */}
+        {/* Right: sign-up card */}
         <div className="rounded-2xl border border-border bg-surface-raised p-6 shadow-xl shadow-foreground/5 sm:p-8">
           <div className="border-b border-border pb-5">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">Secure access</p>
-            <h2 className="mt-2 text-2xl font-semibold tracking-tight">登录工作台</h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">
+              Create account
+            </p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight">免费注册</h2>
           </div>
 
           <form className="mt-6 grid gap-4" onSubmit={submit}>
@@ -104,7 +131,7 @@ export function LoginPage() {
               <span className="font-medium">账号</span>
               <Input
                 autoComplete="username"
-                placeholder="输入账号"
+                placeholder="至少 3 个字符"
                 value={username}
                 state={error ? "invalid" : "default"}
                 onChange={(event) => setUsername(event.target.value)}
@@ -113,32 +140,48 @@ export function LoginPage() {
             <label className="grid gap-1.5 text-sm">
               <span className="font-medium">密码</span>
               <Input
-                autoComplete="current-password"
-                placeholder="输入密码"
+                autoComplete="new-password"
+                placeholder="至少 8 位"
                 type="password"
                 value={password}
                 state={error ? "invalid" : "default"}
                 onChange={(event) => setPassword(event.target.value)}
               />
             </label>
+            <label className="grid gap-1.5 text-sm">
+              <span className="font-medium">确认密码</span>
+              <Input
+                autoComplete="new-password"
+                placeholder="再次输入密码"
+                type="password"
+                value={confirmPassword}
+                state={
+                  confirmPassword && !passwordsMatch ? "invalid" : "default"
+                }
+                onChange={(event) => setConfirmPassword(event.target.value)}
+              />
+              {confirmPassword && !passwordsMatch ? (
+                <span className="text-xs text-status-danger">两次输入的密码不一致。</span>
+              ) : null}
+            </label>
             {error ? (
               <Alert tone="danger">
-                <AlertTitle>登录失败</AlertTitle>
+                <AlertTitle>注册失败</AlertTitle>
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             ) : null}
             <Button className="h-10 w-full" type="submit" disabled={disabled}>
-              {submitting ? "登录中" : "登录"}
+              {submitting ? "注册中" : "注册"}
             </Button>
           </form>
 
           <p className="mt-4 text-sm text-text-muted">
-            还没有账号？
+            已有账号？
             <Link
               className="ml-1 font-medium text-foreground underline-offset-4 hover:underline"
-              href="/register"
+              href="/login"
             >
-              免费注册
+              返回登录
             </Link>
           </p>
 

@@ -33,5 +33,6 @@ def register_image_qa_routes(app, *, settings: Settings, engine: Engine) -> None
             language=language,
             trace_id=request.state.trace_id,
             username=user.username,
+            viewer_user_id=user.user_id,
             session_id=session_id,
         )

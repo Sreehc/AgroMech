@@ -62,14 +62,18 @@ documents = Table(
     Column("failure_code", String(80)),
     Column("failure_message", Text),
     Column("created_by_role", String(32), nullable=False, default="admin"),
+    Column("owner_user_id", ForeignKey("users.id", ondelete="SET NULL")),
+    Column("visibility", String(16), nullable=False, default="private", server_default=text("'private'")),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("deleted_at", DateTime(timezone=True)),
     CheckConstraint(enum_check("status", DocumentStatus), name="document_status"),
+    CheckConstraint("visibility IN ('public', 'private')", name="document_visibility"),
 )
 Index("ix_documents_status", documents.c.status)
 Index("ix_documents_brand_model", documents.c.brand, documents.c.model)
 Index("ix_documents_file_hash", documents.c.file_hash)
+Index("ix_documents_visibility_owner", documents.c.visibility, documents.c.owner_user_id)
 
 users = Table(
     "users",

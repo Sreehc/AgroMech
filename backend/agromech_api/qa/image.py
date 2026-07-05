@@ -267,6 +267,7 @@ async def answer_image_question(
     language: str | None,
     trace_id: str,
     username: str | None = None,
+    viewer_user_id: str | None = None,
     session_id: str | None = None,
 ) -> dict[str, object]:
     normalized_filters = {
@@ -342,6 +343,7 @@ async def answer_image_question(
         trace_id=trace_id,
         settings=settings,
         username=username,
+        viewer_user_id=viewer_user_id,
         image_context={
             "ocr_text": visual.get("ocr_text"),
             "description": visual.get("description"),

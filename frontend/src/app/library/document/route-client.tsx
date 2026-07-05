@@ -2,7 +2,7 @@
 
 import { useSearchParams } from "next/navigation";
 
-import { AppFrame } from "@/components/app-frame";
+import { AppShell } from "@/components/app-shell";
 import { DocumentDetailPage } from "@/components/document-detail-page";
 import { MissingDocumentIdState } from "./page";
 
@@ -11,12 +11,12 @@ export function DocumentDetailRouteClient() {
   const documentId = searchParams.get("id")?.trim();
 
   return (
-    <AppFrame>
+    <AppShell view="library">
       {documentId ? (
         <DocumentDetailPage documentId={documentId} />
       ) : (
         <MissingDocumentIdState />
       )}
-    </AppFrame>
+    </AppShell>
   );
 }

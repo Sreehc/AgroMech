@@ -36,6 +36,7 @@ def seed_document_with_chunks(engine) -> None:
                 storage_uri="file:///tmp/manual.txt",
                 status=DocumentStatus.PROCESSING.value,
                 created_by_role="admin",
+                visibility="public",
             )
         )
         connection.execute(
@@ -175,6 +176,7 @@ def test_worker_main_ingest_path_does_not_sync_graph(tmp_path) -> None:
                 storage_uri=f"file://{source_path}",
                 status=DocumentStatus.PROCESSING.value,
                 created_by_role="admin",
+                visibility="public",
             )
         )
 
@@ -362,6 +364,7 @@ def test_worker_ignores_graph_service_failures_when_graph_is_disabled(tmp_path) 
                 storage_uri=f"file://{source_path}",
                 status=DocumentStatus.PROCESSING.value,
                 created_by_role="admin",
+                visibility="public",
             )
         )
 

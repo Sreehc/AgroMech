@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from sqlalchemy import Engine, delete, insert, select
+from sqlalchemy import Engine, delete, insert, or_, select
 
 from agromech_api.core.config import get_settings
 from agromech_api.db.enums import AssetType
@@ -312,6 +312,17 @@ def vector_search(
     return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
 
 
+def _visual_visibility_condition(viewer_user_id: str | None):
+    # 可视页检索的可见性过滤（fail-closed）：公用文档对所有人可见，私有文档仅
+    # 归属者本人可见，匿名访客（viewer_user_id 为 None）只保留公用文档。
+    if viewer_user_id is None:
+        return documents.c.visibility == "public"
+    return or_(
+        documents.c.visibility == "public",
+        documents.c.owner_user_id == viewer_user_id,
+    )
+
+
 def visual_page_search(
     engine: Engine,
     query: str,
@@ -321,6 +332,7 @@ def visual_page_search(
     embedding_provider=None,
     vector_store=None,
     collection: str | None = None,
+    viewer_user_id: str | None = None,
 ) -> list[dict[str, object]]:
     settings = get_settings()
     provider = embedding_provider or DeterministicVisualEmbeddingProvider(
@@ -374,6 +386,7 @@ def visual_page_search(
             .where(visual_page_embeddings.c.embedding_version == active_version)
             .where(visual_page_embeddings.c.collection == active_collection)
             .where(visual_page_embeddings.c.status == "ready")
+            .where(_visual_visibility_condition(viewer_user_id))
         ).mappings().all()
     metadata_by_asset = {row["asset_id"]: row for row in rows}
     results = []

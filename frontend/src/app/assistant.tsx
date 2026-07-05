@@ -7,6 +7,7 @@ import { createContext, useContext, useMemo } from "react";
 
 import { Thread } from "@/components/assistant-ui/thread";
 import { StructuredAnswerCard } from "@/components/structured-answer-card";
+import { createAnonymousHistoryAdapter } from "@/lib/anonymous-chat-store";
 import {
   createAgroMechChatTransport,
   type AgroMechContextFilters,
@@ -52,9 +53,15 @@ export const Assistant = ({
       }),
     [filters, sessionId, token],
   );
+  // 未登录时把对话整段持久化到 localStorage（匿名单会话）；登录用户走后端会话历史。
+  const anonymousHistory = useMemo(
+    () => (token ? undefined : createAnonymousHistoryAdapter()),
+    [token],
+  );
   const runtime = useChatRuntime({
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     transport,
+    adapters: anonymousHistory ? { history: anonymousHistory } : undefined,
   });
 
   return (

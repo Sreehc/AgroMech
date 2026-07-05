@@ -76,6 +76,7 @@ def answer_text_question(
     filters: dict[str, str | None] | None = None,
     settings: Settings | None = None,
     username: str | None = None,
+    viewer_user_id: str | None = None,
     session_id: str | None = None,
     image_context: dict[str, object] | None = None,
 ) -> dict[str, object]:
@@ -99,7 +100,7 @@ def answer_text_question(
         return payload
 
     settings = settings or get_settings()
-    controller = build_text_agent_controller(settings)
+    controller = build_text_agent_controller(settings, viewer_user_id=viewer_user_id)
     payload = controller.answer_text(
         engine=engine,
         question=normalized_question,
@@ -120,15 +121,21 @@ def answer_text_question(
     return payload
 
 
-def build_text_agent_controller(settings: Settings) -> AgentController:
+def build_text_agent_controller(
+    settings: Settings, *, viewer_user_id: str | None = None
+) -> AgentController:
     return AgentController(
         parse_query_fn=lambda question, engine=None: parse_query(
             query_with_filters(question, {}),
             engine=engine,
         ),
-        retrieve_fn=lambda **kwargs: retrieve_for_text_agent(settings=settings, **kwargs),
+        retrieve_fn=lambda **kwargs: retrieve_for_text_agent(
+            settings=settings, viewer_user_id=viewer_user_id, **kwargs
+        ),
         planner_fn=lambda **kwargs: planner_for_text_agent(settings=settings, **kwargs),
-        visual_retrieve_fn=lambda **kwargs: retrieve_visual_for_text_agent(settings=settings, **kwargs),
+        visual_retrieve_fn=lambda **kwargs: retrieve_visual_for_text_agent(
+            settings=settings, viewer_user_id=viewer_user_id, **kwargs
+        ),
         answer_fn=lambda **kwargs: answer_for_text_agent(settings=settings, **kwargs),
         multimodal_answer_fn=lambda **kwargs: answer_for_text_agent(settings=settings, **kwargs),
     )
@@ -141,6 +148,7 @@ def retrieve_for_text_agent(
     question: str,
     filters: dict[str, str | None],
     trace_id: str,
+    viewer_user_id: str | None = None,
     **_kwargs,
 ) -> dict[str, object]:
     search_query = query_with_filters(question, filters)
@@ -169,6 +177,7 @@ def retrieve_for_text_agent(
         graph_service=graph_service,
         rerank_provider=rerank_provider,
         rerank_top_k=settings.rerank_top_k,
+        viewer_user_id=viewer_user_id,
         settings=settings,
     )
     if retrieval.get("status") == "ok":
@@ -185,6 +194,7 @@ def retrieve_visual_for_text_agent(
     question: str,
     filters: dict[str, str | None],
     trace_id: str,
+    viewer_user_id: str | None = None,
     **_kwargs,
 ) -> dict[str, object]:
     _ = trace_id
@@ -201,6 +211,7 @@ def retrieve_visual_for_text_agent(
         vector_store=vector_store,
         collection=vector_collection,
         active_embedding_version=settings.visual_embedding_version,
+        viewer_user_id=viewer_user_id,
     )
     final_evidence = retrieval[: settings.final_evidence_limit]
     return {

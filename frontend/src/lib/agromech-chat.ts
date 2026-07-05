@@ -244,16 +244,19 @@ async function askAgroMechBackend(
   context: AgroMechChatTransportContext,
   abortSignal: AbortSignal | undefined,
 ): Promise<AgroMechQaResponse> {
-  if (!context.token) {
-    throw new Error("Authentication required.");
-  }
   const request = extractAgroMechRequest(messages, {
     filters: context.filters,
     session_id: context.sessionId,
   });
-  const authorization = { Authorization: `Bearer ${context.token}` };
+  // 文本问答支持匿名（后端放开 /qa/text 并按 IP 限流）；图片问答仍需登录。
+  const authorization = context.token
+    ? { Authorization: `Bearer ${context.token}` }
+    : undefined;
 
   if (request.image) {
+    if (!context.token) {
+      throw new Error("请先登录再上传图片提问。");
+    }
     const formData = new FormData();
     formData.append("image", await dataUrlToBlob(request.image.dataUrl), request.image.filename);
     if (request.question) {
@@ -282,12 +285,13 @@ async function askAgroMechBackend(
     };
   }
 
+  const textHeaders: Record<string, string> = { "Content-Type": "application/json" };
+  if (authorization) {
+    Object.assign(textHeaders, authorization);
+  }
   const response = await fetch("/backend/qa/text", {
     method: "POST",
-    headers: {
-      ...authorization,
-      "Content-Type": "application/json",
-    },
+    headers: textHeaders,
     body: JSON.stringify({
       question: request.question,
       filters: request.filters,

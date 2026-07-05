@@ -49,11 +49,11 @@
 
 ### RAG 和 Agentic QA
 
-- 混合检索支持关键词、结构化、向量、视觉和 rerank；图谱检索暂不启用。
+- 混合检索支持关键词、结构化、向量、视觉和 rerank；图谱检索暂不启用。并行检索通道已拆成 `KeywordRetrievalAgent`、`VectorRetrievalAgent`、`StructuredRetrievalAgent`、`VisualRetrievalAgent`、`EvidenceMergeAgent`、`RerankAgent`（`rag/retrieval/hybrid.py`）。
 - retrieval trace 记录 channels、model_config、candidates、rerank、final_evidence。
 - `/qa/text` 和 `/qa/image` 进入 Agent Controller。
-- LangGraph 工作流包含 parse、route、retrieve、evidence check、rewrite、generation guard、answer。
-- 返回结果包含 `agent_trace`。
+- 受控多 Agent 已落地为 `rag/agent/agents/` 下的独立 Agent class：`QueryAnalystAgent`、`RouterAgent`、`RetrievalAgent`、`PlanningAgent`、`EvidenceReviewerAgent`、`DomainSpecialistAgent`、`QueryRewriteAgent`、`AnswerWriterAgent`、`SafetyReviewerAgent`，由 LangGraph `graph.py` 连接为固定流程。
+- 返回结果包含 `agent_trace`，可回溯每个 Agent 的步骤和决策。
 
 ### 前端
 

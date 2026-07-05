@@ -25,6 +25,8 @@ const documents: DocumentSummary[] = [
     summary: null,
     recent_task: null,
     failure: null,
+    visibility: "public",
+    owner_user_id: null,
   },
   {
     id: "doc-2",
@@ -39,6 +41,8 @@ const documents: DocumentSummary[] = [
     summary: null,
     recent_task: null,
     failure: null,
+    visibility: "public",
+    owner_user_id: null,
   },
   {
     id: "doc-3",
@@ -53,6 +57,8 @@ const documents: DocumentSummary[] = [
     summary: null,
     recent_task: null,
     failure: null,
+    visibility: "public",
+    owner_user_id: null,
   },
 ];
 

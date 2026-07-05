@@ -7,13 +7,22 @@ import {
   CaretDown,
   CaretUp,
   Database,
+  FileCsv,
+  FileDoc,
+  FileImage,
+  FilePdf,
   FileText,
+  FileXls,
   FunnelSimple,
+  Globe,
+  ListBullets,
+  Lock,
   MagnifyingGlass,
+  SquaresFour,
   Trash,
   UploadSimple,
 } from "@phosphor-icons/react";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useState, type ComponentType } from "react";
 import Link from "next/link";
 
 import {
@@ -33,13 +42,23 @@ import {
 } from "@/components/filter-controls";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
   ApiRequestError,
-  canMutateLibrary,
+  canManageDocument,
+  canUploadDocuments,
+  canPublishToPublicLibrary,
   deleteDocument,
   emptyDocumentFilters,
   errorMessage,
@@ -49,6 +68,8 @@ import {
   uploadDocument,
   type DocumentFilters,
   type DocumentSummary,
+  type DocumentVisibility,
+  type UserRole,
 } from "@/lib/frontend-api";
 import { loadSession, type Session } from "@/lib/session";
 
@@ -62,6 +83,7 @@ export function LibraryPage() {
   const [expandedDocumentId, setExpandedDocumentId] = useState<string | null>(
     null,
   );
+  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [filters, setFilters] = useState<DocumentFilters>(emptyDocumentFilters);
   const [draftFilters, setDraftFilters] =
     useState<DocumentFilters>(emptyDocumentFilters);
@@ -72,12 +94,20 @@ export function LibraryPage() {
   const [uploading, setUploading] = useState(false);
   const [closeUploadConfirmationOpen, setCloseUploadConfirmationOpen] =
     useState(false);
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [uploadVisibility, setUploadVisibility] =
+    useState<DocumentVisibility>("private");
   const [confirmation, setConfirmation] = useState<{
     action: "reprocess" | "delete";
     document: DocumentSummary;
   } | null>(null);
 
-  const canMutate = session ? canMutateLibrary(session.role) : false;
+  // 任何登录用户都能上传（默认进私库）；仅 admin/maintainer 能传到公用库。
+  const canUpload = session ? canUploadDocuments(session.role) : false;
+  const canUploadPublic = session
+    ? canPublishToPublicLibrary(session.role)
+    : false;
+  const role = session?.role ?? null;
   const filterOptions = collectFilterOptions(documents);
   const selectedBrand = draftFilters.brand.trim();
   const modelOptions = selectedBrand
@@ -101,20 +131,9 @@ export function LibraryPage() {
     },
   );
   const hasDraftFilters = hasDocumentFilters(draftFilters);
-  const processingCount = documents.filter((document) =>
-    ["queued", "processing", "reprocessing"].includes(document.status),
-  ).length;
-  const failedCount = documents.filter(
-    (document) => document.status === "failed",
-  ).length;
   const readyUploadCount = uploadQueue.filter(
     (item) => item.status === "pending" || item.status === "failed",
   ).length;
-  const latestQueueItems = uploadQueue.slice(0, 3);
-  const latestQueueLabel =
-    latestQueueItems.length === 0
-      ? "当前没有待观察的上传项目。"
-      : `最近 ${latestQueueItems.length} 个上传项目会固定显示在这里。`;
 
   async function load(nextSession = session, nextFilters = filters) {
     if (!nextSession) return;
@@ -207,6 +226,7 @@ export function LibraryPage() {
     updateUploadQueueItem(item.id, { status: "uploading", progress: 0 });
     try {
       const result = await uploadDocument(session.token, item.file, {
+        visibility: uploadVisibility,
         onProgress: (progress) => {
           updateUploadQueueItem(item.id, { status: "uploading", progress });
         },
@@ -336,42 +356,188 @@ export function LibraryPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-auto p-4 md:p-6">
+      <Breadcrumb items={[{ label: "资料库" }]} />
       <PageHeader
         eyebrow="Library"
         title="资料库"
-        description="查找资料、查看处理状态，或上传新资料。"
         actions={
-          canMutate ? (
-            <a
-              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border px-2.5 text-sm font-medium text-foreground"
-              href="#library-upload"
-            >
+          canUpload ? (
+            <Button type="button" onClick={() => setUploadDialogOpen(true)}>
               <UploadSimple className="size-4" />
               上传资料
-            </a>
+              {readyUploadCount > 0 ? (
+                <span className="ml-1 rounded-full bg-primary-foreground/20 px-1.5 text-xs">
+                  {readyUploadCount}
+                </span>
+              ) : null}
+            </Button>
           ) : null
         }
       />
 
-      <div className="grid gap-5 lg:grid-cols-[minmax(320px,380px)_minmax(0,1fr)] lg:items-start">
-        <aside className="grid gap-5 lg:sticky lg:top-6">
-          <section className="grid gap-3 rounded-2xl border border-border bg-surface-panel/65 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-foreground">
-                  上传与处理
-                </p>
-                <p className="mt-1 text-sm text-text-muted">
-                  先添加文件，再点击“开始上传”。
-                </p>
-              </div>
-              <div className="rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
-                {readyUploadCount > 0
-                  ? `待上传 ${readyUploadCount}`
-                  : "队列已同步"}
-              </div>
-            </div>
-            {canMutate ? (
+      <section className="grid gap-4 border-b border-border pb-5">
+        <LibraryStatusOverview documents={documents} total={total} />
+      </section>
+
+      <form
+        className="grid gap-3 border-b border-border pb-5"
+        onSubmit={submitFilters}
+      >
+        <div className="grid gap-3 xl:grid-cols-[1.2fr_1.2fr_1fr_1fr_1fr_auto]">
+          <SearchableSelectField
+            label="品牌"
+            value={draftFilters.brand}
+            options={filterOptions.brands}
+            placeholder="选择品牌或直接输入"
+            onChange={(value) =>
+              setDraftFilters({ ...draftFilters, brand: value })
+            }
+          />
+          <SearchableSelectField
+            label="型号"
+            value={draftFilters.model}
+            options={modelOptions}
+            placeholder="选择型号或直接输入"
+            onChange={(value) =>
+              setDraftFilters({ ...draftFilters, model: value })
+            }
+          />
+          <SelectField
+            label="类型"
+            value={draftFilters.document_type}
+            options={mergedDocumentTypeOptions}
+            onChange={(value) =>
+              setDraftFilters({ ...draftFilters, document_type: value })
+            }
+          />
+          <SelectField
+            label="语言"
+            value={draftFilters.language}
+            options={mergedLanguageOptions}
+            onChange={(value) =>
+              setDraftFilters({ ...draftFilters, language: value })
+            }
+          />
+          <SelectField
+            label="状态"
+            value={draftFilters.status}
+            options={statusOptions}
+            onChange={(value) =>
+              setDraftFilters({ ...draftFilters, status: value })
+            }
+          />
+          <button
+            className="inline-flex items-center justify-center gap-2 self-end rounded-md bg-primary px-4 py-2 text-primary-foreground"
+            type="submit"
+          >
+            <FunnelSimple className="size-4" />
+            筛选
+          </button>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
+          <p>可直接输入品牌或型号；没有匹配项时按回车即可。</p>
+          <div className="flex flex-wrap gap-2">
+            {hasDraftFilters ? (
+              <button
+                className="font-medium text-foreground underline-offset-4 hover:underline"
+                type="button"
+                onClick={clearFilters}
+              >
+                重置
+              </button>
+            ) : (
+              <span>未启用筛选条件</span>
+            )}
+          </div>
+        </div>
+      </form>
+
+      {message ? (
+        <pre className="rounded-lg border border-status-success/30 bg-status-success/10 p-3 text-sm text-status-success">
+          {message}
+        </pre>
+      ) : null}
+      {error ? (
+        <LibraryErrorAlert
+          title={error.title}
+          message={error.message}
+          onRetry={error.retryable ? () => void load(session, filters) : undefined}
+        />
+      ) : null}
+
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-foreground">资料清单</p>
+        <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface-panel/65 p-1">
+          <button
+            aria-label="网格视图"
+            aria-pressed={viewMode === "grid"}
+            className={viewToggleClass(viewMode === "grid")}
+            type="button"
+            onClick={() => setViewMode("grid")}
+          >
+            <SquaresFour className="size-4" weight={viewMode === "grid" ? "fill" : "regular"} />
+            网格
+          </button>
+          <button
+            aria-label="列表视图"
+            aria-pressed={viewMode === "list"}
+            className={viewToggleClass(viewMode === "list")}
+            type="button"
+            onClick={() => setViewMode("list")}
+          >
+            <ListBullets className="size-4" weight={viewMode === "list" ? "fill" : "regular"} />
+            列表
+          </button>
+        </div>
+      </div>
+
+      {viewMode === "grid" ? (
+        <LibraryDocumentGrid
+          role={role}
+          documents={documents}
+          hasActiveFilters={hasActiveFilters}
+          loading={loading}
+          total={total}
+          onClearFilters={clearFilters}
+          onDelete={(document) => setConfirmation({ action: "delete", document })}
+          onReprocess={(document) =>
+            setConfirmation({ action: "reprocess", document })
+          }
+        />
+      ) : (
+        <LibraryDocumentList
+          role={role}
+          documents={documents}
+          expandedDocumentId={expandedDocumentId}
+          hasActiveFilters={hasActiveFilters}
+          loading={loading}
+          total={total}
+          onClearFilters={clearFilters}
+          onDelete={(document) => setConfirmation({ action: "delete", document })}
+          onExpand={(documentId) =>
+            setExpandedDocumentId(
+              expandedDocumentId === documentId ? null : documentId,
+            )
+          }
+          onReprocess={(document) =>
+            setConfirmation({ action: "reprocess", document })
+          }
+        />
+      )}
+
+      <Dialog open={uploadDialogOpen} onOpenChange={setUploadDialogOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>上传资料</DialogTitle>
+            <DialogDescription>先添加文件，再点击“开始上传”。</DialogDescription>
+          </DialogHeader>
+          {canUpload ? (
+            <div className="grid gap-4">
+              <UploadVisibilityField
+                value={uploadVisibility}
+                canUploadPublic={canUploadPublic}
+                onChange={setUploadVisibility}
+              />
               <DocumentUploadQueue
                 busy={uploading}
                 closeConfirmationOpen={closeUploadConfirmationOpen}
@@ -384,201 +550,14 @@ export function LibraryPage() {
                 onRetry={retryUploadQueueItem}
                 onStartUpload={startUploadQueue}
               />
-            ) : (
-              <div className="rounded-2xl border border-border/70 bg-surface-raised/85 p-4 text-sm text-text-muted">
-                当前账号没有上传权限。
-              </div>
-            )}
-          </section>
-
-          <section className="grid gap-3 rounded-2xl border border-border bg-surface-panel/65 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-foreground">
-                  最近动态
-                </p>
-                <p className="mt-1 text-sm text-text-muted">
-                  {latestQueueLabel}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <MiniStat label="处理中" value={processingCount} tone="info" />
-                <MiniStat label="失败" value={failedCount} tone="danger" />
-              </div>
             </div>
-            <div className="grid gap-2">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-text-muted">
-                上传队列
-              </p>
-              {latestQueueItems.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-border/80 bg-surface-raised/85 px-3 py-4 text-sm text-text-muted">
-                  还没有加入上传队列的文件。可从上方拖拽或点击选择资料。
-                </div>
-              ) : (
-                latestQueueItems.map((item) => (
-                  <div
-                    key={item.id}
-                    className="rounded-xl border border-border/70 bg-surface-raised/85 px-3 py-3"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-foreground">
-                          {item.name}
-                        </p>
-                        <p className="mt-1 text-xs text-text-muted">
-                          {Math.max(0, item.progress)}% ·{" "}
-                          {item.status === "uploaded"
-                            ? "已上传，后台处理中"
-                            : item.status === "failed"
-                              ? "需重试"
-                              : "等待队列处理"}
-                        </p>
-                      </div>
-                      <span className="rounded-full border border-border/60 bg-muted px-2 py-0.5 text-[11px] text-text-muted">
-                        {item.status === "uploaded"
-                          ? "后台处理中"
-                          : item.status === "failed"
-                            ? "失败"
-                            : "队列中"}
-                      </span>
-                    </div>
-                  </div>
-                ))
-              )}
+          ) : (
+            <div className="rounded-2xl border border-border/70 bg-surface-raised/85 p-4 text-sm text-text-muted">
+              当前账号没有上传权限。
             </div>
-          </section>
-
-          {message ? (
-            <pre className="rounded-lg border border-status-success/30 bg-status-success/10 p-3 text-sm text-status-success">
-              {message}
-            </pre>
-          ) : null}
-          {error ? (
-            <LibraryErrorAlert
-              title={error.title}
-              message={error.message}
-              onRetry={
-                error.retryable ? () => void load(session, filters) : undefined
-              }
-            />
-          ) : null}
-        </aside>
-
-        <section className="grid gap-4">
-          <div className="grid gap-4 rounded-2xl border border-border bg-surface-panel/65 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-foreground">
-                  资料浏览
-                </p>
-                <p className="mt-1 text-sm text-text-muted">
-                  在这里查看资料状态、筛选结果和处理情况。
-                </p>
-              </div>
-              <div className="text-xs text-text-muted">
-                {loading ? "正在同步资料列表" : `当前资料状态 · ${total} 份`}
-              </div>
-            </div>
-            <LibraryStatusOverview documents={documents} total={total} />
-          </div>
-
-          <form
-            className="grid gap-3 rounded-2xl border border-border bg-surface-panel/65 p-4"
-            onSubmit={submitFilters}
-          >
-            <div className="grid gap-3 xl:grid-cols-[1.2fr_1.2fr_1fr_1fr_1fr_auto]">
-              <SearchableSelectField
-                label="品牌"
-                value={draftFilters.brand}
-                options={filterOptions.brands}
-                placeholder="选择品牌或直接输入"
-                onChange={(value) =>
-                  setDraftFilters({ ...draftFilters, brand: value })
-                }
-              />
-              <SearchableSelectField
-                label="型号"
-                value={draftFilters.model}
-                options={modelOptions}
-                placeholder="选择型号或直接输入"
-                onChange={(value) =>
-                  setDraftFilters({ ...draftFilters, model: value })
-                }
-              />
-              <SelectField
-                label="类型"
-                value={draftFilters.document_type}
-                options={mergedDocumentTypeOptions}
-                onChange={(value) =>
-                  setDraftFilters({ ...draftFilters, document_type: value })
-                }
-              />
-              <SelectField
-                label="语言"
-                value={draftFilters.language}
-                options={mergedLanguageOptions}
-                onChange={(value) =>
-                  setDraftFilters({ ...draftFilters, language: value })
-                }
-              />
-              <SelectField
-                label="状态"
-                value={draftFilters.status}
-                options={statusOptions}
-                onChange={(value) =>
-                  setDraftFilters({ ...draftFilters, status: value })
-                }
-              />
-              <button
-                className="inline-flex items-center justify-center gap-2 self-end rounded-md bg-primary px-4 py-2 text-primary-foreground"
-                type="submit"
-              >
-                <FunnelSimple className="size-4" />
-                筛选
-              </button>
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
-              <p>
-                可直接输入品牌或型号；没有匹配项时按回车即可。
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {hasDraftFilters ? (
-                  <button
-                    className="font-medium text-foreground underline-offset-4 hover:underline"
-                    type="button"
-                    onClick={clearFilters}
-                  >
-                    重置
-                  </button>
-                ) : (
-                  <span>未启用筛选条件</span>
-                )}
-              </div>
-            </div>
-          </form>
-
-          <LibraryDocumentList
-            canMutate={canMutate}
-            documents={documents}
-            expandedDocumentId={expandedDocumentId}
-            hasActiveFilters={hasActiveFilters}
-            loading={loading}
-            total={total}
-            onClearFilters={clearFilters}
-            onDelete={(document) =>
-              setConfirmation({ action: "delete", document })
-            }
-            onExpand={(documentId) =>
-              setExpandedDocumentId(
-                expandedDocumentId === documentId ? null : documentId,
-              )
-            }
-            onReprocess={(document) =>
-              setConfirmation({ action: "reprocess", document })
-            }
-          />
-        </section>
-      </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <LibraryActionConfirmDialog
         confirmation={confirmation}
@@ -606,14 +585,6 @@ export function LibraryStatusOverview({
 
   return (
     <section className="grid gap-3">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-text-muted">
-          当前资料状态
-        </p>
-        <p className="text-xs text-text-muted">
-          这里显示当前筛选范围内的资料状态。
-        </p>
-      </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <OverviewItem label="总资料数" value={total} />
         <OverviewItem label="处理中" value={processing} />
@@ -634,7 +605,7 @@ function OverviewItem({
   tone?: "neutral" | "danger";
 }) {
   return (
-    <div className="rounded-2xl border border-border/70 bg-surface-raised/85 p-4">
+    <div className="rounded-xl bg-surface-panel/40 p-4">
       <p className="text-xs font-semibold uppercase tracking-[0.14em] text-text-muted">
         {label}
       </p>
@@ -650,32 +621,273 @@ function OverviewItem({
   );
 }
 
-function MiniStat({
-  label,
+function viewToggleClass(active: boolean): string {
+  return [
+    "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium transition-all",
+    active
+      ? "bg-gradient-to-r from-brand-primary to-brand-accent text-primary-foreground shadow-sm shadow-brand-primary/25"
+      : "text-text-muted hover:text-foreground",
+  ].join(" ");
+}
+
+type FileKind = "pdf" | "doc" | "xls" | "csv" | "image" | "text";
+
+const fileKindIcons: Record<
+  FileKind,
+  ComponentType<{ className?: string; weight?: "duotone" | "fill" | "regular" }>
+> = {
+  pdf: FilePdf,
+  doc: FileDoc,
+  xls: FileXls,
+  csv: FileCsv,
+  image: FileImage,
+  text: FileText,
+};
+
+// 每种文件类型配一个强调色圆圈，呼应 rag-web-ui 的彩色文件卡，但走 AgroMech 语义色。
+const fileKindTone: Record<FileKind, string> = {
+  pdf: "text-status-danger bg-status-danger/10 border-status-danger/20",
+  doc: "text-status-info bg-status-info/10 border-status-info/20",
+  xls: "text-status-success bg-status-success/10 border-status-success/20",
+  csv: "text-status-success bg-status-success/10 border-status-success/20",
+  image: "text-brand-accent bg-brand-accent/10 border-brand-accent/25",
+  text: "text-text-muted bg-muted border-border",
+};
+
+function resolveFileKind(fileName: string): FileKind {
+  const extension = fileName.split(".").pop()?.toLowerCase() ?? "";
+  if (extension === "pdf") return "pdf";
+  if (extension === "doc" || extension === "docx") return "doc";
+  if (extension === "xls" || extension === "xlsx") return "xls";
+  if (extension === "csv") return "csv";
+  if (["png", "jpg", "jpeg", "webp", "gif"].includes(extension)) return "image";
+  return "text";
+}
+
+function formatDocumentDate(value: string | null): string {
+  if (!value) return "未更新";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString("zh-CN");
+}
+
+function UploadVisibilityField({
   value,
-  tone = "neutral",
+  canUploadPublic,
+  onChange,
 }: {
-  label: string;
-  value: number;
-  tone?: "neutral" | "info" | "danger";
+  value: DocumentVisibility;
+  canUploadPublic: boolean;
+  onChange: (value: DocumentVisibility) => void;
 }) {
-  const toneClass =
-    tone === "danger"
-      ? "text-status-danger border border-status-danger/20 bg-status-danger/10"
-      : tone === "info"
-        ? "text-primary border border-primary/20 bg-primary/10"
-        : "text-foreground border border-border/70 bg-surface-raised/85";
+  const options: {
+    value: DocumentVisibility;
+    label: string;
+    icon: ComponentType<{ className?: string; weight?: "duotone" | "fill" | "regular" }>;
+  }[] = [
+    { value: "private", label: "私有（仅自己可见）", icon: Lock },
+    { value: "public", label: "公用（所有人可检索）", icon: Globe },
+  ];
 
   return (
-    <div className={["rounded-xl px-3 py-2 text-right", toneClass].join(" ")}>
-      <p className="text-[11px] uppercase tracking-[0.12em]">{label}</p>
-      <p className="mt-1 text-lg font-semibold leading-none">{value}</p>
+    <div className="grid gap-2">
+      <p className="text-sm font-medium text-foreground">可见范围</p>
+      <div className="flex flex-wrap gap-2">
+        {options.map((option) => {
+          if (option.value === "public" && !canUploadPublic) return null;
+          const active = value === option.value;
+          const OptionIcon = option.icon;
+          return (
+            <button
+              aria-pressed={active}
+              className={[
+                "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm transition-colors",
+                active
+                  ? "border-brand-primary/40 bg-brand-primary/10 text-foreground"
+                  : "border-border bg-surface-raised text-text-muted hover:text-foreground",
+              ].join(" ")}
+              key={option.value}
+              type="button"
+              onClick={() => onChange(option.value)}
+            >
+              <OptionIcon className="size-4" />
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
+function VisibilityBadge({ visibility }: { visibility: DocumentVisibility }) {
+  const isPublic = visibility === "public";
+  const Icon = isPublic ? Globe : Lock;
+  return (
+    <span
+      className={[
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[0.7rem] font-medium",
+        isPublic
+          ? "border-status-info/20 bg-status-info/10 text-status-info"
+          : "border-border bg-muted text-text-muted",
+      ].join(" ")}
+    >
+      <Icon className="size-3" />
+      {isPublic ? "公用" : "私有"}
+    </span>
+  );
+}
+
+export function LibraryDocumentGrid({
+  role,
+  documents,
+  hasActiveFilters = false,
+  loading,
+  total,
+  onClearFilters,
+  onDelete,
+  onReprocess,
+}: {
+  role: UserRole | null;
+  documents: DocumentSummary[];
+  hasActiveFilters?: boolean;
+  loading: boolean;
+  total: number;
+  onClearFilters?: () => void;
+  onDelete: (document: DocumentSummary) => void;
+  onReprocess: (document: DocumentSummary) => void;
+}) {
+  if (documents.length === 0 && !loading) {
+    return (
+      <EmptyState
+        className="rounded-2xl border border-border bg-surface-panel/65 p-4"
+        icon={
+          hasActiveFilters ? (
+            <MagnifyingGlass className="size-5" />
+          ) : (
+            <Database className="size-5" />
+          )
+        }
+        title={hasActiveFilters ? "筛选无结果" : "暂无资料"}
+        description={
+          hasActiveFilters
+            ? "当前筛选条件没有匹配资料，可以清空筛选后重新查看。"
+            : "上传资料后，处理状态会显示在这里。"
+        }
+        action={
+          hasActiveFilters ? (
+            <Button type="button" variant="outline" onClick={onClearFilters}>
+              清空筛选
+            </Button>
+          ) : null
+        }
+      />
+    );
+  }
+
+  return (
+    <section className="grid gap-3">
+      <div className="flex items-center justify-between text-sm text-text-muted">
+        <span>共 {total} 份资料</span>
+        {loading ? <span>加载中</span> : null}
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {documents.map((document) => (
+          <DocumentGridCard
+            role={role}
+            document={document}
+            key={document.id}
+            onDelete={() => onDelete(document)}
+            onReprocess={() => onReprocess(document)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function DocumentGridCard({
+  role,
+  document,
+  onDelete,
+  onReprocess,
+}: {
+  role: UserRole | null;
+  document: DocumentSummary;
+  onDelete: () => void;
+  onReprocess: () => void;
+}) {
+  const kind = resolveFileKind(document.original_file_name);
+  const Icon = fileKindIcons[kind];
+  const canManage = role ? canManageDocument(role, document.visibility) : false;
+  const meta =
+    [document.brand, document.model].filter(Boolean).join(" / ") ||
+    [document.document_type, document.language].filter(Boolean).join(" / ") ||
+    "未标注品牌型号";
+
+  return (
+    <article className="group/card relative flex flex-col items-center gap-3 rounded-2xl border border-border bg-surface-panel/65 p-5 text-center transition-all hover:-translate-y-0.5 hover:border-brand-primary/40 hover:shadow-md hover:shadow-brand-primary/10">
+      <span className="absolute left-3 top-3">
+        <VisibilityBadge visibility={document.visibility} />
+      </span>
+      <span className="absolute right-3 top-3">
+        <StatusBadge status={document.status} />
+      </span>
+
+      <Link
+        className="flex flex-1 flex-col items-center gap-3 outline-none"
+        href={`/library/document?id=${encodeURIComponent(document.id)}`}
+      >
+        <span
+          className={[
+            "grid size-16 shrink-0 place-items-center rounded-2xl border transition-transform group-hover/card:scale-105",
+            fileKindTone[kind],
+          ].join(" ")}
+        >
+          <Icon className="size-9" weight="duotone" />
+        </span>
+        <span className="grid gap-1">
+          <span
+            className="line-clamp-2 text-sm font-medium leading-snug text-foreground"
+            title={document.title}
+          >
+            {document.title}
+          </span>
+          <span className="truncate text-xs text-text-muted">{meta}</span>
+          <span className="text-xs text-text-muted">
+            {formatDocumentDate(document.updated_at)}
+          </span>
+        </span>
+      </Link>
+
+      {canManage ? (
+        <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover/card:opacity-100">
+          <Button
+            aria-label="重新处理"
+            size="icon-sm"
+            variant="ghost"
+            type="button"
+            onClick={onReprocess}
+          >
+            <ArrowsClockwise className="size-4" />
+          </Button>
+          <Button
+            aria-label="删除"
+            size="icon-sm"
+            variant="ghost"
+            type="button"
+            onClick={onDelete}
+          >
+            <Trash className="size-4 text-status-danger" />
+          </Button>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 export function LibraryDocumentList({
-  canMutate,
+  role,
   documents,
   expandedDocumentId,
   hasActiveFilters = false,
@@ -686,7 +898,7 @@ export function LibraryDocumentList({
   onExpand,
   onReprocess,
 }: {
-  canMutate: boolean;
+  role: UserRole | null;
   documents: DocumentSummary[];
   expandedDocumentId: string | null;
   hasActiveFilters?: boolean;
@@ -735,7 +947,7 @@ export function LibraryDocumentList({
         ) : null}
         {documents.map((document) => (
           <DocumentRow
-            canMutate={canMutate}
+            role={role}
             document={document}
             expanded={document.id === expandedDocumentId}
             key={document.id}
@@ -750,20 +962,21 @@ export function LibraryDocumentList({
 }
 
 function DocumentRow({
-  canMutate,
+  role,
   document,
   expanded,
   onDelete,
   onExpand,
   onReprocess,
 }: {
-  canMutate: boolean;
+  role: UserRole | null;
   document: DocumentSummary;
   expanded: boolean;
   onDelete: () => void;
   onExpand: () => void;
   onReprocess: () => void;
 }) {
+  const canManage = role ? canManageDocument(role, document.visibility) : false;
   return (
     <article className="grid gap-0">
       <div className="grid gap-3 p-4 xl:grid-cols-[1.5fr_1fr_auto]">
@@ -771,6 +984,7 @@ function DocumentRow({
           <h3 className="flex items-center gap-2 font-medium text-foreground">
             <FileText className="size-4 text-text-muted" />
             <span className="truncate">{document.title}</span>
+            <VisibilityBadge visibility={document.visibility} />
           </h3>
           <p className="mt-1 truncate text-sm text-text-muted">
             {document.original_file_name}
@@ -804,7 +1018,7 @@ function DocumentRow({
           >
             查看详情
           </Link>
-          {canMutate ? (
+          {canManage ? (
             <>
               <Button
                 size="sm"
@@ -831,7 +1045,7 @@ function DocumentRow({
       {expanded ? (
         <ExpandedDocumentRow
           document={document}
-          canMutate={canMutate}
+          role={role}
           onDelete={onDelete}
           onReprocess={onReprocess}
         />
@@ -842,17 +1056,18 @@ function DocumentRow({
 
 function ExpandedDocumentRow({
   document,
-  canMutate,
+  role,
   onDelete,
   onReprocess,
 }: {
   document: DocumentSummary;
-  canMutate: boolean;
+  role: UserRole | null;
   onDelete: () => void;
   onReprocess: () => void;
 }) {
   const failure = document.failure;
   const recentTask = document.recent_task;
+  const canManage = role ? canManageDocument(role, document.visibility) : false;
 
   return (
     <div className="grid gap-3 border-t border-border/80 bg-surface-panel/40 p-4 text-sm md:grid-cols-3">
@@ -899,7 +1114,7 @@ function ExpandedDocumentRow({
           >
             查看详情
           </Link>
-          {canMutate ? (
+          {canManage ? (
             <>
               <Button
                 size="sm"

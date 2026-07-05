@@ -1,113 +1,84 @@
 # AgroMech RAG
 
-AgroMech RAG 是一个面向农机知识的检索增强生成系统，目标是把农机说明书、维修手册、故障码表、保养规程、配件目录、图纸、扫描件和现场维修记录整理成可检索、可引用、可追溯的知识库。
+> 面向农机领域的多模态检索增强生成（RAG）系统。把说明书、维修手册、故障码表、保养规程、配件目录、图纸和扫描件整理成**可检索、可引用、可追溯**的知识库，回答基于来源证据，证据不足时明确说明不确定性。
 
-项目当前处于设计和早期开发阶段。第一版重点不是做一个通用聊天机器人，而是做一个垂直的农机资料检索与问答助手。
+[![CI](https://github.com/Sreehc/AgroMech/actions/workflows/ci.yml/badge.svg)](https://github.com/Sreehc/AgroMech/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=next.js&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-Agentic%20RAG-FF6F00)
 
-## 目标用户
+AgroMech 不是通用聊天机器人，而是**农机资料证据助手**：维修、安全、配件和故障判断都必须受证据约束，涉及高风险主题时强制附带安全提醒。
 
-- 农机维修人员。
-- 农机经销商和售后服务人员。
-- 合作社、农场、农机服务组织的技术负责人。
-- 农业机械方向的学生、教师和研究人员。
-- 需要搭建私有农机知识库的团队。
+<!-- 截图占位：建议放一张 Assistant 问答工作台截图（带引用面板与安全提醒），以及一张资料库页面截图。
+     推荐路径 docs/assets/，例如：
+     ![问答工作台](docs/assets/workbench.png)
+-->
 
-## 核心能力
+---
 
-- 上传农机资料并在后台解析。
-- 识别文本、表格、扫描件、图片和图纸。
-- 使用关键词检索、向量检索、结构化检索、Vision RAG 和 rerank 组合召回证据；Graph RAG 暂不在当前主链路启用。
-- 支持按品牌、型号、部件、故障码、故障现象、保养项目提问。
-- 支持图像辅助查询，例如仪表盘照片、故障灯、部件照片、液压图、电路图。
-- 基于来源资料生成带引用的回答。
-- 对维修、安全、适用型号等内容给出边界说明。
-- 记录检索链路和评估结果，方便持续改进。
+## ✨ 核心能力
 
-## MVP 范围
+- 📥 **多格式资料导入** — PDF、Word、Excel/CSV、TXT/Markdown 和常见图片，后台异步解析。
+- 🧩 **多模态解析** — 文本、表格、扫描件 OCR、图片视觉观察，并用 LLM 回填品牌/型号/类型等元数据。
+- 🔍 **混合检索** — 关键词、结构化过滤、向量、Vision RAG 多路并行召回，去重合并后 rerank。
+- 🤖 **受控多 Agent 问答** — LangGraph 编排解析、路由、检索、证据审查、领域回答、安全审查，流程固定、每步可追溯。
+- 🖼️ **图像辅助查询** — 支持仪表盘照片、故障灯、部件照片、液压图、电路图作为检索线索。
+- 📎 **带引用的回答** — 每条结论回连到具体文档 chunk 和来源定位，支持证据预览。
+- 🛡️ **可信边界** — 证据不足返回高不确定性，拒绝编造维修步骤，高风险主题保留安全提醒。
 
-第一版可用系统应支持：
+## 🔒 可信与安全设计
 
-1. 上传 PDF、Word、Excel/CSV、TXT/Markdown 和常见图片。
-2. 抽取文本、表格、图片描述和农机领域元数据。
-3. 建立全文索引和向量索引。
-4. 使用 LLM 回填文档级元数据，并抽取结构化实体。
-5. 对多路召回候选证据进行 rerank。
-6. 支持按型号、系统、故障现象、故障码或图片提问。
-7. 返回有来源引用的回答。
-8. 跟踪资料处理状态、检索链路和评估结果。
+AgroMech 的核心约束是**可信和可追溯**，这也是它区别于通用问答的地方：
 
-## 文档
+- 回答不得编造维修步骤、故障原因、保养周期、油液规格、扭矩或配件号。
+- 视觉识别结果只能作为检索线索，不能在无文档证据时直接变成确定维修结论。
+- 涉及液压、电气、发动机、制动或旋转部件时，必须保留安全提醒。
+- 面对“忽略引用/绕过安全规则/编造资料”这类 prompt 注入时拒答。
+- API key、token、密码、内部路径和异常栈不会暴露给普通用户。
 
-开发文档位于 [docs](docs/README.md)。
+问答链路在生成前有 `EvidenceReviewerAgent`（证据准入）、生成后有 `SafetyReviewerAgent`（安全审查）双重把关。
 
-建议阅读顺序：
-
-1. [产品需求](docs/prd.md)
-2. [技术设计](docs/tech-design.md)
-3. [API 规格](docs/api-spec.md)
-4. [数据库设计](docs/database-design.md)
-5. [UX 规格](docs/ux-spec.md)
-6. [项目历史和决策](docs/history.md)
-
-## 规划架构
+## 🏗️ 架构
 
 ```text
-前端
-  -> 后端 API
-    -> 资料导入 Worker
-    -> 检索服务
-    -> RAG 回答服务
-    -> Vision 服务
-  -> 数据库 / 文件存储 / 向量索引
+Frontend (Next.js 静态导出, assistant-ui)
+  └─ /backend/*  ──(Nginx 反代)──▶  FastAPI API
+                                     ├─ Auth / Documents / QA / Chat / Trace
+                                     ├─ 受控多 Agent 问答 (LangGraph)
+                                     └─ 混合检索 (keyword / structured / vector / vision + rerank)
+                                          │
+        Worker (异步导入)  ──▶  Postgres · Zvec 向量库 · 文件存储 · RabbitMQ
+                                          │
+                                    阿里云百炼 (LLM / embedding / vision / rerank) · PaddleOCR
 ```
 
-已确认技术栈：
+| 层 | 技术栈 |
+| --- | --- |
+| 后端 | Python · FastAPI · SQLAlchemy Core · Alembic |
+| 前端 | Next.js App Router · React · TypeScript · Tailwind CSS · assistant-ui |
+| 问答编排 | LangGraph · langchain-core（仅用于 tool 包装） |
+| 数据库 | Postgres |
+| 向量检索 | Zvec（嵌入式，数据在 `.agromech-data/zvec`） |
+| 文件存储 | 阿里云 OSS，本地开发用 local fallback |
+| 模型 | 阿里云百炼（LLM / embedding / vision / rerank）· PaddleOCR 云 API |
+| 队列 | RabbitMQ（分发唤醒 worker；`ingest_tasks` 为权威状态） |
 
-- 后端：Python、FastAPI、SQLAlchemy、Alembic。
-- 前端：Next.js App Router、React、TypeScript、Tailwind CSS、assistant-ui。
-- 数据库：Postgres，复用 `../infrastructure` 中的共享实例。
-- 向量检索：Zvec，持久化到项目目录 `.agromech-data/zvec`。
-- 图谱：当前主链路暂不启用；Neo4j 相关代码保留为后续增强。
-- 文件存储：正式使用阿里云 OSS，本地开发保留 local fallback。
-- OCR 和视觉：PaddleOCR + 阿里云百炼视觉模型。
-- LLM / embedding / rerank：阿里云百炼。
+> Graph RAG / Neo4j 相关代码保留为后续增强，当前主链路不启用。
 
-## 安全原则
+## 🚀 快速开始
 
-AgroMech RAG 不应输出没有来源支持的维修结论。涉及液压高压、电气系统、发动机、制动系统和旋转部件时，回答必须包含来源依据、适用范围和安全提醒。
+> **前置依赖**：Postgres 和 RabbitMQ 复用同级目录 `../infrastructure`（一个独立的共享基础设施仓库，提供 compose 与环境配置）。本项目不单独新建这两个服务。如果你没有该仓库，可自行准备一个可访问的 Postgres 和 RabbitMQ，并在 `.env` 中配置 `DATABASE_URL` 与 `RABBITMQ_URL`。
 
-## MVP 默认配置
-
-第一版开发按根目录 `.env.example` 中的默认值执行，后续可通过环境变量调整。
-
-已固化的 P0 默认决策：
-
-- 权限模式：用户、角色和状态存入 Postgres `users` 表；登录审计写入 `auth_audit_logs`，`AUTH_TOKEN_SECRET` 仅用于签名 bearer token。
-- 上传限制：单文件 100 MB，单图片 20 MB，并发上传 2 个，资料库默认 5 GB。
-- 删除策略：`DOCUMENT_DELETE_MODE=soft_delete`，默认标记删除并隐藏资料，同时清理检索可见性；历史引用保留不可访问提示。
-- 表格型 PDF：`TABLE_PDF_MODE=text_or_ocr`，P0 中仅作为文本或 OCR 内容进入检索，不做结构化表格验收。
-- 评估形态：`EVALUATION_RUNNER_MODE=cli`，P0 先提供 runner 能力，完整评估管理页面后置。
-- 图片提问：P0 单次只支持 1 张图片，默认视觉低置信阈值为 `0.55`。
-- 降级策略：Postgres、Zvec、embedding 和 LLM 为 P0 必需；Graph、Vision、rerank 通道异常时允许降级，但必须写入检索 trace。
-
-## 本地开发
-
-后端、worker 和前端已拆成独立目录：
-
-```text
-backend/   FastAPI API
-worker/    异步任务 worker
-frontend/  Next.js App Router + assistant-ui 前端
-```
-
-初始化 Python 开发环境：
+**1. 安装 Python 环境**（要求 Python 3.11+）
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
+cp .env.example .env   # 按需修改
 ```
 
-启动共享本地依赖服务。Postgres 和 RabbitMQ 不在本项目中新建 Docker 环境，统一使用同级目录 `../infrastructure`：
+**2. 启动共享依赖**（使用 `../infrastructure` 时）
 
 ```bash
 cd ../infrastructure
@@ -116,153 +87,56 @@ docker compose --env-file env/.env -f compose/docker-compose.mq.yml up -d rabbit
 cd ../AgroMech
 ```
 
-启动后端 API：
+**3. 迁移数据库并创建管理员**
 
 ```bash
 .venv/bin/python -m alembic upgrade head
 .venv/bin/python scripts/create-user.py --username admin --role admin --display-name "Administrator"
-.venv/bin/python -m uvicorn agromech_api.main:app --app-dir backend --host 0.0.0.0 --port 8000
 ```
 
-检查后端和依赖连通性：
+**4. 启动后端、worker 和前端**
+
+```bash
+# 后端 API (http://127.0.0.1:8000)
+.venv/bin/python -m uvicorn agromech_api.main:app --app-dir backend --host 0.0.0.0 --port 8000
+
+# 导入 worker（一次性 DB 队列调度；常驻消费见文档）
+.venv/bin/python -m agromech_worker.main
+
+# 前端 (http://localhost:3000)
+npm install --prefix frontend
+npm run dev --prefix frontend
+```
+
+**5. 验证**
 
 ```bash
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/health/dependencies
 ```
 
-后端认证读取数据库 `users` 表。首次本地启动时先运行迁移并创建 admin 用户；登录后把 `access_token` 作为 bearer token 传给需要登录或写权限的 API：
+更完整的运行、上传、问答和 RabbitMQ 常驻消费说明见 [技术设计](docs/tech-design.md) 和 [部署说明](docs/deployment.md)。
+
+## 🧪 测试
 
 ```bash
-curl -X POST http://127.0.0.1:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"<create-user 输入的密码>"}'
-curl http://127.0.0.1:8000/auth/me -H "Authorization: Bearer <token>"
+scripts/test-all.sh   # lint + 后端/worker/前端测试 + 集成 + E2E smoke + 前端构建
 ```
 
-上传资料会创建 document 记录和导入任务：
+GitHub Actions 在推送到 `main` 和 PR 时执行同一套检查。
 
-```bash
-curl -X POST http://127.0.0.1:8000/documents \
-  -H "Authorization: Bearer <token>" \
-  -F "file=@manual.txt" \
-  -F "brand=Kubota" \
-  -F "model=M7040"
-```
+## 📚 文档
 
-重复文件会返回 `duplicate_of`，不支持类型返回 `unsupported_file_type`，超出配置大小返回 `file_too_large`。
+开发文档位于 [docs/](docs/README.md)，建议阅读顺序：
 
-资料库后端 API：
+1. [产品需求](docs/prd.md) — 产品目标、用户、已实现能力和验收口径
+2. [技术设计](docs/tech-design.md) — 后端、worker、混合检索、受控多 Agent 问答、部署
+3. [API 规格](docs/api-spec.md) — 真实后端接口、请求响应、权限和错误码
+4. [数据库设计](docs/database-design.md) — 关系表、状态机和索引结构
+5. [UX 规格](docs/ux-spec.md) — 前端页面、交互和角色权限
+6. [部署说明](docs/deployment.md) — 静态前端 + Docker 后端/worker + GitHub Actions
+7. [项目历史和决策](docs/history.md) — 关键决策、完成记录和后续增强
 
-```bash
-curl "http://127.0.0.1:8000/documents?brand=Kubota&model=M7040" -H "Authorization: Bearer <token>"
-curl http://127.0.0.1:8000/documents/<document_id> -H "Authorization: Bearer <token>"
-curl http://127.0.0.1:8000/tasks/<task_id> -H "Authorization: Bearer <token>"
-curl -X POST http://127.0.0.1:8000/documents/<document_id>/reprocess -H "Authorization: Bearer <token>"
-curl -X DELETE http://127.0.0.1:8000/documents/<document_id> -H "Authorization: Bearer <token>"
-```
+## 📄 License
 
-API 错误响应统一为：
-
-```json
-{
-  "error": {
-    "code": "timeout",
-    "message": "Request timed out",
-    "details": null,
-    "trace_id": "..."
-  }
-}
-```
-
-基础错误码包括 `unauthorized`、`forbidden`、`unsupported_file_type`、`file_too_large` 和 `timeout`。
-外部服务连接、检索和 LLM 超时通过 `.env.example` 中的超时配置调整。
-
-运行数据库迁移：
-
-```bash
-.venv/bin/python -m alembic upgrade head
-```
-
-启动 worker：
-
-```bash
-.venv/bin/python -m agromech_worker.main
-```
-
-上面的命令会执行一次 DB 队列调度，适合本地调试和兜底处理。若要让上传链路通过 RabbitMQ 自动唤醒 worker，先设置 `RABBITMQ_PUBLISH_ENABLED=true` 并确认 `RABBITMQ_URL` 指向 `infra-rabbitmq`，再启动常驻消费者：
-
-```bash
-.venv/bin/python -c "from agromech_worker.main import consume_forever; consume_forever()"
-```
-
-当前 worker 每次启动会执行一次导入队列调度，将最早的 `queued` 任务推进到
-`processing`，并从 PDF、DOCX、Markdown、TXT 生成带来源定位的 `text_chunk`，
-从 Excel / CSV 生成带工作表和行号定位的 `table_chunk`，为图片和 PDF 页面生成
-`document_assets`、OCR `image_chunk` 和视觉观察线索。`reprocess` 和 `delete` 类型任务已接入状态机；
-OCR 或视觉模型不可用时会记录失败状态，不伪装为成功；解析完成后会用 LLM 回填空的品牌、型号、
-类型、语言和来源字段；chunk 会抽取品牌、型号、系统、部件、故障码和配件号等实体，
-写入结构化过滤链接、本地全文索引和 Zvec 向量引用记录。
-embedding 或索引失败时任务失败，文档不会进入 `indexed`。
-删除成功后会清理检索可见 chunk、全文索引、embedding 引用和实体链接，并把历史引用标记为不可访问；
-重新处理任务失败时，已有 indexed 文档会保留旧索引并记录最近失败信息。
-查询理解当前可解析意图、型号别名、品牌、系统、部件、故障码、配件号和安全敏感性；
-明确型号会优先过滤该型号 chunk，无型号故障码会标记适用范围不确定。
-混合检索会合并关键词、向量、结构化过滤和 Vision RAG 候选，按 chunk 去重并保留命中通道；
-无关型号候选会标记不适用并降权，再通过确定性 rerank 重新排序。
-`hybrid_retrieve_with_trace` 会把 `query`、结构化过滤、命中通道、候选、rerank 前后名次、
-最终证据和降级通道写入 `retrieval_logs`；评估员和管理员可通过
-`GET /retrieval-traces/{trace_id}` 查看完整链路，普通用户只看到基础通道和最终证据摘要。
-无候选时返回证据不足状态并保留 trace。
-文本问答 API 为 `POST /qa/text`，输入 `question` 和可选 `filters`，返回 `answer`、`sections`、
-`citations`、`trace_id`、`uncertainty` 和 `safety_warnings`；问题为空或超长会返回统一错误，
-要求忽略引用或编造维修步骤的请求会被拒绝。
-图片问答 API 为 `POST /qa/image`，使用单个 `image` 表单文件和可选 `question`、`brand`、`model`；
-系统抽取视觉线索后复用混合检索和带引用问答链路，返回 `visual_observation`、`detected_entities`、
-`answer`、`citations` 和 `trace_id`。多图上传返回 `too_many_images`，低置信且缺少文字问题时提示补充信息。
-基础评估 runner 可复用固定问题集运行文本问答，记录 `evaluation_runs` 的运行 ID、数据集版本、
-模型配置、prompt 版本、代码版本、指标摘要和失败类型；默认数据集由 `EVALUATION_DEFAULT_DATASET`
-控制，当前评估入口为 Python 侧 `run_evaluation_dataset()`。
-
-初始化并启动前端：
-
-```bash
-npm install --prefix frontend
-npm run dev --prefix frontend
-```
-
-前端使用 Next.js App Router 和 assistant-ui。首页是统一助手入口，文本问答和图片提问合并在同一个对话 UI 中：
-
-- 无图片附件时，浏览器通过 `/backend/qa/text` 调用 FastAPI `POST /qa/text`。
-- 带单张图片附件时，浏览器通过 `/backend/qa/image` 调用 FastAPI `POST /qa/image`。
-- 回复会展示回答正文、视觉观察、引用来源、安全提醒和 trace 信息。
-
-前端使用静态导出，不依赖 Next server route。部署时宿主 Nginx 必须把 `/backend/` 反代到 FastAPI；详见 [部署说明](docs/deployment.md)。
-
-本地如需指定端口：
-
-```bash
-npm run dev --prefix frontend -- -p 3000
-```
-
-运行当前测试：
-
-```bash
-.venv/bin/python -m compileall -q backend worker
-.venv/bin/python -m pytest
-npm run lint --prefix frontend
-npm run test --prefix frontend
-npm run build --prefix frontend
-```
-
-统一测试入口：
-
-```bash
-scripts/lint.sh
-scripts/test-unit.sh
-scripts/test-integration.sh
-scripts/e2e-smoke.sh
-scripts/test-all.sh
-```
-
-GitHub Actions 会执行 `scripts/test-all.sh`，覆盖 lint、后端/worker/前端测试、基础集成测试、E2E smoke 和前端构建。
+当前仓库尚未声明开源许可协议。在补充 `LICENSE` 文件之前，默认保留所有权利。

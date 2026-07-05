@@ -37,6 +37,7 @@ def seed_document_with_chunks(engine) -> None:
         connection.execute(
             insert(documents).values(
                 id="doc-1",
+                visibility="public",
                 title="M7040 维修手册",
                 original_file_name="manual.txt",
                 file_hash="hash-doc-1",
@@ -93,6 +94,7 @@ def seed_document_with_page_asset(engine, tmp_path) -> None:
         connection.execute(
             insert(documents).values(
                 id="doc-visual",
+                visibility="public",
                 title="M7040 Page Manual",
                 original_file_name="manual.pdf",
                 file_hash="hash-doc-visual",
@@ -307,6 +309,7 @@ def test_run_once_uses_configured_zvec_store(tmp_path, monkeypatch) -> None:
                 file_size_bytes=source_path.stat().st_size,
                 mime_type="text/plain",
                 storage_uri=f"file://{source_path}",
+                visibility="public",
                 status=DocumentStatus.QUEUED.value,
                 created_by_role="admin",
             )
@@ -374,6 +377,7 @@ def test_indexing_failure_prevents_worker_from_succeeding(tmp_path) -> None:
                 file_size_bytes=source_path.stat().st_size,
                 mime_type="text/plain",
                 storage_uri=f"file://{source_path}",
+                visibility="public",
                 status=DocumentStatus.PROCESSING.value,
                 created_by_role="admin",
             )

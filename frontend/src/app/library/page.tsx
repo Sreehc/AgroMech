@@ -1,10 +1,10 @@
-import { AppFrame } from "@/components/app-frame";
+import { AppShell } from "@/components/app-shell";
 import { LibraryPage } from "@/components/library-page";
 
 export default function Page() {
   return (
-    <AppFrame>
+    <AppShell view="library">
       <LibraryPage />
-    </AppFrame>
+    </AppShell>
   );
 }

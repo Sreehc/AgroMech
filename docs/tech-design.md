@@ -116,33 +116,84 @@ Graph RAG / Neo4j sync 当前不在主导入链路启用，相关模块暂存为
 
 ## 6. Agentic QA 设计
 
-当前 `/qa/text` 和 `/qa/image` 均进入 `AgentController`：
+`/qa/text` 和 `/qa/image` 均进入 `AgentController`，由 LangGraph 编排一组受控 Agent。系统不是自由对话或自由 ReAct agent：流程固定、每个 Agent 只负责一个决策边界、输入输出结构化、都写入 `agent_trace`。核心约束是可信和可追溯，最终回答必须受 `EvidenceReviewerAgent` 和 `SafetyReviewerAgent` 双重约束。
+
+### 6.1 Agent 契约
+
+进程内 Agent 契约位于 `backend/agromech_api/rag/agent/agents/base.py`：
+
+```python
+class AgentResult(TypedDict):
+    status: str
+    output: dict[str, Any]
+    trace: dict[str, Any]
+
+
+class BaseAgent(Protocol):
+    name: str
+
+    def run(self, state: AgentState) -> AgentResult:
+        ...
+```
+
+统一 trace 字段包含 `agent`、`step`、`status`、`decision`、`reason` 等，可在 `agent_trace` 中回溯每一步来源。当前所有 Agent 运行在同一 FastAPI 进程内，通过 LangGraph state 传递上下文。契约刻意保持 A2A-ready，但当前阶段不引入网络级 A2A 协议、序列化、鉴权、重试等复杂度。
+
+### 6.2 问答侧 Agent
+
+`backend/agromech_api/rag/agent/agents/` 下的 Agent：
+
+| Agent | 职责 |
+| --- | --- |
+| `QueryAnalystAgent` | 解析意图、型号、品牌、故障码、部件、安全敏感性 |
+| `RouterAgent` | 判断 Text-only / Text+Visual 路径 |
+| `RetrievalAgent` | 调用混合检索工具，返回 evidence 和 citation |
+| `PlanningAgent` | 判断是否需要补检索、query rewrite 或视觉检索 |
+| `EvidenceReviewerAgent` | 生成前证据准入：是否为空、是否可访问、是否匹配问题、型号/故障码是否混淆 |
+| `DomainSpecialistAgent` | 按问题类型（保养、故障、配件、视觉）稳定回答结构和领域约束 |
+| `QueryRewriteAgent` | 基于缺失证据做确定性领域同义词扩展重写 |
+| `AnswerWriterAgent` | 基于最终证据生成回答，支持文本与多模态 |
+| `SafetyReviewerAgent` | 生成后安全审查：高风险主题安全提醒、无来源结论拦截、prompt 注入处理 |
+
+### 6.3 编排流程
+
+`backend/agromech_api/rag/agent/graph.py` 用 LangGraph `StateGraph` 连接节点：
 
 ```text
-parse_query
-  -> route_question
-  -> retrieve tool
-  -> evidence_check
-  -> rewrite if needed, max 2 supplemental rounds
-  -> generation_guard
-  -> answer generation
+parse (QueryAnalyst)
+  -> route (Router)
+  -> retrieve (Retrieval)
+  -> planner (Planning，可按需内联视觉检索)
+  -> [need_query_rewrite 且未达轮次上限] rewrite -> retrieve
+  -> evidence_check (EvidenceReviewer)
+       -> [sufficient] domain
+       -> [insufficient 且未达上限] rewrite -> retrieve
+       -> [need_visual] visual_retrieve
+  -> domain (DomainSpecialist)
+  -> answer (AnswerWriter -> SafetyReviewer)
+  -> END
 ```
+
+补检索轮次由 `MAX_SUPPLEMENTAL_ROUNDS = 2` 控制。`AgentController`（`controller.py`）是路由层调用的编排边界，只负责构造 state、注入 engine/trace_id 并 invoke graph。
 
 模块：
 
-- `backend/agromech_api/rag/agent/state.py`：LangGraph state。
-- `backend/agromech_api/rag/agent/router.py`：规则优先 Text-only / Text+Visual 路由，保留可注入 LLM seam。
-- `backend/agromech_api/rag/agent/tools.py`：用 `langchain-core` tool 包装检索调用。
+- `backend/agromech_api/rag/agent/state.py`：LangGraph state 与 `agent_trace` 追加。
+- `backend/agromech_api/rag/agent/controller.py`：编排边界。
 - `backend/agromech_api/rag/agent/graph.py`：LangGraph `StateGraph`。
-- `backend/agromech_api/rag/agent/controller.py`：路由模块调用的编排边界。
-- `backend/agromech_api/rag/retrieval/evidence_check.py`：规则证据充足性检查。
-- `backend/agromech_api/rag/retrieval/query_rewrite.py`：确定性领域同义词扩展。
+- `backend/agromech_api/rag/agent/tools.py`：用 `langchain-core` tool 包装检索调用。
+- `backend/agromech_api/rag/retrieval/evidence_check.py`：规则证据充足性检查底座。
+- `backend/agromech_api/rag/retrieval/query_rewrite.py`：确定性领域同义词扩展底座。
 
-当前实现边界：
+### 6.4 并行检索 Agent
+
+混合检索的通道已拆成可并行的检索 Agent，位于 `backend/agromech_api/rag/retrieval/hybrid.py`，作为 `hybrid_retrieve_with_trace()` 的底层编排单元：`KeywordRetrievalAgent`、`VectorRetrievalAgent`、`StructuredRetrievalAgent`、`VisualRetrievalAgent` 通过 `ThreadPoolExecutor` 并行召回，`EvidenceMergeAgent` 按 chunk 去重合并命中通道，`RerankAgent` 做重排。任一通道失败不拖垮整体问答，通道状态、耗时和降级原因写入 trace。通道加权见 `CHANNEL_WEIGHTS`（structured 4.0、keyword 2.0、vector 1.5、vision 1.0）。
+
+### 6.5 当前实现边界
 
 - 不是自由 ReAct agent，不让 LLM 任意选择工具。
-- 路由和证据检查默认规则判断；LLM 模糊判断是后续增强。
-- 生成前 guard 只要求 evidence/citation 支撑；生成后逐 claim citation 对齐是后续增强。
+- `RouterAgent` 保留可注入的 LLM seam（`llm_router`），默认走规则判断；证据检查同理，LLM 模糊判断是后续增强。
+- 生成前 guard 只要求 evidence/citation 支撑；生成后逐 claim citation 对齐（维修动作、安全、周期、扭矩、油液、配件号）是后续增强。
+- LangGraph checkpoint 持久化和 `agent_trace` 前端专用调试视图是后续增强。
 
 ## 7. 运行和部署
 

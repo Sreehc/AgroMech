@@ -15,7 +15,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
   ApiRequestError,
-  canMutateLibrary,
+  canManageDocument,
   deleteDocument,
   errorMessage,
   getDocument,
@@ -97,7 +97,7 @@ export function DocumentDetailPage({ documentId }: { documentId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, documentId]);
 
-  const canMutate = session ? canMutateLibrary(session.role) : false;
+  const canMutate = session ? canManageDocument(session.role, document?.visibility ?? "private") : false;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-auto p-4 md:p-6">

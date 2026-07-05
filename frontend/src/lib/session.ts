@@ -28,6 +28,21 @@ export function loadSession(): Session | null {
   }
 }
 
+// useSyncExternalStore 要求 getSnapshot 返回稳定引用：只要 localStorage 里的
+// 原始字符串没变，就返回缓存的同一对象，否则会触发无限重渲染。
+let cachedRaw: string | null = null;
+let cachedSession: Session | null = null;
+
+export function loadSessionSnapshot(): Session | null {
+  const raw = window.localStorage.getItem(SESSION_KEY);
+  if (raw === cachedRaw) {
+    return cachedSession;
+  }
+  cachedRaw = raw;
+  cachedSession = loadSession();
+  return cachedSession;
+}
+
 export function saveSession(session: Session): void {
   window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
   window.dispatchEvent(new Event(SESSION_CHANGE_EVENT));

@@ -3,11 +3,11 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, or_, select
 
 from agromech_api.core.config import get_settings
 from agromech_api.db.enums import ChunkType
-from agromech_api.db.models import chunk_entity_links, document_chunks, retrieval_logs
+from agromech_api.db.models import chunk_entity_links, document_chunks, documents, retrieval_logs
 from agromech_api.domain.entities import normalize
 from agromech_api.rag.retrieval.indexing import keyword_search, vector_search
 from agromech_api.rag.retrieval.query_understanding import ParsedQuery, parse_query, structured_filter_chunks
@@ -21,6 +21,35 @@ CHANNEL_WEIGHTS = {
     "vision": 1.0,
 }
 MIN_CANDIDATE_SCORE = 0.25
+
+
+# 未登录访客（viewer_user_id 为 None）只能检索公用文档。这是一条 fail-closed
+# 安全线：任何未能证明可见的候选都会被剔除。
+def visible_document_ids(
+    engine: Engine,
+    document_ids: set[str],
+    *,
+    viewer_user_id: str | None,
+) -> set[str]:
+    """返回 document_ids 中对该访问者可见的子集。
+
+    可见性规则与文档 REST 层保持一致：公用文档对所有人可见；私有文档仅归属者
+    本人可见。登录用户传入其 user_id；匿名访客传 None，此时只返回公用文档。
+    """
+    if not document_ids:
+        return set()
+    conditions = [documents.c.visibility == "public"]
+    if viewer_user_id is not None:
+        conditions.append(documents.c.owner_user_id == viewer_user_id)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            select(documents.c.id)
+            .where(
+                documents.c.id.in_(document_ids),
+                or_(*conditions),
+            )
+        ).scalars().all()
+    return set(rows)
 
 
 class KeywordRetrievalAgent:
@@ -217,6 +246,7 @@ def hybrid_retrieve_with_trace(
     graph_service=None,
     rerank_provider=None,
     rerank_top_k: int | None = None,
+    viewer_user_id: str | None = None,
     settings=None,
 ) -> dict[str, object]:
     settings = settings or get_settings()
@@ -235,6 +265,7 @@ def hybrid_retrieve_with_trace(
             embedding_provider=embedding_provider,
             graph_service=graph_service,
             degraded_channels=degraded_channels,
+            viewer_user_id=viewer_user_id,
         ),
         limit=candidate_limit,
     )
@@ -282,6 +313,7 @@ def collect_candidates(
     embedding_provider=None,
     graph_service=None,
     degraded_channels: dict[str, str] | None = None,
+    viewer_user_id: str | None = None,
 ) -> list[dict[str, object]]:
     channel_results = collect_channel_results(
         engine,
@@ -298,7 +330,32 @@ def collect_candidates(
     _ = graph_service
     candidates = EvidenceMergeAgent().run(engine, channel_results, parsed)
     candidates = VisualRetrievalAgent().run(candidates)
+    candidates = enforce_visibility(engine, candidates, viewer_user_id=viewer_user_id)
     return viable_candidates(candidates)
+
+
+def enforce_visibility(
+    engine: Engine,
+    candidates: list[dict[str, object]],
+    *,
+    viewer_user_id: str | None,
+) -> list[dict[str, object]]:
+    """剔除访问者无权看到的候选（fail-closed 安全线）。
+
+    在候选合并后、排序前统一过滤：公用文档对所有人可见，私有文档仅归属者本人
+    可见，匿名访客只保留公用文档。任何 document_id 无法证明可见的候选都被丢弃。
+    """
+    document_ids = {
+        str(candidate["document_id"])
+        for candidate in candidates
+        if candidate.get("document_id")
+    }
+    allowed = visible_document_ids(engine, document_ids, viewer_user_id=viewer_user_id)
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.get("document_id") and str(candidate["document_id"]) in allowed
+    ]
 
 
 def collect_channel_results(

@@ -61,7 +61,6 @@ describe("document upload queue", () => {
     );
 
     expect(html).toContain("拖拽多份资料到这里");
-    expect(html).toContain("可点击选择文件，也可直接拖拽到这里。");
     expect(html).toContain('type="file"');
     expect(html).toContain("multiple");
   });
@@ -104,9 +103,6 @@ describe("document upload queue", () => {
       />,
     );
 
-    expect(html).toContain(
-      "rounded-2xl border border-border bg-surface-panel/65",
-    );
     expect(html).toContain(
       "rounded-2xl border border-border/70 bg-surface-raised/80",
     );

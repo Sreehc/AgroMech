@@ -118,17 +118,15 @@ describe("EvidencePanel", () => {
     expect(html).toContain("来源不可访问");
   });
 
-  it("keeps mobile sheet and close wiring in the workbench evidence region", () => {
-    const workbench = readFileSync(
-      new URL("./assistant-workbench.tsx", import.meta.url),
+  it("keeps sliding sheet and close wiring in the chat page evidence region", () => {
+    const chatPage = readFileSync(
+      new URL("./chat-page.tsx", import.meta.url),
       "utf8",
     );
 
-    expect(workbench).toContain("max-xl:fixed");
-    expect(workbench).toContain("max-xl:bottom-3");
-    expect(workbench).toContain(
-      "onClose={selectedEvidence ? onEvidenceClose : undefined}",
-    );
+    expect(chatPage).toContain("absolute right-0 top-0");
+    expect(chatPage).toContain("关闭证据面板");
+    expect(chatPage).toContain("onClose={() => setSelectedEvidence(null)}");
   });
 
   it("renders a stable empty state when no citations are available", () => {

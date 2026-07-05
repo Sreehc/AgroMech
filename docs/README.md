@@ -5,10 +5,9 @@
 ## 文档清单
 
 - [prd.md](prd.md)：产品目标、用户、已实现能力、边界和验收口径。
-- [tech-design.md](tech-design.md)：当前后端、worker、RAG、Agentic QA、部署和运维设计。
+- [tech-design.md](tech-design.md)：当前后端、worker、RAG、受控多 Agent QA（第 6 节）、部署和运维设计。
 - [api-spec.md](api-spec.md)：当前真实后端接口、请求响应、权限和错误码。
 - [database-design.md](database-design.md)：当前关系表、状态机、暂存图谱表和索引数据结构。
-- [multi-agent-roadmap.md](multi-agent-roadmap.md)：从单 Agent 工作流演进到受控多 Agent RAG 的分阶段改造方案。
 - [deployment.md](deployment.md)：静态前端、Docker 后端/worker 和 GitHub Actions 部署说明。
 - [ux-spec.md](ux-spec.md)：当前前端页面、交互、角色权限和主要状态。
 - [history.md](history.md)：关键决策、完成记录、当前测试基线和后续增强项。

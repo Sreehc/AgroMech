@@ -29,6 +29,8 @@ const documents: DocumentSummary[] = [
       stage: "indexed",
     },
     failure: { stage: null, code: null, message: null },
+    visibility: "public",
+    owner_user_id: null,
   },
   {
     id: "doc-failed",
@@ -52,6 +54,8 @@ const documents: DocumentSummary[] = [
       code: "ocr_failed",
       message: "OCR service failed",
     },
+    visibility: "private",
+    owner_user_id: "user-1",
   },
 ];
 
@@ -72,16 +76,14 @@ describe("library document list", () => {
       "utf8",
     );
 
-    expect(source).toContain(
+    // 全宽网格布局：不再是常驻左侧上传栏 + 右侧浏览的两栏骨架。
+    expect(source).not.toContain(
       "lg:grid-cols-[minmax(320px,380px)_minmax(0,1fr)]",
     );
-    expect(source).toContain("上传与处理");
-    expect(source).toContain("资料浏览");
+    // 文档卡片网格默认全宽多列。
+    expect(source).toContain("sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4");
     expect(source).toContain("rounded-2xl border border-border");
     expect(source).toContain("bg-surface-panel/65");
-    expect(source).toContain("divide-y divide-border/80");
-    expect(source).toContain("bg-surface-raised/85");
-    expect(source).toContain("bg-surface-panel/40");
     expect(source).toContain("选择品牌或直接输入");
     expect(source).toContain("选择型号或直接输入");
     expect(source).toContain("可直接输入品牌或型号；没有匹配项时按回车即可。");
@@ -100,7 +102,7 @@ describe("library document list", () => {
     );
     const listHtml = renderToStaticMarkup(
       <LibraryDocumentList
-        canMutate
+        role="admin"
         documents={documents}
         expandedDocumentId={null}
         loading={false}
@@ -114,7 +116,6 @@ describe("library document list", () => {
     expect(overviewHtml).toContain("总资料数");
     expect(overviewHtml).toContain("入库完成");
     expect(overviewHtml).toContain("失败");
-    expect(overviewHtml).toContain("当前资料状态");
     expect(listHtml).toContain("M7040 Hydraulic Manual");
     expect(listHtml).toContain("m7040-hydraulic.pdf");
     expect(listHtml).toContain("Kubota / M7040");
@@ -127,7 +128,7 @@ describe("library document list", () => {
   it("renders expanded summary, recent task, failure and quick actions", () => {
     const html = renderToStaticMarkup(
       <LibraryDocumentList
-        canMutate
+        role="admin"
         documents={documents}
         expandedDocumentId="doc-failed"
         loading={false}
@@ -150,7 +151,7 @@ describe("library document list", () => {
   it("renders filter empty state with clear action", () => {
     const html = renderToStaticMarkup(
       <LibraryDocumentList
-        canMutate={false}
+        role="evaluator"
         documents={[]}
         expandedDocumentId={null}
         loading={false}
@@ -167,23 +168,24 @@ describe("library document list", () => {
     expect(html).toContain("清空筛选");
   });
 
-  it("renders the upload workspace summary for current processing context", () => {
+  it("opens document upload inside a dialog instead of a docked sidebar", () => {
     const source = readFileSync(
       new URL("./library-page.tsx", import.meta.url),
       "utf8",
     );
 
-    expect(source).toContain(
-      "先添加文件，再点击“开始上传”。",
-    );
-    expect(source).toContain("最近动态");
-    expect(source).toContain("上传队列");
+    // 上传改为弹窗触发，不再是常驻侧栏。
+    expect(source).toContain("uploadDialogOpen");
+    expect(source).toContain("DocumentUploadQueue");
+    expect(source).toContain("先添加文件，再点击“开始上传”。");
+    // 旧的常驻侧栏文案已移除。
+    expect(source).not.toContain("最近动态");
   });
 
   it("hides mutation actions for read-only users", () => {
     const html = renderToStaticMarkup(
       <LibraryDocumentList
-        canMutate={false}
+        role="evaluator"
         documents={documents}
         expandedDocumentId="doc-failed"
         loading={false}

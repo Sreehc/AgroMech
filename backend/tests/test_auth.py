@@ -209,3 +209,90 @@ def test_write_requests_are_blocked_without_login() -> None:
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_register_creates_user_role_account_and_returns_token(tmp_path: Path) -> None:
+    client, engine, _settings = auth_client(tmp_path)
+
+    response = client.post(
+        "/auth/register",
+        json={"username": "newtech", "password": "secret123"},
+    )
+
+    assert response.status_code == 201
+    token = response.json()["access_token"]
+
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200
+    assert me.json() == {"username": "newtech", "role": "user"}
+
+    with engine.connect() as connection:
+        row = connection.execute(
+            select(users).where(users.c.username == "newtech")
+        ).mappings().one()
+    assert row["role"] == "user"
+    assert row["status"] == "active"
+
+
+def test_register_rejects_duplicate_username(tmp_path: Path) -> None:
+    client, engine, _settings = auth_client(tmp_path)
+    seed_user(engine, username="taken", password="secret123", role=UserRole.USER)
+
+    response = client.post(
+        "/auth/register",
+        json={"username": "taken", "password": "anotherpass"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_register_rejects_short_password(tmp_path: Path) -> None:
+    client, _engine, _settings = auth_client(tmp_path)
+
+    response = client.post(
+        "/auth/register",
+        json={"username": "shortpw", "password": "short"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_register_rejects_short_username(tmp_path: Path) -> None:
+    client, _engine, _settings = auth_client(tmp_path)
+
+    response = client.post(
+        "/auth/register",
+        json={"username": "ab", "password": "secret123"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_register_ignores_role_escalation_attempts(tmp_path: Path) -> None:
+    client, engine, _settings = auth_client(tmp_path)
+
+    # 即便请求体夹带 role=admin，也应被忽略（额外字段丢弃），新号固定为 user。
+    response = client.post(
+        "/auth/register",
+        json={"username": "sneaky", "password": "secret123", "role": "admin"},
+    )
+
+    assert response.status_code == 201
+    with engine.connect() as connection:
+        row = connection.execute(
+            select(users).where(users.c.username == "sneaky")
+        ).mappings().one()
+    assert row["role"] == "user"
+
+
+def test_register_new_user_can_immediately_upload_to_private_library(tmp_path: Path) -> None:
+    client, _engine, _settings = auth_client(tmp_path)
+
+    token = client.post(
+        "/auth/register",
+        json={"username": "uploader", "password": "secret123"},
+    ).json()["access_token"]
+
+    listing = client.get("/documents", headers={"Authorization": f"Bearer {token}"})
+    assert listing.status_code == 200

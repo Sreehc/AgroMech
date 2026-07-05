@@ -121,20 +121,8 @@ export function DocumentUploadQueue({
   }
 
   return (
-    <section
-      id="library-upload"
-      className="grid gap-3 rounded-2xl border border-border bg-surface-panel/65 p-4"
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="flex items-center gap-2 text-sm font-semibold text-foreground">
-            <CloudArrowUp className="size-4 text-primary" />
-            多文件上传
-          </p>
-          <p className="mt-1 text-sm text-text-muted">
-            可点击选择文件，也可直接拖拽到这里。
-          </p>
-        </div>
+    <section id="library-upload" className="grid gap-3">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <div className="flex gap-2">
           {items.length > 0 ? (
             <Button
@@ -158,6 +146,8 @@ export function DocumentUploadQueue({
           </Button>
         </div>
       </div>
+
+      <UploadSteps items={items} />
 
       {readyCount > 0 ? (
         <div className="rounded-xl border border-primary/25 bg-primary/10 px-3 py-2 text-sm text-primary">
@@ -236,6 +226,71 @@ export function DocumentUploadQueue({
       ) : null}
     </section>
   );
+}
+
+// 顶部三步指示器：借鉴 rag-web-ui 的圆形步骤条，但当前步由队列状态推导，
+// 而非独立向导状态，避免和真实上传状态脱节。
+function UploadSteps({ items }: { items: UploadQueueItem[] }) {
+  const currentStep = resolveUploadStep(items);
+  const steps: Array<{ step: number; label: string; icon: typeof CloudArrowUp }> = [
+    { step: 1, label: "添加文件", icon: FileArrowUp },
+    { step: 2, label: "上传", icon: CloudArrowUp },
+    { step: 3, label: "后台处理", icon: CheckCircle },
+  ];
+
+  return (
+    <ol className="flex items-center gap-2" aria-label="上传流程">
+      {steps.map(({ step, label, icon: Icon }, index) => {
+        const done = currentStep > step;
+        const active = currentStep === step;
+
+        return (
+          <li className="flex flex-1 items-center gap-2" key={step}>
+            <span
+              className={cn(
+                "grid size-8 shrink-0 place-items-center rounded-full border transition-colors",
+                active
+                  ? "border-transparent bg-gradient-to-r from-brand-primary to-brand-accent text-primary-foreground shadow-sm shadow-brand-primary/25"
+                  : done
+                    ? "border-brand-primary/30 bg-brand-primary/10 text-brand-primary"
+                    : "border-border bg-surface-raised text-text-muted",
+              )}
+            >
+              <Icon className="size-4" weight={active || done ? "fill" : "regular"} />
+            </span>
+            <span
+              className={cn(
+                "text-xs font-medium whitespace-nowrap",
+                active ? "text-foreground" : "text-text-muted",
+              )}
+            >
+              {step}. {label}
+            </span>
+            {index < steps.length - 1 ? (
+              <span
+                className={cn(
+                  "mx-1 hidden h-px flex-1 sm:block",
+                  done ? "bg-brand-primary/40" : "bg-border",
+                )}
+              />
+            ) : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function resolveUploadStep(items: UploadQueueItem[]): number {
+  if (items.length === 0) return 1;
+  if (items.some((item) => item.status === "uploaded")) return 3;
+  if (
+    items.some((item) => isActiveUploadStatus(item.status)) ||
+    items.some((item) => item.status === "pending" || item.status === "failed")
+  ) {
+    return 2;
+  }
+  return 1;
 }
 
 function UploadQueueRow({

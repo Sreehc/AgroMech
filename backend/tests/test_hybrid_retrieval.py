@@ -34,6 +34,7 @@ def seed_retrieval_corpus(engine) -> None:
             [
                 {
                     "id": "doc-m7040",
+                    "visibility": "public",
                     "title": "M7040 Manual",
                     "original_file_name": "m7040.txt",
                     "file_hash": "hash-m7040",
@@ -50,6 +51,7 @@ def seed_retrieval_corpus(engine) -> None:
                 },
                 {
                     "id": "doc-l3901",
+                    "visibility": "public",
                     "title": "L3901 Manual",
                     "original_file_name": "l3901.txt",
                     "file_hash": "hash-l3901",
@@ -66,6 +68,7 @@ def seed_retrieval_corpus(engine) -> None:
                 },
                 {
                     "id": "doc-image",
+                    "visibility": "public",
                     "title": "Image Observation",
                     "original_file_name": "warning.png",
                     "file_hash": "hash-image",
@@ -370,6 +373,7 @@ def test_deterministic_rerank_fallback_prioritizes_model_fault_code_source_and_t
             [
                 {
                     "id": "doc-high",
+                    "visibility": "public",
                     "title": "M7040 Official Repair Manual",
                     "original_file_name": "m7040-official.txt",
                     "file_hash": "hash-high",
@@ -387,6 +391,7 @@ def test_deterministic_rerank_fallback_prioritizes_model_fault_code_source_and_t
                 },
                 {
                     "id": "doc-low",
+                    "visibility": "public",
                     "title": "General Visual Note",
                     "original_file_name": "general-visual.txt",
                     "file_hash": "hash-low",
@@ -468,3 +473,83 @@ def test_hybrid_retrieval_returns_evidence_insufficient_when_no_candidates(tmp_p
         "candidates": [],
         "message": "No evidence found for the query",
     }
+
+
+def seed_private_document(engine, *, owner_user_id: str) -> None:
+    # 一份私有文档，仅归属者本人可检索。内容与公用 M7040 语料同主题，
+    # 确保若可见性过滤失效，它必然会命中同一查询并暴露出来。
+    with engine.begin() as connection:
+        connection.execute(
+            insert(documents).values(
+                id="doc-private",
+                title="Private M7040 Notes",
+                original_file_name="private-m7040.txt",
+                file_hash="hash-private",
+                file_size_bytes=100,
+                mime_type="text/plain",
+                storage_uri="file:///tmp/private-m7040.txt",
+                brand="Kubota",
+                model="M7040",
+                document_type="repair_manual",
+                language="zh-CN",
+                status=DocumentStatus.INDEXED.value,
+                created_by_role="user",
+                owner_user_id=owner_user_id,
+                visibility="private",
+            )
+        )
+        connection.execute(
+            insert(document_chunks).values(
+                id="chunk-private",
+                document_id="doc-private",
+                chunk_type=ChunkType.TEXT.value,
+                content="Kubota M7040 hydraulic pump fault code E01 private owner notes.",
+                summary="M7040 E01 private notes",
+                source_locator={"type": "text", "line_start": 1, "line_end": 1},
+            )
+        )
+    process_document_entities(engine, "doc-private")
+    SearchIndexer(engine).index_document("doc-private")
+
+
+def candidate_document_ids(result: dict[str, object]) -> set[str]:
+    return {candidate["document_id"] for candidate in result.get("candidates", [])}
+
+
+def test_hybrid_retrieval_hides_private_document_from_anonymous_viewer(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    seed_private_document(engine, owner_user_id="owner-1")
+
+    # 未登录访客（viewer_user_id 为 None）只能检索公用文档。
+    result = hybrid_retrieve_with_trace(engine, "M7040 E01 hydraulic pump", viewer_user_id=None)
+
+    document_ids = candidate_document_ids(result)
+    assert "doc-m7040" in document_ids
+    assert "doc-private" not in document_ids
+
+
+def test_hybrid_retrieval_hides_private_document_from_non_owner(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    seed_private_document(engine, owner_user_id="owner-1")
+
+    # 其他登录用户不能检索到别人的私有文档。
+    result = hybrid_retrieve_with_trace(engine, "M7040 E01 hydraulic pump", viewer_user_id="intruder-2")
+
+    document_ids = candidate_document_ids(result)
+    assert "doc-m7040" in document_ids
+    assert "doc-private" not in document_ids
+
+
+def test_hybrid_retrieval_returns_private_document_to_its_owner(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    seed_private_document(engine, owner_user_id="owner-1")
+
+    # 归属者本人可以检索到自己的私有文档，也能看到公用文档。
+    result = hybrid_retrieve_with_trace(engine, "M7040 E01 hydraulic pump", viewer_user_id="owner-1")
+
+    document_ids = candidate_document_ids(result)
+    assert "doc-private" in document_ids
+    assert "doc-m7040" in document_ids

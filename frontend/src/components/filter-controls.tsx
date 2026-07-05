@@ -100,6 +100,8 @@ export function collectSessionFilterOptions(sessions: ChatSession[]): FilterOpti
     document_type: asString(session.filters.document_type),
     language: asString(session.filters.language),
     status: "indexed" satisfies DocumentStatus,
+    visibility: "public",
+    owner_user_id: null,
     updated_at: session.updated_at,
     summary: null,
     recent_task: null,

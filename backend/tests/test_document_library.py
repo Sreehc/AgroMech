@@ -51,6 +51,8 @@ def seed_document(
     mime_type: str = "text/plain",
     chunk_page_number: int | None = 3,
     chunk_source_locator: dict[str, object] | None = None,
+    visibility: str = "public",
+    owner_user_id: str | None = None,
 ) -> None:
     with engine.begin() as connection:
         connection.execute(
@@ -72,6 +74,8 @@ def seed_document(
                 failure_code="parse_failed" if status == DocumentStatus.FAILED.value else None,
                 failure_message="Cannot parse file" if status == DocumentStatus.FAILED.value else None,
                 created_by_role="admin",
+                visibility=visibility,
+                owner_user_id=owner_user_id,
             )
         )
         connection.execute(

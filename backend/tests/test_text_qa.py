@@ -306,6 +306,7 @@ def test_text_qa_builds_table_evidence_window_with_header_and_row_snippet(tmp_pa
         connection.execute(
             insert(documents).values(
                 id="doc-table",
+                visibility="public",
                 title="M7040 Fault Table",
                 original_file_name="faults.csv",
                 file_hash="hash-doc-table",
@@ -357,6 +358,7 @@ def test_text_qa_builds_text_evidence_window_with_neighboring_chunks(tmp_path: P
         connection.execute(
             insert(documents).values(
                 id="doc-window",
+                visibility="public",
                 title="M7040 Procedure",
                 original_file_name="procedure.txt",
                 file_hash="hash-doc-window",
@@ -547,3 +549,102 @@ def test_text_qa_returns_readable_error_when_bailian_answer_generation_fails(
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "internal_error"
+
+
+def _seed_private_doc_for_user(engine, *, owner_user_id: str) -> None:
+    from agromech_api.domain.entities import process_document_entities
+
+    with engine.begin() as connection:
+        connection.execute(
+            insert(documents).values(
+                id="doc-private",
+                title="Private M7040 Notes",
+                original_file_name="private.txt",
+                file_hash="hash-private",
+                file_size_bytes=100,
+                mime_type="text/plain",
+                storage_uri="file:///tmp/private.txt",
+                brand="Kubota",
+                model="M7040",
+                document_type="repair_manual",
+                language="zh-CN",
+                status=DocumentStatus.INDEXED.value,
+                created_by_role="user",
+                owner_user_id=owner_user_id,
+                visibility="private",
+            )
+        )
+        connection.execute(
+            insert(document_chunks).values(
+                id="chunk-private",
+                document_id="doc-private",
+                chunk_type=ChunkType.TEXT.value,
+                content="Kubota M7040 hydraulic pump fault code E01 secret owner-only note.",
+                summary="M7040 E01 private note",
+                source_locator={"type": "text", "line_start": 1, "line_end": 1},
+            )
+        )
+    process_document_entities(engine, "doc-private")
+    SearchIndexer(engine).index_document("doc-private")
+
+
+def test_text_qa_allows_anonymous_question_against_public_library(tmp_path: Path) -> None:
+    client, engine, _token = qa_client(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    response = client.post(
+        "/qa/text",
+        headers={"X-Trace-Id": "trace-anon"},
+        json={"question": "M7040 E01 hydraulic pump repair"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["citations"][0]["document_id"] == "doc-m7040"
+
+
+def test_text_qa_anonymous_cannot_bind_chat_session(tmp_path: Path) -> None:
+    client, engine, _token = qa_client(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    response = client.post(
+        "/qa/text",
+        headers={"X-Trace-Id": "trace-anon"},
+        json={"question": "M7040 E01 hydraulic pump", "session_id": "s-1"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_text_qa_anonymous_is_rate_limited_per_ip(tmp_path: Path) -> None:
+    settings = qa_settings(tmp_path)
+    settings.anonymous_qa_rate_limit = 2
+    settings.anonymous_qa_rate_window_seconds = 3600
+    engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
+    metadata.create_all(engine)
+    seed_retrieval_corpus(engine)
+    client = TestClient(create_app(settings=settings, database_engine=engine))
+
+    body = {"question": "M7040 E01 hydraulic pump repair"}
+    assert client.post("/qa/text", json=body).status_code == 200
+    assert client.post("/qa/text", json=body).status_code == 200
+    limited = client.post("/qa/text", json=body)
+    assert limited.status_code == 429
+    assert limited.json()["error"]["code"] == "rate_limited"
+
+
+def test_text_qa_anonymous_cannot_retrieve_private_documents(tmp_path: Path) -> None:
+    client, engine, _token = qa_client(tmp_path)
+    _seed_private_doc_for_user(engine, owner_user_id="owner-1")
+
+    response = client.post(
+        "/qa/text",
+        headers={"X-Trace-Id": "trace-anon"},
+        json={"question": "M7040 E01 hydraulic pump secret owner-only note"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    citation_ids = {citation["document_id"] for citation in payload["citations"]}
+    assert "doc-private" not in citation_ids

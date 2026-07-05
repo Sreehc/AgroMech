@@ -21,6 +21,7 @@ class ErrorCode(StrEnum):
     QUESTION_TOO_LONG = "question_too_long"
     TOO_MANY_IMAGES = "too_many_images"
     VALIDATION_ERROR = "validation_error"
+    RATE_LIMITED = "rate_limited"
     INTERNAL_ERROR = "internal_error"
 
 

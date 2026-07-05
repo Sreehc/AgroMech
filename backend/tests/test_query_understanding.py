@@ -31,6 +31,7 @@ def seed_model_chunks(engine) -> None:
                     "document_version": "2024",
                     "status": DocumentStatus.INDEXED.value,
                     "created_by_role": "admin",
+                    "visibility": "public",
                 },
                 {
                     "id": "doc-l3901",
@@ -47,6 +48,7 @@ def seed_model_chunks(engine) -> None:
                     "document_version": "2023",
                     "status": DocumentStatus.INDEXED.value,
                     "created_by_role": "admin",
+                    "visibility": "public",
                 },
             ],
         )

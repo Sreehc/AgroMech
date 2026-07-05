@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     auth_token_secret: str = "change-me"
     session_ttl_minutes: int = 720
 
+    # Anonymous QA: unauthenticated visitors can ask questions against the public
+    # knowledge base only, throttled per client IP to blunt scripted abuse. There
+    # is no Redis in this deployment, so the limiter is an in-process sliding
+    # window (adequate for a single API instance; revisit if we scale out).
+    anonymous_qa_enabled: bool = True
+    anonymous_qa_rate_limit: int = 20
+    anonymous_qa_rate_window_seconds: int = 3600
+
     # Next.js frontend server-side adapter (consumed by the frontend, loaded here
     # so a single .env stays the source of truth and nothing is silently dropped).
     agromech_api_base_url: str = "http://127.0.0.1:8000"

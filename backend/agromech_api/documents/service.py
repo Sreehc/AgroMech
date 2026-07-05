@@ -96,9 +96,17 @@ def create_document_upload(
     document_type: str | None,
     language: str | None,
     source: str | None,
+    visibility: str = "private",
 ) -> UploadResult:
     extension = validate_supported_file(filename)
     validate_file_size(extension, content, settings)
+    if visibility not in {"public", "private"}:
+        raise AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "Invalid document visibility",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            details={"visibility": visibility},
+        )
 
     file_hash = hashlib.sha256(content).hexdigest()
     storage = build_file_storage(settings)
@@ -134,6 +142,8 @@ def create_document_upload(
                 source=source,
                 status=DocumentStatus.QUEUED.value,
                 created_by_role=user.role.value,
+                owner_user_id=user.user_id,
+                visibility=visibility,
             )
         )
         connection.execute(
@@ -160,6 +170,8 @@ def document_summary(row) -> dict[str, object]:
         "document_type": row["document_type"],
         "language": row["language"],
         "status": row["status"],
+        "visibility": row["visibility"],
+        "owner_user_id": row["owner_user_id"],
         "summary": row.get("summary"),
         "recent_task": row.get("recent_task"),
         "failure": {

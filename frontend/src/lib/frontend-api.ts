@@ -62,6 +62,8 @@ export class ApiRequestError extends Error {
   }
 }
 
+export type DocumentVisibility = "public" | "private";
+
 export type DocumentSummary = {
   id: string;
   title: string;
@@ -71,6 +73,8 @@ export type DocumentSummary = {
   document_type: string | null;
   language: string | null;
   status: string;
+  visibility: DocumentVisibility;
+  owner_user_id: string | null;
   updated_at: string | null;
   summary?: string | null;
   recent_task?: Pick<DocumentTaskSummary, "id" | "task_type" | "status" | "stage"> | null;
@@ -139,6 +143,8 @@ export type DocumentDetail = {
   title: string;
   metadata: DocumentMetadata;
   status: string;
+  visibility: DocumentVisibility;
+  owner_user_id: string | null;
   failure: DocumentFailure;
   recent_task: DocumentTaskSummary | null;
   chunks: DocumentChunkSummary[];
@@ -207,6 +213,7 @@ export type TaskResponse = {
 
 export type UploadDocumentOptions = {
   onProgress?: (percent: number) => void;
+  visibility?: DocumentVisibility;
 };
 
 export type DocumentPreviewType = "text" | "pdf" | "unavailable";
@@ -311,6 +318,24 @@ export function canMutateLibrary(role: UserRole): boolean {
   return role === "admin" || role === "maintainer";
 }
 
+// 谁能上传资料：admin/maintainer 可传公用库，user 只能传自己私库。evaluator 只读。
+export function canUploadDocuments(role: UserRole): boolean {
+  return role === "admin" || role === "maintainer" || role === "user";
+}
+
+// 谁能把资料发布到公用库：仅 admin/maintainer。其余角色只能建私有资料。
+export function canPublishToPublicLibrary(role: UserRole): boolean {
+  return role === "admin" || role === "maintainer";
+}
+
+// 能否管理（重新处理 / 删除）某份资料。列表接口只会返回公用资料与本人的私有
+// 资料，因此能上传的用户看到的任何「私有」资料都归其本人所有，可安全放开管理
+// 入口；后端仍会做归属校验兜底。evaluator 只读，不能管理任何资料。
+export function canManageDocument(role: UserRole, visibility: DocumentVisibility): boolean {
+  if (role === "admin" || role === "maintainer") return true;
+  return visibility === "private" && canUploadDocuments(role);
+}
+
 export function errorMessage(error: ApiErrorResponse): string {
   return `${error.error.code}: ${error.error.message}`;
 }
@@ -339,6 +364,26 @@ export async function login(username: string, password: string): Promise<LoginRe
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
+  });
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+  return (await response.json()) as LoginResponse;
+}
+
+export async function register(
+  username: string,
+  password: string,
+  displayName?: string,
+): Promise<LoginResponse> {
+  const response = await fetch("/backend/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username,
+      password,
+      ...(displayName ? { display_name: displayName } : {}),
+    }),
   });
   if (!response.ok) {
     throw await parseError(response);
@@ -440,6 +485,9 @@ export async function getDocument(token: string, documentId: string): Promise<Do
 export async function uploadDocument(token: string, file: File, options: UploadDocumentOptions = {}): Promise<TaskResponse> {
   const formData = new FormData();
   formData.append("file", file);
+  if (options.visibility) {
+    formData.append("visibility", options.visibility);
+  }
   return await new Promise<TaskResponse>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/backend/documents");

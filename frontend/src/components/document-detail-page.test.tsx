@@ -20,6 +20,8 @@ function documentDetail(overrides: Partial<DocumentDetail> = {}): DocumentDetail
       file_size_bytes: 2048,
     },
     status: "indexed",
+    visibility: "public",
+    owner_user_id: null,
     failure: { stage: null, code: null, message: null },
     recent_task: {
       id: "task-a",

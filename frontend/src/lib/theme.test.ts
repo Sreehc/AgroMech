@@ -40,13 +40,13 @@ describe("theme utilities", () => {
 
   it("wires theme provider through layout and exposes shell theme toggle labels", () => {
     const layout = readFileSync(new URL("../app/layout.tsx", import.meta.url), "utf8");
-    const appFrame = readFileSync(new URL("../components/app-frame.tsx", import.meta.url), "utf8");
+    const appShell = readFileSync(new URL("../components/app-shell.tsx", import.meta.url), "utf8");
 
     expect(layout).toContain("ThemeProvider");
     expect(layout).toContain("@/components/theme-provider");
-    expect(appFrame).toContain("useTheme");
-    expect(appFrame).toContain("toggleTheme");
-    expect(appFrame).toContain("切换为深色模式");
-    expect(appFrame).toContain("切换为浅色模式");
+    expect(appShell).toContain("useTheme");
+    expect(appShell).toContain("toggleTheme");
+    expect(appShell).toContain("切换为深色模式");
+    expect(appShell).toContain("切换为浅色模式");
   });
 });

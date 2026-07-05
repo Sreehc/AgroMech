@@ -8,6 +8,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-brand-primary: var(--brand-primary);
+  --color-brand-accent: var(--brand-accent);
   --color-surface-canvas: var(--surface-canvas);
   --color-surface-panel: var(--surface-panel);
   --color-surface-raised: var(--surface-raised);
@@ -66,8 +68,8 @@
   --surface-inset: oklch(0.965 0 0);
   --text-primary: oklch(0.22 0 0);
   --text-muted: oklch(0.5 0 0);
-  --brand-primary: oklch(0.26 0 0);
-  --brand-accent: oklch(0.62 0 0);
+  --brand-primary: oklch(0.52 0.1 175);
+  --brand-accent: oklch(0.72 0.15 130);
   --status-info: oklch(0.55 0.121 238.6);
   --status-success: oklch(0.55 0.115 150.2);
   --status-warning: oklch(0.68 0.145 78.4);
@@ -114,8 +116,8 @@
   --surface-inset: oklch(0.29 0 0);
   --text-primary: oklch(0.96 0 0);
   --text-muted: oklch(0.72 0 0);
-  --brand-primary: oklch(0.92 0 0);
-  --brand-accent: oklch(0.78 0 0);
+  --brand-primary: oklch(0.7 0.11 175);
+  --brand-accent: oklch(0.8 0.15 130);
   --status-info: oklch(0.72 0.12 238.6);
   --status-success: oklch(0.72 0.12 150.2);
   --status-warning: oklch(0.78 0.14 78.4);

@@ -250,8 +250,35 @@ def require_roles(*roles: UserRole) -> Callable:
     return dependency
 
 
+def optional_user_dependency() -> Callable:
+    """可选鉴权：带有效 Bearer 令牌时返回 UserContext，未携带令牌时返回 None。
+
+    用于匿名可访问的端点（如匿名问答）。注意：令牌存在但无效/过期时仍会抛
+    401，避免坏令牌被静默降级为匿名。
+    """
+
+    def dependency(
+        request: Request,
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    ) -> UserContext | None:
+        if credentials is None or credentials.scheme.lower() != "bearer":
+            return None
+        settings = getattr(request.app.state, "settings", get_settings())
+        engine = getattr(request.app.state, "database_engine", None)
+        return verify_access_token(credentials.credentials, settings, engine)
+
+    return dependency
+
+
+# 这些路径自行处理鉴权（匿名问答走可选鉴权 + 限流，开放注册无需令牌），
+# 因此豁免全局写鉴权中间件；否则会在到达路由前被 401 拦下。
+# 注意：/qa/image 不在此列——匿名对话仅限文本问答，图片问答（走视觉模型，
+# 成本高、易被滥用）仍要求登录。
+WRITE_AUTH_EXEMPT_PATHS = frozenset({"/auth/login", "/auth/register", "/qa/text"})
+
+
 async def require_authenticated_write(request: Request, call_next):
-    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path != "/auth/login":
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path not in WRITE_AUTH_EXEMPT_PATHS:
         credentials = await bearer_scheme(request)
         if credentials is None:
             return JSONResponse(
