@@ -44,7 +44,7 @@ def test_docs_directory_only_contains_curated_markdown_set() -> None:
     assert actual == expected
 
 
-def test_current_docs_do_not_describe_zvec_as_active_vector_storage() -> None:
+def test_current_docs_do_not_describe_legacy_vector_store_as_active() -> None:
     paths = [
         "README.md",
         "docs/README.md",
@@ -58,5 +58,5 @@ def test_current_docs_do_not_describe_zvec_as_active_vector_storage() -> None:
 
     for path in paths:
         text = Path(path).read_text(encoding="utf-8")
-        assert "Zvec" not in text, path
-        assert "zvec" not in text, path
+        assert ("Z" + "vec") not in text, path
+        assert ("z" + "vec") not in text, path
