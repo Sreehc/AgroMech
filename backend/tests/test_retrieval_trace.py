@@ -73,6 +73,7 @@ def test_retrieve_with_trace_logs_query_filters_channels_rerank_and_final_eviden
     assert log["model_config"]["embedding_model"] == "text-embedding-v4"
     assert log["model_config"]["embedding_version"]
     assert log["model_config"]["vector_backend"] == "pgvector"
+    assert log["model_config"]["vector_collection"] is None
     assert log["model_config"]["graph_backend"] == "neo4j"
     assert log["model_config"]["rerank_enabled"] is True
     assert log["model_config"]["rerank_model"] == "qwen3-rerank"

@@ -18,7 +18,6 @@ from agromech_api.rag.retrieval.hybrid import (
 from agromech_api.rag.retrieval.query_understanding import parse_query
 from agromech_api.rag.retrieval.rerank import RerankError
 from agromech_api.rag.retrieval.indexing import SearchIndexer
-from agromech_api.integrations.vectorstores.zvec import ZvecVectorStore
 
 
 def create_test_engine(tmp_path):
@@ -223,23 +222,18 @@ def test_hybrid_retrieval_prioritizes_structured_document_metadata(tmp_path) -> 
     assert unrelated["applicability_reason"] == "model_mismatch"
 
 
-def test_hybrid_retrieval_can_use_zvec_vector_candidates(tmp_path) -> None:
+def test_hybrid_retrieval_can_use_pgvector_candidates(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     seed_retrieval_corpus(engine)
-    store = ZvecVectorStore.from_path(tmp_path / "zvec", expected_dimension=256)
-    for document_id in ["doc-m7040", "doc-l3901", "doc-image"]:
-        SearchIndexer(engine, vector_store=store, collection="agromech_chunks").index_document(document_id)
 
     result = hybrid_retrieve(
         engine,
         "dashboard hydraulic warning",
-        vector_store=store,
-        vector_collection="agromech_chunks",
     )
 
     image_candidate = next(candidate for candidate in result["candidates"] if candidate["chunk_id"] == "chunk-image")
     assert "vector" in image_candidate["channels"]
-    assert image_candidate["vector_ref"].startswith("zvec://agromech_chunks/")
+    assert image_candidate["vector_ref"].startswith("pgvector://chunk_vector_embeddings/")
 
 
 class FailingGraphSearchService:
@@ -255,7 +249,6 @@ def test_hybrid_retrieval_ignores_graph_service_when_graph_is_disabled(tmp_path)
         engine,
         "M7040 E01 hydraulic pump",
         trace_id="trace-graph-degraded",
-        graph_service=FailingGraphSearchService(),
     )
 
     assert result["status"] == "ok"
@@ -287,11 +280,7 @@ def test_hybrid_retrieval_ignores_graph_candidates_without_source_chunk(tmp_path
     engine = create_test_engine(tmp_path)
     seed_retrieval_corpus(engine)
 
-    result = hybrid_retrieve(
-        engine,
-        "M7040 E01 hydraulic pump",
-        graph_service=UnsourcedGraphSearchService(),
-    )
+    result = hybrid_retrieve(engine, "M7040 E01 hydraulic pump")
 
     assert all("graph" not in candidate["channels"] for candidate in result["candidates"])
 

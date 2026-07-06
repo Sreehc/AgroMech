@@ -14,6 +14,8 @@ from agromech_api.rag.retrieval.evidence_check import check_evidence_sufficiency
 from agromech_api.rag.retrieval.hybrid import hybrid_retrieve_with_trace
 from agromech_api.rag.retrieval.indexing import visual_page_search
 from agromech_api.rag.retrieval.query_understanding import parse_query
+from agromech_api.integrations.embeddings.text import build_embedding_provider
+from agromech_api.integrations.embeddings.visual import build_visual_embedding_provider
 from agromech_api.sessions.history import append_text_session_exchange, ensure_session_belongs_to_user
 from agromech_api.qa.text_citations import (
     build_citations,
@@ -150,10 +152,7 @@ def retrieve_for_text_agent(
     **_kwargs,
 ) -> dict[str, object]:
     search_query = query_with_filters(question, filters)
-    vector_store = None
-    embedding_provider = None
-    vector_collection = None
-    graph_service = None
+    embedding_provider = build_embedding_provider(settings)
     rerank_provider = None
     # Graph RAG is currently out of scope for the main QA path, even when
     # experimental graph settings are present.
@@ -167,10 +166,7 @@ def retrieve_for_text_agent(
         trace_id=trace_id,
         logged_query=question,
         filters={key: value for key, value in filters.items() if value is not None},
-        vector_store=vector_store,
-        vector_collection=vector_collection,
         embedding_provider=embedding_provider,
-        graph_service=graph_service,
         rerank_provider=rerank_provider,
         rerank_top_k=settings.rerank_top_k,
         viewer_user_id=viewer_user_id,
@@ -195,15 +191,11 @@ def retrieve_visual_for_text_agent(
 ) -> dict[str, object]:
     _ = trace_id
     query = query_with_filters(question, filters)
-    embedding_provider = None
-    vector_store = None
-    vector_collection = None
+    embedding_provider = build_visual_embedding_provider(settings)
     retrieval = visual_page_search(
         engine,
         query,
         embedding_provider=embedding_provider,
-        vector_store=vector_store,
-        collection=vector_collection,
         active_embedding_version=settings.visual_embedding_version,
         viewer_user_id=viewer_user_id,
     )

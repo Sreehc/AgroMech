@@ -14,10 +14,14 @@ from agromech_api.db.models import (
 )
 from agromech_api.ingestion import IngestFailure, QueuedTask
 from agromech_api.rag.retrieval.indexing import (
+    DeterministicEmbeddingProvider,
+    DeterministicVisualEmbeddingProvider,
     FailingEmbeddingProvider,
     SearchIndexer,
     VisualPageIndexer,
     keyword_search,
+    vector_search,
+    visual_page_search,
 )
 from agromech_api.core.config import Settings
 from agromech_worker.main import run_once
@@ -30,7 +34,13 @@ def create_test_engine(tmp_path):
     return engine
 
 
-def seed_searchable_document(engine) -> None:
+def seed_searchable_document(engine, *, content: str = "Kubota M7040 hydraulic pump fault code E01") -> tuple[str, str]:
+    default_text = "Kubota M7040 hydraulic pump fault code E01"
+    image_content = (
+        "Visual description: hydraulic warning light on dashboard"
+        if content == default_text
+        else "Visual description: generic instrument panel"
+    )
     with engine.begin() as connection:
         connection.execute(
             insert(documents).values(
@@ -53,7 +63,7 @@ def seed_searchable_document(engine) -> None:
                     "id": "text-1",
                     "document_id": "doc-1",
                     "chunk_type": ChunkType.TEXT.value,
-                    "content": "Kubota M7040 hydraulic pump fault code E01",
+                    "content": content,
                     "summary": "M7040 hydraulic pump",
                     "source_locator": {"type": "text", "line_start": 1, "line_end": 1},
                 },
@@ -77,15 +87,16 @@ def seed_searchable_document(engine) -> None:
                     "id": "image-1",
                     "document_id": "doc-1",
                     "chunk_type": ChunkType.IMAGE.value,
-                    "content": "Visual description: hydraulic warning light on dashboard",
-                    "summary": "hydraulic warning light",
+                    "content": image_content,
+                    "summary": "hydraulic warning light" if content == default_text else "instrument panel",
                     "source_locator": {"type": "image", "source_file": "label.png"},
                 },
             ],
         )
+    return "doc-1", "text-1"
 
 
-def seed_page_image_asset(engine, tmp_path) -> None:
+def seed_page_image_asset(engine, tmp_path) -> tuple[str, str]:
     page_path = tmp_path / "page-1.png"
     page_path.write_bytes(b"fake image bytes")
     with engine.begin() as connection:
@@ -116,6 +127,7 @@ def seed_page_image_asset(engine, tmp_path) -> None:
                 visual_observation={"vision": {"description": "hydraulic pump location"}},
             )
         )
+    return "doc-visual", "asset-page-1"
 
 
 def test_index_document_writes_pgvector_rows(tmp_path) -> None:
@@ -209,22 +221,80 @@ def test_index_document_records_embedding_version_profile_and_dimension(tmp_path
     assert {row["embedding_dimension"] for row in embeddings} == {1024}
 
 
-@pytest.mark.skip(reason="Task 4 owns pgvector vector_search semantics.")
+def test_vector_search_returns_pgvector_refs(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    document_id, chunk_id = seed_searchable_document(engine, content="dashboard hydraulic warning")
+    SearchIndexer(
+        engine,
+        embedding_provider=DeterministicEmbeddingProvider(),
+        embedding_version="emb_test",
+        embedding_dimension=256,
+    ).index_document(document_id)
+
+    results = vector_search(
+        engine,
+        "dashboard hydraulic warning",
+        active_embedding_version="emb_test",
+        embedding_provider=DeterministicEmbeddingProvider(),
+    )
+
+    assert results[0]["chunk_id"] == chunk_id
+    assert results[0]["embedding_id"]
+    assert results[0]["vector_ref"].startswith("pgvector://chunk_vector_embeddings/")
+
+
+def test_visual_page_search_returns_pgvector_refs(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    document_id, asset_id = seed_page_image_asset(engine, tmp_path)
+    provider = DeterministicVisualEmbeddingProvider(dimension=4)
+    VisualPageIndexer(
+        engine,
+        embedding_provider=provider,
+        embedding_version="vis_test",
+        embedding_dimension=4,
+    ).index_document(document_id)
+
+    results = visual_page_search(
+        engine,
+        "hydraulic page",
+        active_embedding_version="vis_test",
+        embedding_provider=provider,
+    )
+
+    assert results[0]["asset_id"] == asset_id
+    assert results[0]["embedding_id"]
+    assert results[0]["vector_ref"].startswith("pgvector://visual_page_vector_embeddings/")
+
+
 def test_vector_search_filters_to_active_embedding_version(tmp_path) -> None:
-    pass
+    engine = create_test_engine(tmp_path)
+    document_id, chunk_id = seed_searchable_document(engine, content="dashboard hydraulic warning")
+    SearchIndexer(
+        engine,
+        embedding_provider=DeterministicEmbeddingProvider(),
+        embedding_version="emb_active",
+        embedding_dimension=256,
+    ).index_document(document_id)
+    SearchIndexer(
+        engine,
+        embedding_provider=DeterministicEmbeddingProvider(),
+        embedding_version="emb_old",
+        embedding_dimension=256,
+    ).index_document(document_id)
+
+    results = vector_search(
+        engine,
+        "dashboard hydraulic warning",
+        active_embedding_version="emb_active",
+        embedding_provider=DeterministicEmbeddingProvider(),
+    )
+
+    assert results
+    assert results[0]["chunk_id"] == chunk_id
+    assert {result["embedding_version"] for result in results} == {"emb_active"}
 
 
-@pytest.mark.skip(reason="Task 4 owns vector-store retrieval compatibility semantics.")
-def test_vector_search_can_query_zvec_and_return_vector_refs(tmp_path) -> None:
-    pass
-
-
-@pytest.mark.skip(reason="Task 4 owns vector_search validation and result contract.")
-def test_vector_search_requires_collection_for_compatibility_vector_store(tmp_path) -> None:
-    pass
-
-
-def test_run_once_uses_configured_zvec_store(tmp_path, monkeypatch) -> None:
+def test_run_once_uses_configured_embedding_provider(tmp_path, monkeypatch) -> None:
     engine = create_test_engine(tmp_path)
     source_path = tmp_path / "manual.txt"
     source_path.write_text("Kubota M7040 hydraulic pump", encoding="utf-8")

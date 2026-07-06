@@ -80,10 +80,9 @@ class VectorRetrievalAgent:
         parsed: ParsedQuery,
         *,
         limit: int,
-        vector_store=None,
-        vector_collection: str | None = None,
         embedding_provider=None,
         degraded_channels: dict[str, str] | None = None,
+        viewer_user_id: str | None = None,
         **_kwargs,
     ) -> dict[str, object]:
         _ = parsed
@@ -93,14 +92,14 @@ class VectorRetrievalAgent:
                     "chunk_id": result["chunk_id"],
                     "score": float(result["score"]),
                     "vector_ref": result.get("vector_ref"),
+                    "embedding_id": result.get("embedding_id"),
                 }
                 for result in vector_search(
                     engine,
                     query,
                     limit=limit * 2,
-                    vector_store=vector_store,
-                    collection=vector_collection,
                     embedding_provider=embedding_provider,
+                    viewer_user_id=viewer_user_id,
                 )
             ]
         except Exception:  # noqa: BLE001 - vector degradation must not fail retrieval.
@@ -146,6 +145,7 @@ class EvidenceMergeAgent:
                     channel,
                     float(result["score"]),
                     vector_ref=result.get("vector_ref") if isinstance(result, dict) else None,
+                    embedding_id=result.get("embedding_id") if isinstance(result, dict) else None,
                 )
         for candidate in candidates.values():
             apply_model_applicability(engine, candidate, parsed)
@@ -193,10 +193,7 @@ def hybrid_retrieve(
     query: str,
     *,
     limit: int = 10,
-    vector_store=None,
-    vector_collection: str | None = None,
     embedding_provider=None,
-    graph_service=None,
     rerank_provider=None,
     rerank_top_k: int | None = None,
 ) -> dict[str, object]:
@@ -209,10 +206,7 @@ def hybrid_retrieve(
             query,
             parsed,
             limit=candidate_limit,
-            vector_store=vector_store,
-            vector_collection=vector_collection,
             embedding_provider=embedding_provider,
-            graph_service=graph_service,
             degraded_channels=degraded_channels,
         ),
         limit=candidate_limit,
@@ -240,10 +234,7 @@ def hybrid_retrieve_with_trace(
     logged_query: str | None = None,
     filters: dict[str, object] | None = None,
     degraded_channels: dict[str, str] | None = None,
-    vector_store=None,
-    vector_collection: str | None = None,
     embedding_provider=None,
-    graph_service=None,
     rerank_provider=None,
     rerank_top_k: int | None = None,
     viewer_user_id: str | None = None,
@@ -260,10 +251,7 @@ def hybrid_retrieve_with_trace(
             query,
             parsed,
             limit=candidate_limit,
-            vector_store=vector_store,
-            vector_collection=vector_collection,
             embedding_provider=embedding_provider,
-            graph_service=graph_service,
             degraded_channels=degraded_channels,
             viewer_user_id=viewer_user_id,
         ),
@@ -308,10 +296,7 @@ def collect_candidates(
     parsed: ParsedQuery,
     *,
     limit: int,
-    vector_store=None,
-    vector_collection: str | None = None,
     embedding_provider=None,
-    graph_service=None,
     degraded_channels: dict[str, str] | None = None,
     viewer_user_id: str | None = None,
 ) -> list[dict[str, object]]:
@@ -320,14 +305,10 @@ def collect_candidates(
         query,
         parsed,
         limit=limit,
-        vector_store=vector_store,
-        vector_collection=vector_collection,
         embedding_provider=embedding_provider,
         degraded_channels=degraded_channels,
+        viewer_user_id=viewer_user_id,
     )
-    # Graph retrieval is intentionally disabled in the current product scope.
-    # Keep the injection parameter for compatibility with older tests/callers.
-    _ = graph_service
     candidates = EvidenceMergeAgent().run(engine, channel_results, parsed)
     candidates = VisualRetrievalAgent().run(candidates)
     candidates = enforce_visibility(engine, candidates, viewer_user_id=viewer_user_id)
@@ -364,10 +345,9 @@ def collect_channel_results(
     parsed: ParsedQuery,
     *,
     limit: int,
-    vector_store=None,
-    vector_collection: str | None = None,
     embedding_provider=None,
     degraded_channels: dict[str, str] | None = None,
+    viewer_user_id: str | None = None,
 ) -> list[dict[str, object]]:
     agents = [
         (
@@ -386,10 +366,9 @@ def collect_channel_results(
                 "query": query,
                 "parsed": parsed,
                 "limit": limit,
-                "vector_store": vector_store,
-                "vector_collection": vector_collection,
                 "embedding_provider": embedding_provider,
                 "degraded_channels": degraded_channels,
+                "viewer_user_id": viewer_user_id,
             },
         ),
         (
@@ -642,6 +621,7 @@ def trace_candidate(candidate: dict[str, object]) -> dict[str, object]:
         "not_applicable": bool(candidate.get("not_applicable", False)),
         "applicability_reason": candidate.get("applicability_reason"),
         "vector_ref": candidate.get("vector_ref"),
+        "embedding_id": candidate.get("embedding_id"),
     }
 
 
@@ -658,6 +638,7 @@ def evidence_payload(candidates: list[dict[str, object]]) -> list[dict[str, obje
             "not_applicable": bool(candidate.get("not_applicable", False)),
             "applicability_reason": candidate.get("applicability_reason"),
             "vector_ref": candidate.get("vector_ref"),
+            "embedding_id": candidate.get("embedding_id"),
         }
         for candidate in candidates
     ]
@@ -708,6 +689,7 @@ def add_candidate(
     channel: str,
     score: float,
     vector_ref: object | None = None,
+    embedding_id: object | None = None,
 ) -> None:
     candidate = candidates.get(chunk_id)
     if candidate is None:
@@ -716,6 +698,8 @@ def add_candidate(
     add_channel(candidate, channel, score * CHANNEL_WEIGHTS[channel])
     if vector_ref:
         candidate["vector_ref"] = vector_ref
+    if embedding_id:
+        candidate["embedding_id"] = embedding_id
 
 
 def add_channel(candidate: dict[str, object], channel: str, weighted_score: float) -> None:
@@ -745,6 +729,7 @@ def chunk_payload(engine: Engine, chunk_id: str) -> dict[str, object]:
         "score": 0.0,
         "not_applicable": False,
         "vector_ref": None,
+        "embedding_id": None,
     }
 
 

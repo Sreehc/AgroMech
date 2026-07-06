@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from sqlalchemy import Engine, delete, insert, select
+from sqlalchemy import Engine, delete, insert, or_, select
 
 from agromech_api.core.config import get_settings
 from agromech_api.db.enums import AssetType
@@ -120,7 +120,7 @@ class SearchIndexer:
                     "embedding_version": self.embedding_version,
                     "chunk_profile": self.chunk_profile,
                     "embedding_dimension": len(embedding),
-                    "embedding": embedding,
+                    "embedding": pgvector_storage_embedding(embedding),
                     "status": "ready",
                 }
             )
@@ -192,7 +192,7 @@ class VisualPageIndexer:
                     "model": self.embedding_provider.model,
                     "embedding_version": self.embedding_version,
                     "embedding_dimension": len(embedding),
-                    "embedding": embedding,
+                    "embedding": pgvector_storage_embedding(embedding),
                     "status": "ready",
                 }
             )
@@ -247,10 +247,52 @@ def vector_search(
     limit: int = 10,
     active_embedding_version: str | None = None,
     embedding_provider=None,
-    vector_store=None,
-    collection: str | None = None,
+    viewer_user_id: str | None = None,
 ) -> list[dict[str, object]]:
-    return []
+    settings = get_settings()
+    provider = embedding_provider or DeterministicEmbeddingProvider(dimension=settings.embedding_dimension)
+    embedding_version = active_embedding_version or settings.embedding_version
+    query_embedding = provider.embed(query)
+    statement = (
+        select(
+            chunk_vector_embeddings.c.id.label("embedding_id"),
+            chunk_vector_embeddings.c.chunk_id,
+            chunk_vector_embeddings.c.embedding_version,
+            chunk_vector_embeddings.c.embedding,
+            document_chunks.c.chunk_type,
+        )
+        .select_from(
+            chunk_vector_embeddings.join(
+                document_chunks,
+                chunk_vector_embeddings.c.chunk_id == document_chunks.c.id,
+            ).join(
+                documents,
+                chunk_vector_embeddings.c.document_id == documents.c.id,
+            )
+        )
+        .where(chunk_vector_embeddings.c.embedding_version == embedding_version)
+        .where(chunk_vector_embeddings.c.status == "ready")
+        .where(visible_document_condition(viewer_user_id))
+    )
+    with engine.connect() as connection:
+        rows = connection.execute(statement).mappings().all()
+
+    scored = []
+    for row in rows:
+        score = cosine_similarity(query_embedding, vector_values(row["embedding"]))
+        if score > 0:
+            embedding_id = str(row["embedding_id"])
+            scored.append(
+                {
+                    "chunk_id": row["chunk_id"],
+                    "score": score,
+                    "chunk_type": row["chunk_type"],
+                    "embedding_version": row["embedding_version"],
+                    "embedding_id": embedding_id,
+                    "vector_ref": f"pgvector://chunk_vector_embeddings/{embedding_id}",
+                }
+            )
+    return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
 
 
 def visual_page_search(
@@ -260,23 +302,65 @@ def visual_page_search(
     limit: int = 5,
     active_embedding_version: str | None = None,
     embedding_provider=None,
-    vector_store=None,
-    collection: str | None = None,
     viewer_user_id: str | None = None,
 ) -> list[dict[str, object]]:
-    return []
+    settings = get_settings()
+    provider = embedding_provider or DeterministicVisualEmbeddingProvider(
+        dimension=settings.visual_embedding_dimension
+    )
+    embedding_version = active_embedding_version or settings.visual_embedding_version
+    query_embedding = provider.embed_query(query)
+    statement = (
+        select(
+            visual_page_vector_embeddings.c.id.label("embedding_id"),
+            visual_page_vector_embeddings.c.asset_id,
+            visual_page_vector_embeddings.c.document_id,
+            visual_page_vector_embeddings.c.page_number,
+            visual_page_vector_embeddings.c.embedding_version,
+            visual_page_vector_embeddings.c.embedding,
+            document_assets.c.storage_uri,
+            document_assets.c.source_locator,
+            document_assets.c.ocr_text,
+            document_assets.c.visual_observation,
+        )
+        .select_from(
+            visual_page_vector_embeddings.join(
+                document_assets,
+                visual_page_vector_embeddings.c.asset_id == document_assets.c.id,
+            ).join(
+                documents,
+                visual_page_vector_embeddings.c.document_id == documents.c.id,
+            )
+        )
+        .where(visual_page_vector_embeddings.c.embedding_version == embedding_version)
+        .where(visual_page_vector_embeddings.c.status == "ready")
+        .where(visible_document_condition(viewer_user_id))
+    )
+    with engine.connect() as connection:
+        rows = connection.execute(statement).mappings().all()
 
-
-def zvec_vector_search(
-    engine: Engine,
-    *,
-    vector_store,
-    collection: str,
-    query_embedding: list[float],
-    active_embedding_version: str,
-    limit: int,
-) -> list[dict[str, object]]:
-    return []
+    scored = []
+    for row in rows:
+        score = cosine_similarity(query_embedding, vector_values(row["embedding"]))
+        if score > 0:
+            embedding_id = str(row["embedding_id"])
+            scored.append(
+                {
+                    "asset_id": row["asset_id"],
+                    "document_id": row["document_id"],
+                    "page_number": row["page_number"],
+                    "score": score,
+                    "source_locator": row["source_locator"],
+                    "ocr_text": row["ocr_text"],
+                    "visual_observation": row["visual_observation"],
+                    "image_uri": row["storage_uri"],
+                    "evidence_type": "visual_page",
+                    "embedding_version": row["embedding_version"],
+                    "embedding_id": embedding_id,
+                    "vector_ref": f"pgvector://visual_page_vector_embeddings/{embedding_id}",
+                }
+            )
+    return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
 
 
 def tokenize(text: str) -> list[str]:
@@ -292,6 +376,25 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     if len(left) == 0 or len(right) == 0:
         return 0.0
     return sum(a * b for a, b in zip(left, right))
+
+
+def visible_document_condition(viewer_user_id: str | None):
+    conditions = [documents.c.visibility == "public"]
+    if viewer_user_id is not None:
+        conditions.append(documents.c.owner_user_id == viewer_user_id)
+    return or_(*conditions)
+
+
+def vector_values(value) -> list[float]:
+    if hasattr(value, "to_list"):
+        return [float(item) for item in value.to_list()]
+    return [float(item) for item in value]
+
+
+def pgvector_storage_embedding(embedding: list[float]) -> list[float]:
+    if len(embedding) >= 1024:
+        return embedding
+    return [*embedding, *([0.0] * (1024 - len(embedding)))]
 
 
 def local_file_path(storage_uri: str) -> Path:
