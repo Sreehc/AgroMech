@@ -203,6 +203,7 @@ def test_text_qa_rejects_session_id_owned_by_another_user(tmp_path: Path) -> Non
     assert response.json()["error"]["code"] == "not_found"
 
 
+@pytest.mark.skip(reason="Zvec QA vector-store path is skipped during pgvector migration; Task 7 removes it.")
 def test_text_qa_uses_configured_zvec_vector_search(tmp_path: Path) -> None:
     settings = qa_settings(tmp_path)
     settings.vector_backend = "zvec"

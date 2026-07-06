@@ -128,7 +128,7 @@ def sanitize_oss_error(exc: Exception) -> str:
 
 def check_pgvector_extension(engine=None) -> DependencyCheck:
     active_engine = engine or get_engine()
-    target = str(active_engine.url)
+    target = "postgres:extension/vector"
     try:
         with active_engine.connect() as connection:
             extension = connection.execute(
@@ -151,12 +151,12 @@ def check_bailian_config(settings: Settings) -> DependencyCheck:
     return DependencyCheck("bailian", "ok", settings.bailian_base_url)
 
 
-def check_infrastructure(settings: Settings) -> list[DependencyCheck]:
+def check_infrastructure(settings: Settings, engine=None) -> list[DependencyCheck]:
     checks = [
         check_tcp_dependency(target, settings.dependency_connect_timeout_seconds)
         for target in dependency_targets(settings).values()
     ]
     checks.append(check_file_storage(settings))
-    checks.append(check_pgvector_extension())
+    checks.append(check_pgvector_extension(engine))
     checks.append(check_bailian_config(settings))
     return checks

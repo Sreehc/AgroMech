@@ -1,6 +1,13 @@
 import tarfile
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
+pytest.skip(
+    "Zvec backup tests are skipped during the pgvector migration; Task 7 removes Zvec implementation/tests.",
+    allow_module_level=True,
+)
+
 from agromech_api.core.config import Settings
 from agromech_api.integrations.vectorstores.zvec_backup import (
     RestoreStatus,

@@ -261,7 +261,7 @@ def test_pgvector_extension_health_check_uses_supplied_engine() -> None:
 
     assert check.name == "pgvector"
     assert check.status == "ok"
-    assert check.target == "postgresql+psycopg://agromech:***@localhost:5432/agromech"
+    assert check.target == "postgres:extension/vector"
 
 
 def test_bailian_health_check_reports_unavailable_when_required_config_is_missing() -> None:
