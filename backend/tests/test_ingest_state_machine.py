@@ -1,10 +1,12 @@
 import pytest
 from sqlalchemy import create_engine, insert, select
 
-from agromech_api.db.enums import ChunkType, DocumentStatus, IngestTaskStatus, TaskType
+from agromech_api.db.enums import AssetType, ChunkType, DocumentStatus, IngestTaskStatus, TaskType
 from agromech_api.db.models import (
     answer_citations,
     chunk_search_index,
+    chunk_vector_embeddings,
+    document_assets,
     document_chunks,
     documents,
     graph_edges,
@@ -12,6 +14,7 @@ from agromech_api.db.models import (
     ingest_tasks,
     metadata,
     qa_records,
+    visual_page_vector_embeddings,
 )
 from agromech_api.core.errors import AppError, ErrorCode
 from agromech_api.ingestion import IngestFailure, IngestTaskRunner, retry_failed_task
@@ -178,7 +181,45 @@ def test_delete_task_cleans_searchable_data_and_marks_historical_citations_inacc
                 document_id="doc-1",
                 chunk_type=ChunkType.TEXT.value,
                 search_text="Hydraulic pump pressure",
-                embedding=[1.0],
+            )
+        )
+        connection.execute(
+            insert(chunk_vector_embeddings).values(
+                id="chunk-vector-1",
+                chunk_id="chunk-1",
+                document_id="doc-1",
+                provider="local",
+                model="deterministic-token-hash",
+                embedding_version="emb_202606231530_text-embedding-v4_1024_chunk-v1",
+                chunk_profile="chunk-v1",
+                embedding_dimension=1024,
+                embedding=[1.0] + [0.0] * 1023,
+                status="ready",
+            )
+        )
+        connection.execute(
+            insert(document_assets).values(
+                id="asset-page-1",
+                document_id="doc-1",
+                asset_type=AssetType.PAGE_IMAGE.value,
+                storage_uri="file:///tmp/page-1.png",
+                mime_type="image/png",
+                page_number=1,
+                source_locator={"type": "pdf_page", "page": 1},
+            )
+        )
+        connection.execute(
+            insert(visual_page_vector_embeddings).values(
+                id="visual-vector-1",
+                asset_id="asset-page-1",
+                document_id="doc-1",
+                page_number=1,
+                provider="local",
+                model="deterministic-visual",
+                embedding_version="vis_202606301200_qwen3-vl-embedding_1024_page-v1",
+                embedding_dimension=1024,
+                embedding=[1.0] + [0.0] * 1023,
+                status="ready",
             )
         )
         connection.execute(
@@ -242,10 +283,14 @@ def test_delete_task_cleans_searchable_data_and_marks_historical_citations_inacc
     with engine.connect() as connection:
         chunk_count = len(connection.execute(select(document_chunks)).all())
         index_count = len(connection.execute(select(chunk_search_index)).all())
+        chunk_vector_count = len(connection.execute(select(chunk_vector_embeddings)).all())
+        visual_vector_count = len(connection.execute(select(visual_page_vector_embeddings)).all())
         edge = connection.execute(select(graph_edges)).mappings().one()
         citation = connection.execute(select(answer_citations)).mappings().one()
     assert chunk_count == 0
     assert index_count == 0
+    assert chunk_vector_count == 0
+    assert visual_vector_count == 0
     assert edge["is_active"] is False
     assert edge["valid_to"] is not None
     assert citation["document_id"] is None
@@ -281,7 +326,6 @@ def test_failed_reprocess_keeps_indexed_document_when_old_index_exists(tmp_path)
                 document_id="doc-1",
                 chunk_type=ChunkType.TEXT.value,
                 search_text="Hydraulic pump pressure",
-                embedding=[1.0],
             )
         )
     runner = IngestTaskRunner(engine)
