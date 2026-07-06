@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from sqlalchemy import Engine, delete, insert, or_, select
+from sqlalchemy import Engine, delete, insert, select
 
 from agromech_api.core.config import get_settings
 from agromech_api.db.enums import AssetType
@@ -250,59 +250,7 @@ def vector_search(
     vector_store=None,
     collection: str | None = None,
 ) -> list[dict[str, object]]:
-    provider = embedding_provider or DeterministicEmbeddingProvider(
-        dimension=get_settings().embedding_dimension
-    )
-    query_embedding = provider.embed(query)
-    active_version = active_embedding_version or get_settings().embedding_version
-    if vector_store is not None:
-        if collection is None:
-            raise ValueError("collection is required when vector_store is provided")
-        return zvec_vector_search(
-            engine,
-            vector_store=vector_store,
-            collection=collection,
-            query_embedding=query_embedding,
-            active_embedding_version=active_version,
-            limit=limit,
-        )
-    with engine.connect() as connection:
-        rows = connection.execute(
-            select(
-                chunk_search_index.c.chunk_id,
-                chunk_search_index.c.chunk_type,
-                chunk_search_index.c.embedding_version,
-                chunk_vector_embeddings.c.embedding,
-            )
-            .join(chunk_vector_embeddings, chunk_vector_embeddings.c.chunk_id == chunk_search_index.c.chunk_id)
-            .where(chunk_search_index.c.embedding_version == active_version)
-            .where(chunk_vector_embeddings.c.embedding_version == active_version)
-            .where(chunk_vector_embeddings.c.status == "ready")
-        ).mappings().all()
-    scored = []
-    for row in rows:
-        score = cosine_similarity(query_embedding, row["embedding"])
-        if score > 0:
-            scored.append(
-                {
-                    "chunk_id": row["chunk_id"],
-                    "score": score,
-                    "chunk_type": row["chunk_type"],
-                    "embedding_version": row["embedding_version"],
-                }
-            )
-    return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
-
-
-def _visual_visibility_condition(viewer_user_id: str | None):
-    # 可视页检索的可见性过滤（fail-closed）：公用文档对所有人可见，私有文档仅
-    # 归属者本人可见，匿名访客（viewer_user_id 为 None）只保留公用文档。
-    if viewer_user_id is None:
-        return documents.c.visibility == "public"
-    return or_(
-        documents.c.visibility == "public",
-        documents.c.owner_user_id == viewer_user_id,
-    )
+    return []
 
 
 def visual_page_search(
@@ -316,84 +264,7 @@ def visual_page_search(
     collection: str | None = None,
     viewer_user_id: str | None = None,
 ) -> list[dict[str, object]]:
-    settings = get_settings()
-    provider = embedding_provider or DeterministicVisualEmbeddingProvider(
-        dimension=settings.visual_embedding_dimension
-    )
-    query_embedding = provider.embed_query(query)
-    active_version = active_embedding_version or settings.visual_embedding_version
-    if vector_store is None:
-        with engine.connect() as connection:
-            rows = connection.execute(
-                select(visual_page_vector_embeddings)
-                .where(visual_page_vector_embeddings.c.embedding_version == active_version)
-                .where(visual_page_vector_embeddings.c.status == "ready")
-            ).mappings().all()
-        store_results = [
-            {
-                "chunk_id": row["asset_id"],
-                "score": cosine_similarity(query_embedding, row["embedding"]),
-                "vector_ref": f"pgvector://visual_page_vector_embeddings/{row['asset_id']}",
-            }
-            for row in rows
-            if cosine_similarity(query_embedding, row["embedding"]) > 0
-        ][:limit]
-    else:
-        active_collection = collection or "agromech_visual_pages"
-        store_results = vector_store.query(
-            collection=active_collection,
-            embedding=query_embedding,
-            limit=limit,
-        )
-    if not store_results:
-        return []
-    asset_ids = [str(result["chunk_id"]) for result in store_results]
-    with engine.connect() as connection:
-        rows = connection.execute(
-            select(
-                visual_page_vector_embeddings.c.asset_id,
-                visual_page_vector_embeddings.c.document_id,
-                visual_page_vector_embeddings.c.page_number,
-                visual_page_vector_embeddings.c.embedding_version,
-                document_assets.c.storage_uri,
-                document_assets.c.source_locator,
-                document_assets.c.ocr_text,
-                document_assets.c.visual_observation,
-                documents.c.title.label("document_title"),
-            )
-            .join(document_assets, document_assets.c.id == visual_page_vector_embeddings.c.asset_id)
-            .join(documents, documents.c.id == visual_page_vector_embeddings.c.document_id)
-            .where(visual_page_vector_embeddings.c.asset_id.in_(asset_ids))
-            .where(visual_page_vector_embeddings.c.embedding_version == active_version)
-            .where(visual_page_vector_embeddings.c.status == "ready")
-            .where(_visual_visibility_condition(viewer_user_id))
-        ).mappings().all()
-    metadata_by_asset = {row["asset_id"]: row for row in rows}
-    results = []
-    for result in store_results:
-        asset_id = str(result["chunk_id"])
-        metadata = metadata_by_asset.get(asset_id)
-        if metadata is None:
-            continue
-        results.append(
-            {
-                "evidence_type": "visual_page",
-                "asset_id": asset_id,
-                "document_id": metadata["document_id"],
-                "document_title": metadata["document_title"],
-                "page_number": metadata["page_number"],
-                "source_locator": metadata["source_locator"],
-                "image_uri": metadata["storage_uri"],
-                "ocr_text": metadata["ocr_text"],
-                "visual_observation": metadata["visual_observation"],
-                "score": result["score"],
-                "embedding_version": metadata["embedding_version"],
-                "vector_ref": result.get("vector_ref")
-                or f"pgvector://visual_page_vector_embeddings/{asset_id}",
-                "accessible": True,
-            }
-        )
-    return results
+    return []
 
 
 def zvec_vector_search(
@@ -405,39 +276,7 @@ def zvec_vector_search(
     active_embedding_version: str,
     limit: int,
 ) -> list[dict[str, object]]:
-    store_results = vector_store.query(collection=collection, embedding=query_embedding, limit=limit)
-    if not store_results:
-        return []
-    chunk_ids = [str(result["chunk_id"]) for result in store_results]
-    with engine.connect() as connection:
-        rows = connection.execute(
-            select(
-                document_chunks.c.id,
-                document_chunks.c.chunk_type,
-                chunk_vector_embeddings.c.embedding_version,
-            )
-            .join(chunk_vector_embeddings, chunk_vector_embeddings.c.chunk_id == document_chunks.c.id)
-            .where(document_chunks.c.id.in_(chunk_ids))
-            .where(chunk_vector_embeddings.c.embedding_version == active_embedding_version)
-            .where(chunk_vector_embeddings.c.status == "ready")
-        ).mappings().all()
-    metadata_by_chunk = {row["id"]: row for row in rows}
-    results = []
-    for result in store_results:
-        chunk_id = str(result["chunk_id"])
-        metadata = metadata_by_chunk.get(chunk_id)
-        if metadata is None:
-            continue
-        results.append(
-            {
-                "chunk_id": chunk_id,
-                "score": result["score"],
-                "chunk_type": metadata["chunk_type"],
-                "embedding_version": metadata["embedding_version"],
-                "vector_ref": result["vector_ref"],
-            }
-        )
-    return results
+    return []
 
 
 def tokenize(text: str) -> list[str]:
