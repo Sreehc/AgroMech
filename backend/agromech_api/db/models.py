@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     JSON,
     BigInteger,
@@ -171,27 +172,31 @@ ingest_tasks = Table(
 Index("ix_ingest_tasks_document_id_status", ingest_tasks.c.document_id, ingest_tasks.c.status)
 Index("ix_ingest_tasks_status", ingest_tasks.c.status)
 
-embedding_references = Table(
-    "embedding_references",
+chunk_vector_embeddings = Table(
+    "chunk_vector_embeddings",
     metadata,
     Column("id", String(36), primary_key=True),
     Column("chunk_id", ForeignKey("document_chunks.id", ondelete="CASCADE"), nullable=False),
+    Column("document_id", ForeignKey("documents.id", ondelete="CASCADE"), nullable=False),
     Column("provider", String(80), nullable=False),
     Column("model", String(120), nullable=False),
-    Column("embedding_version", String(160), nullable=False, default="emb_local_256_chunk-v1"),
-    Column("chunk_profile", String(80), nullable=False, default="chunk-v1"),
-    Column("embedding_dimension", Integer, nullable=False, default=256),
-    Column("vector_store", String(80), nullable=False),
-    Column("collection", String(120), nullable=False),
-    Column("vector_id", String(255), nullable=False),
+    Column("embedding_version", String(160), nullable=False),
+    Column("chunk_profile", String(80), nullable=False),
+    Column("embedding_dimension", Integer, nullable=False),
+    Column("embedding", Vector(1024), nullable=False),
     Column("status", String(32), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
-Index("ix_embedding_references_chunk_id", embedding_references.c.chunk_id)
-Index("ix_embedding_references_vector", embedding_references.c.vector_store, embedding_references.c.vector_id)
+Index(
+    "ix_chunk_vector_embeddings_chunk_version",
+    chunk_vector_embeddings.c.chunk_id,
+    chunk_vector_embeddings.c.embedding_version,
+    unique=True,
+)
+Index("ix_chunk_vector_embeddings_document_id", chunk_vector_embeddings.c.document_id)
 
-visual_page_embeddings = Table(
-    "visual_page_embeddings",
+visual_page_vector_embeddings = Table(
+    "visual_page_vector_embeddings",
     metadata,
     Column("id", String(36), primary_key=True),
     Column("asset_id", ForeignKey("document_assets.id", ondelete="CASCADE"), nullable=False),
@@ -199,26 +204,19 @@ visual_page_embeddings = Table(
     Column("page_number", Integer),
     Column("provider", String(80), nullable=False),
     Column("model", String(120), nullable=False),
-    Column("embedding_version", String(160), nullable=False, default="vis_emb_local_256_page-v1"),
-    Column("embedding_dimension", Integer, nullable=False, default=256),
-    Column("vector_store", String(80), nullable=False),
-    Column("collection", String(120), nullable=False),
-    Column("vector_id", String(255), nullable=False),
+    Column("embedding_version", String(160), nullable=False),
+    Column("embedding_dimension", Integer, nullable=False),
+    Column("embedding", Vector(1024), nullable=False),
     Column("status", String(32), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
 Index(
-    "ix_visual_page_embeddings_asset_id_version",
-    visual_page_embeddings.c.asset_id,
-    visual_page_embeddings.c.embedding_version,
+    "ix_visual_page_vector_embeddings_asset_version",
+    visual_page_vector_embeddings.c.asset_id,
+    visual_page_vector_embeddings.c.embedding_version,
     unique=True,
 )
-Index("ix_visual_page_embeddings_document_id", visual_page_embeddings.c.document_id)
-Index(
-    "ix_visual_page_embeddings_vector",
-    visual_page_embeddings.c.vector_store,
-    visual_page_embeddings.c.vector_id,
-)
+Index("ix_visual_page_vector_embeddings_document_id", visual_page_vector_embeddings.c.document_id)
 
 chunk_search_index = Table(
     "chunk_search_index",
@@ -228,7 +226,6 @@ chunk_search_index = Table(
     Column("document_id", ForeignKey("documents.id", ondelete="CASCADE"), nullable=False),
     Column("chunk_type", String(32), nullable=False),
     Column("search_text", Text, nullable=False),
-    Column("embedding", JSON, nullable=False),
     Column("embedding_version", String(160), nullable=False, default="emb_local_256_chunk-v1"),
     Column("chunk_profile", String(80), nullable=False, default="chunk-v1"),
     Column("embedding_dimension", Integer, nullable=False, default=256),

@@ -12,8 +12,8 @@ def test_core_tables_are_declared() -> None:
         "document_chunks",
         "document_assets",
         "ingest_tasks",
-        "embedding_references",
-        "visual_page_embeddings",
+        "chunk_vector_embeddings",
+        "visual_page_vector_embeddings",
         "chunk_search_index",
         "chunk_entity_links",
         "document_entity_extractions",
@@ -36,7 +36,8 @@ def test_key_indexes_are_declared() -> None:
     chunks = metadata.tables["document_chunks"]
     tasks = metadata.tables["ingest_tasks"]
     search_index = metadata.tables["chunk_search_index"]
-    visual_page_embeddings = metadata.tables["visual_page_embeddings"]
+    chunk_vector_embeddings = metadata.tables["chunk_vector_embeddings"]
+    visual_page_vector_embeddings = metadata.tables["visual_page_vector_embeddings"]
     entity_links = metadata.tables["chunk_entity_links"]
     graph_nodes = metadata.tables["graph_nodes"]
     graph_edges = metadata.tables["graph_edges"]
@@ -54,7 +55,8 @@ def test_key_indexes_are_declared() -> None:
             chunks,
             tasks,
             search_index,
-            visual_page_embeddings,
+            chunk_vector_embeddings,
+            visual_page_vector_embeddings,
             entity_links,
             graph_nodes,
             graph_edges,
@@ -73,7 +75,8 @@ def test_key_indexes_are_declared() -> None:
         "ix_documents_brand_model",
         "ix_document_chunks_document_id",
         "ix_chunk_search_index_chunk_id_version",
-        "ix_visual_page_embeddings_asset_id_version",
+        "ix_chunk_vector_embeddings_chunk_version",
+        "ix_visual_page_vector_embeddings_asset_version",
         "ix_chunk_entity_links_lookup",
         "ix_graph_nodes_lookup",
         "ix_graph_edges_chunk",
@@ -126,9 +129,9 @@ def test_auth_audit_logs_table_declares_login_audit_fields() -> None:
 
 def test_embedding_tables_declare_version_fields() -> None:
     search_index = metadata.tables["chunk_search_index"]
-    embedding_refs = metadata.tables["embedding_references"]
+    chunk_embeddings = metadata.tables["chunk_vector_embeddings"]
 
-    for table in [search_index, embedding_refs]:
+    for table in [search_index, chunk_embeddings]:
         assert {"embedding_version", "chunk_profile", "embedding_dimension"}.issubset(table.c.keys())
         assert table.c.embedding_version.nullable is False
         assert table.c.chunk_profile.nullable is False
@@ -136,7 +139,7 @@ def test_embedding_tables_declare_version_fields() -> None:
 
 
 def test_visual_page_embeddings_table_declares_visual_index_fields() -> None:
-    visual_embeddings = metadata.tables["visual_page_embeddings"]
+    visual_embeddings = metadata.tables["visual_page_vector_embeddings"]
 
     assert {
         "id",
@@ -147,9 +150,7 @@ def test_visual_page_embeddings_table_declares_visual_index_fields() -> None:
         "model",
         "embedding_version",
         "embedding_dimension",
-        "vector_store",
-        "collection",
-        "vector_id",
+        "embedding",
         "status",
         "created_at",
     }.issubset(visual_embeddings.c.keys())
@@ -157,6 +158,39 @@ def test_visual_page_embeddings_table_declares_visual_index_fields() -> None:
     assert visual_embeddings.c.document_id.nullable is False
     assert visual_embeddings.c.embedding_version.nullable is False
     assert visual_embeddings.c.embedding_dimension.nullable is False
+
+
+def test_pgvector_tables_replace_external_vector_references() -> None:
+    assert "embedding_references" not in metadata.tables
+    assert "visual_page_embeddings" not in metadata.tables
+    assert "chunk_vector_embeddings" in metadata.tables
+    assert "visual_page_vector_embeddings" in metadata.tables
+
+
+def test_chunk_vector_embeddings_table_declares_pgvector_fields() -> None:
+    table = metadata.tables["chunk_vector_embeddings"]
+    columns = table.c
+
+    assert "chunk_id" in columns
+    assert "document_id" in columns
+    assert "embedding" in columns
+    assert "embedding_version" in columns
+    assert "chunk_profile" in columns
+    assert "embedding_dimension" in columns
+    assert "status" in columns
+
+
+def test_visual_page_vector_embeddings_table_declares_pgvector_fields() -> None:
+    table = metadata.tables["visual_page_vector_embeddings"]
+    columns = table.c
+
+    assert "asset_id" in columns
+    assert "document_id" in columns
+    assert "page_number" in columns
+    assert "embedding" in columns
+    assert "embedding_version" in columns
+    assert "embedding_dimension" in columns
+    assert "status" in columns
 
 
 def test_retrieval_logs_declare_model_config_field() -> None:
