@@ -264,6 +264,35 @@ def test_pgvector_extension_health_check_uses_supplied_engine() -> None:
     assert check.target == "postgres:extension/vector"
 
 
+def test_pgvector_extension_health_check_sanitizes_database_errors() -> None:
+    from agromech_api.core.infrastructure import check_pgvector_extension
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, statement):
+            raise RuntimeError(
+                "could not connect to postgresql+psycopg://user:secret@localhost:5432/agromech"
+            )
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    check = check_pgvector_extension(FakeEngine())
+
+    assert check.name == "pgvector"
+    assert check.status == "unavailable"
+    assert check.error
+    assert "secret" not in check.error
+    assert "user:secret" not in check.error
+    assert "postgresql+psycopg://" not in check.error
+
+
 def test_bailian_health_check_reports_unavailable_when_required_config_is_missing() -> None:
     from agromech_api.core.infrastructure import check_bailian_config
 

@@ -126,6 +126,19 @@ def sanitize_oss_error(exc: Exception) -> str:
     return " ".join(parts)
 
 
+def sanitize_database_error(exc: Exception) -> str:
+    """Return a credential-free description of a database health-check failure."""
+    name = type(exc).__name__
+    status_code = getattr(exc, "status", None)
+    code = getattr(exc, "code", None)
+    parts = [name]
+    if status_code:
+        parts.append(f"status={status_code}")
+    if code:
+        parts.append(f"code={code}")
+    return " ".join(parts)
+
+
 def check_pgvector_extension(engine=None) -> DependencyCheck:
     active_engine = engine or get_engine()
     target = "postgres:extension/vector"
@@ -138,7 +151,7 @@ def check_pgvector_extension(engine=None) -> DependencyCheck:
             return DependencyCheck("pgvector", "ok", target)
         return DependencyCheck("pgvector", "unavailable", target, "pgvector extension is not installed")
     except Exception as exc:  # noqa: BLE001 - health checks report dependency status instead of raising
-        return DependencyCheck("pgvector", "unavailable", target, str(exc))
+        return DependencyCheck("pgvector", "unavailable", target, sanitize_database_error(exc))
 
 
 def check_bailian_config(settings: Settings) -> DependencyCheck:
