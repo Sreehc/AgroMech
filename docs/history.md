@@ -15,7 +15,7 @@
 - 后端使用 FastAPI + SQLAlchemy Core + Alembic。
 - 前端使用 Next.js App Router + React + TypeScript + Tailwind CSS + assistant-ui。
 - Postgres、RabbitMQ 复用同级目录 `../infrastructure`；Neo4j / Graph RAG 暂不在当前主链路启用。
-- Zvec 作为嵌入式向量库，数据在本项目 `.agromech-data/zvec`。
+- PostgreSQL + pgvector 作为当前向量存储，文本和视觉向量与业务数据同库。
 - 文件存储支持 local fallback 和阿里云 OSS。
 - LLM、embedding、vision、rerank 使用阿里云百炼。
 - 认证用户、角色、状态和 token version 存入 Postgres，不再依赖静态账号配置。
@@ -28,7 +28,7 @@
 
 ### 基础系统
 
-- 配置加载、条件校验和 `.env.example` 已覆盖 OSS、Zvec、Bailian、RabbitMQ、评估等配置；Neo4j 配置保留为后续实验。
+- 配置加载、条件校验和 `.env.example` 已覆盖 OSS、pgvector、Bailian、RabbitMQ、评估等配置；Neo4j 配置保留为后续实验。
 - 认证读取 `users` 表，登录审计写入 `auth_audit_logs`，token 校验会检查用户状态和 `token_version`。
 - 统一错误响应、trace id 和敏感信息脱敏已接入。
 
@@ -36,7 +36,7 @@
 
 - 上传、重复文件识别、类型/大小校验已实现。
 - 文本、表格、PDF、图片处理链路已接入 worker。
-- PaddleOCR、视觉观察、LLM 元数据回填、实体抽取、Zvec 索引和全文索引已进入导入链路；Graph RAG 已从当前主链路停用。
+- PaddleOCR、视觉观察、LLM 元数据回填、实体抽取、pgvector 索引和全文索引已进入导入链路；Graph RAG 已从当前主链路停用。
 - reprocess 失败不会破坏旧 indexed 文档。
 - delete 任务清理新检索可见性，并保留历史 citation 元数据。
 

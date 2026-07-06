@@ -17,7 +17,7 @@
   _next/
 ```
 
-`/opt/agromech/.env` 可参考 `deploy/env.prod.example`，必须填真实的 `DATABASE_URL`、`RABBITMQ_URL`、`AUTH_TOKEN_SECRET`、百炼配置和存储配置。
+`/opt/agromech/.env` 可参考 `deploy/env.prod.example`，必须填真实的 `DATABASE_URL`、`RABBITMQ_URL`、`AUTH_TOKEN_SECRET`、百炼配置和存储配置。Postgres 容器必须安装 pgvector；Alembic 迁移会在目标库执行 `CREATE EXTENSION IF NOT EXISTS vector`。
 
 ## 2. Nginx
 
@@ -56,6 +56,12 @@ cd /opt/agromech
 docker compose pull
 docker compose run --rm api python -m alembic upgrade head
 docker compose up -d api worker
+```
+
+pgvector 迁移完成后，重建既有文档向量：
+
+```bash
+docker compose run --rm api python scripts/rebuild-vector-index.py
 ```
 
 创建首个管理员：

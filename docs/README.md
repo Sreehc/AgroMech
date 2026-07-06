@@ -18,7 +18,7 @@ AgroMech 是面向农机资料的多模态 RAG 应用，当前已具备：
 
 - 登录和角色权限：用户存入 Postgres `users` 表，支持 `admin`、`maintainer`、`user`、`evaluator`，登录写入 `auth_audit_logs`。
 - 资料库：上传、筛选、详情、预览、重新处理、删除。
-- Worker 导入链路：文本、表格、PDF 页面、图片、OCR、视觉观察、LLM 元数据回填、实体、全文索引和 Zvec 向量索引。
+- Worker 导入链路：文本、表格、PDF 页面、图片、OCR、视觉观察、LLM 元数据回填、实体、全文索引和 pgvector 向量索引。
 - RabbitMQ 上传分发：API 创建 DB task 后可发布消息，worker 可常驻消费；DB `ingest_tasks` 仍是权威状态。
 - 文本和图片问答：`/qa/text`、`/qa/image` 均进入 Agent Controller，返回 citations、trace 和 agent_trace。
 - 检索链路：关键词、结构化、向量、Vision RAG、rerank 和降级 trace；Graph RAG 暂不在主链路启用。

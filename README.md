@@ -48,7 +48,7 @@ Frontend (Next.js 静态导出, assistant-ui)
                                      ├─ 受控多 Agent 问答 (LangGraph)
                                      └─ 混合检索 (keyword / structured / vector / vision + rerank)
                                           │
-        Worker (异步导入)  ──▶  Postgres · Zvec 向量库 · 文件存储 · RabbitMQ
+        Worker (异步导入)  ──▶  Postgres · pgvector · 文件存储 · RabbitMQ
                                           │
                                     阿里云百炼 (LLM / embedding / vision / rerank) · PaddleOCR
 ```
@@ -59,7 +59,7 @@ Frontend (Next.js 静态导出, assistant-ui)
 | 前端 | Next.js App Router · React · TypeScript · Tailwind CSS · assistant-ui |
 | 问答编排 | LangGraph · langchain-core（仅用于 tool 包装） |
 | 数据库 | Postgres |
-| 向量检索 | Zvec（嵌入式，数据在 `.agromech-data/zvec`） |
+| 向量检索 | PostgreSQL + pgvector（文本和视觉向量与业务数据同库） |
 | 文件存储 | 阿里云 OSS，本地开发用 local fallback |
 | 模型 | 阿里云百炼（LLM / embedding / vision / rerank）· PaddleOCR 云 API |
 | 队列 | RabbitMQ（分发唤醒 worker；`ingest_tasks` 为权威状态） |
