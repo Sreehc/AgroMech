@@ -51,7 +51,7 @@ http://127.0.0.1:8000
 
 ### `GET /health/dependencies`
 
-返回依赖状态，当前覆盖 `postgres`、`neo4j`、`file_storage`、`zvec`、`bailian`。任一依赖不可用时整体为 `degraded`。
+返回依赖状态，当前覆盖 `postgres`、可选 `neo4j`、`file_storage`、`pgvector`、`bailian`。任一依赖不可用时整体为 `degraded`。
 
 ## 3. Auth
 

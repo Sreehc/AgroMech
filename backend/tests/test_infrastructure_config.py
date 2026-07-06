@@ -264,6 +264,36 @@ def test_pgvector_extension_health_check_uses_supplied_engine() -> None:
     assert check.target == "postgres:extension/vector"
 
 
+def test_pgvector_extension_health_check_reports_missing_extension() -> None:
+    from agromech_api.core.infrastructure import check_pgvector_extension
+
+    class FakeResult:
+        def scalar_one_or_none(self):
+            return None
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, statement):
+            assert "pg_extension" in str(statement)
+            return FakeResult()
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    check = check_pgvector_extension(FakeEngine())
+
+    assert check.name == "pgvector"
+    assert check.status == "unavailable"
+    assert check.target == "postgres:extension/vector"
+    assert check.error == "pgvector extension is not installed"
+
+
 def test_pgvector_extension_health_check_sanitizes_database_errors() -> None:
     from agromech_api.core.infrastructure import check_pgvector_extension
 
