@@ -36,4 +36,4 @@ where = ["backend", "worker"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests", "worker/tests"]
-pythonpath = ["backend", "worker"]
+pythonpath = [".", "backend", "worker"]
