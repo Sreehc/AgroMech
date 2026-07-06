@@ -38,8 +38,6 @@ def test_all_env_example_keys_load_into_settings() -> None:
     for field_name in (
         "oss_access_key_id",
         "oss_signed_url_ttl_seconds",
-        "zvec_path",
-        "zvec_backup_retention_days",
         "embedding_model",
         "embedding_dimension",
         "neo4j_uri",
@@ -103,6 +101,34 @@ def test_unknown_legacy_environment_values_are_ignored() -> None:
 
     assert not hasattr(settings, "legacy_username")
     assert not hasattr(settings, "legacy_password")
+
+
+def test_settings_no_longer_exposes_zvec_configuration() -> None:
+    settings = Settings()
+
+    assert not hasattr(settings, "vector_backend")
+    assert not hasattr(settings, "zvec_path")
+    assert not hasattr(settings, "zvec_collection")
+    assert not hasattr(settings, "zvec_text_collection")
+    assert not hasattr(settings, "zvec_visual_collection")
+    assert not hasattr(settings, "zvec_backup_path")
+    assert not hasattr(settings, "zvec_backup_retention_days")
+
+
+def test_settings_keep_embedding_provider_configuration() -> None:
+    settings = Settings(
+        embedding_provider="local",
+        embedding_model="text-embedding-v4",
+        embedding_dimension=1024,
+        visual_embedding_provider="local",
+        visual_embedding_model="qwen3-vl-embedding",
+        visual_embedding_dimension=1024,
+    )
+
+    assert settings.embedding_provider == "local"
+    assert settings.embedding_dimension == 1024
+    assert settings.visual_embedding_provider == "local"
+    assert settings.visual_embedding_dimension == 1024
 
 
 def test_auth_token_secret_remains_required_for_database_auth() -> None:
@@ -197,39 +223,6 @@ def test_oss_error_sanitizer_omits_credentials() -> None:
     assert "secret-access-key-leaked" not in message
     assert "status=403" in message
     assert "code=AccessDenied" in message
-
-
-def test_zvec_health_check_reports_ok_when_storage_paths_are_available(tmp_path) -> None:
-    from agromech_api.core.infrastructure import check_zvec_storage
-
-    settings = local_settings(
-        vector_backend="zvec",
-        zvec_path=str(tmp_path / "zvec"),
-        zvec_backup_path=str(tmp_path / "backups"),
-    )
-
-    check = check_zvec_storage(settings)
-
-    assert check.name == "zvec"
-    assert check.status == "ok"
-    assert check.target == str(tmp_path / "zvec")
-
-
-def test_zvec_health_check_reports_unavailable_on_unwritable_storage_path(tmp_path) -> None:
-    from agromech_api.core.infrastructure import check_zvec_storage
-
-    blocker = tmp_path / "zvec-blocker"
-    blocker.write_bytes(b"not a directory")
-    settings = local_settings(
-        vector_backend="zvec",
-        zvec_path=str(blocker / "store"),
-        zvec_backup_path=str(tmp_path / "backups"),
-    )
-
-    check = check_zvec_storage(settings)
-
-    assert check.status == "unavailable"
-    assert "secret" not in (check.error or "")
 
 
 def test_bailian_health_check_reports_unavailable_when_required_config_is_missing() -> None:
