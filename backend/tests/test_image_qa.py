@@ -18,7 +18,6 @@ def image_qa_settings(tmp_path: Path) -> Settings:
         auth_token_secret="test-secret",
         local_file_storage_path=str(tmp_path / "files"),
         graph_backend="local",
-        vector_backend="local",
         model_provider="local",
         embedding_provider="local",
         embedding_dimension=256,

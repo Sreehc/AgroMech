@@ -100,11 +100,6 @@ class Settings(BaseSettings):
     postgres_user: str = "agromech"
     postgres_password: str = "agromech"
 
-    # Legacy vector target retained for compatibility with existing deployments.
-    milvus_host: str = "localhost"
-    milvus_port: int = 19530
-    milvus_collection: str = "agromech_chunks"
-
     # Embedding
     embedding_provider: str = "local"
     embedding_model: str = "text-embedding-v4"
@@ -181,7 +176,6 @@ class Settings(BaseSettings):
 
     @field_validator(
         "database_url",
-        "milvus_host",
         "neo4j_uri",
         "neo4j_user",
         "neo4j_password",

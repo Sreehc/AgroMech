@@ -268,7 +268,6 @@ def graph_settings(**overrides) -> Settings:
     base = {
         "_env_file": None,
         "file_storage_backend": "local",
-        "vector_backend": "local",
         "graph_backend": "neo4j",
         "model_provider": "local",
         "embedding_provider": "local",

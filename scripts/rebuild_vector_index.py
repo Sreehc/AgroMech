@@ -4,8 +4,11 @@ from dataclasses import dataclass
 
 from sqlalchemy import Engine, select
 
+from agromech_api.core.config import Settings, get_settings
 from agromech_api.db.enums import DocumentStatus
 from agromech_api.db.models import documents
+from agromech_api.integrations.embeddings.text import build_embedding_provider
+from agromech_api.integrations.embeddings.visual import build_visual_embedding_provider
 from agromech_api.rag.retrieval.indexing import SearchIndexer, VisualPageIndexer
 
 
@@ -35,6 +38,9 @@ def rebuild_vector_index(
     document_id: str | None = None,
     include_visual: bool = True,
     dry_run: bool = False,
+    settings: Settings | None = None,
+    embedding_provider=None,
+    visual_embedding_provider=None,
     search_indexer_factory=SearchIndexer,
     visual_indexer_factory=VisualPageIndexer,
 ) -> RebuildSummary:
@@ -42,8 +48,17 @@ def rebuild_vector_index(
     if dry_run:
         return RebuildSummary(selected=len(document_ids), succeeded=0, failed=0, failures=[])
 
-    search_indexer = search_indexer_factory(engine)
-    visual_indexer = visual_indexer_factory(engine) if include_visual else None
+    active_settings = settings or get_settings()
+    active_embedding_provider = embedding_provider or build_embedding_provider(active_settings)
+    active_visual_embedding_provider = None
+    if include_visual:
+        active_visual_embedding_provider = visual_embedding_provider or build_visual_embedding_provider(active_settings)
+    search_indexer = search_indexer_factory(engine, embedding_provider=active_embedding_provider)
+    visual_indexer = (
+        visual_indexer_factory(engine, embedding_provider=active_visual_embedding_provider)
+        if include_visual
+        else None
+    )
 
     succeeded = 0
     failures: list[tuple[str, str]] = []

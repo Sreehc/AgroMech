@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, update
 
 from agromech_api.db.enums import DocumentStatus
 from agromech_api.db.models import documents, metadata
+from agromech_api.core.config import Settings
 from scripts.rebuild_vector_index import rebuild_vector_index, select_document_ids
 
 
@@ -40,9 +41,11 @@ def set_updated_at(engine, document_id: str, updated_at: datetime) -> None:
 
 class RecordingIndexer:
     calls: list[str] = []
+    init_kwargs: list[dict[str, object]] = []
 
-    def __init__(self, engine) -> None:
+    def __init__(self, engine, **kwargs) -> None:
         self.engine = engine
+        self.init_kwargs.append(kwargs)
 
     def index_document(self, document_id: str) -> None:
         self.calls.append(document_id)
@@ -75,6 +78,7 @@ def test_rebuild_vector_index_dry_run_returns_selected_count_without_indexing(tm
     seed_document(engine, document_id="doc-a", status=DocumentStatus.INDEXED.value)
     seed_document(engine, document_id="doc-b", status=DocumentStatus.INDEXED.value)
     RecordingIndexer.calls = []
+    RecordingIndexer.init_kwargs = []
 
     summary = rebuild_vector_index(
         engine,
@@ -88,6 +92,7 @@ def test_rebuild_vector_index_dry_run_returns_selected_count_without_indexing(tm
     assert summary.failed == 0
     assert summary.failures == []
     assert RecordingIndexer.calls == []
+    assert RecordingIndexer.init_kwargs == []
 
 
 def test_rebuild_vector_index_continues_after_document_failure(tmp_path):
@@ -96,6 +101,7 @@ def test_rebuild_vector_index_continues_after_document_failure(tmp_path):
     seed_document(engine, document_id="doc-fails", status=DocumentStatus.INDEXED.value)
     seed_document(engine, document_id="doc-after", status=DocumentStatus.INDEXED.value)
     RecordingIndexer.calls = []
+    RecordingIndexer.init_kwargs = []
 
     summary = rebuild_vector_index(
         engine,
@@ -116,6 +122,7 @@ def test_rebuild_vector_index_can_target_single_document(tmp_path):
     seed_document(engine, document_id="doc-a", status=DocumentStatus.INDEXED.value)
     seed_document(engine, document_id="doc-b", status=DocumentStatus.INDEXED.value)
     RecordingIndexer.calls = []
+    RecordingIndexer.init_kwargs = []
 
     summary = rebuild_vector_index(
         engine,
@@ -129,3 +136,40 @@ def test_rebuild_vector_index_can_target_single_document(tmp_path):
     assert summary.succeeded == 1
     assert summary.failed == 0
     assert RecordingIndexer.calls == ["doc-b"]
+
+
+def test_rebuild_vector_index_uses_configured_embedding_providers(tmp_path, monkeypatch):
+    engine = make_engine(tmp_path)
+    seed_document(engine, document_id="doc-a", status=DocumentStatus.INDEXED.value)
+    settings = Settings(
+        _env_file=None,
+        file_storage_backend="local",
+        graph_backend="local",
+        model_provider="local",
+        embedding_provider="local",
+        visual_embedding_provider="local",
+    )
+    text_provider = object()
+    visual_provider = object()
+    RecordingIndexer.calls = []
+    RecordingIndexer.init_kwargs = []
+
+    monkeypatch.setattr("scripts.rebuild_vector_index.build_embedding_provider", lambda active_settings: text_provider)
+    monkeypatch.setattr(
+        "scripts.rebuild_vector_index.build_visual_embedding_provider",
+        lambda active_settings: visual_provider,
+    )
+
+    summary = rebuild_vector_index(
+        engine,
+        settings=settings,
+        search_indexer_factory=RecordingIndexer,
+        visual_indexer_factory=RecordingIndexer,
+    )
+
+    assert summary.succeeded == 1
+    assert RecordingIndexer.calls == ["doc-a", "doc-a"]
+    assert RecordingIndexer.init_kwargs == [
+        {"embedding_provider": text_provider},
+        {"embedding_provider": visual_provider},
+    ]

@@ -16,7 +16,6 @@ def bailian_settings(**overrides) -> Settings:
         "_env_file": None,
         "file_storage_backend": "local",
         "graph_backend": "local",
-        "vector_backend": "local",
         "model_provider": "bailian",
         "embedding_provider": "local",
         "bailian_api_key": "key",
@@ -138,7 +137,6 @@ def test_build_answer_generator_selects_bailian_or_none() -> None:
             _env_file=None,
             file_storage_backend="local",
             graph_backend="local",
-            vector_backend="local",
             model_provider="local",
             embedding_provider="local",
         )

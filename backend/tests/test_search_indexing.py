@@ -1,5 +1,6 @@
 import pytest
 from sqlalchemy import create_engine, insert, select
+from sqlalchemy.dialects import postgresql
 
 from agromech_api.db.enums import ChunkType, DocumentStatus, TaskType
 from agromech_api.db.models import (
@@ -266,6 +267,135 @@ def test_visual_page_search_returns_pgvector_refs(tmp_path) -> None:
     assert results[0]["vector_ref"].startswith("pgvector://visual_page_vector_embeddings/")
 
 
+def test_vector_search_uses_pgvector_distance_operator_for_postgres() -> None:
+    captured = {}
+
+    class FakeDialect:
+        name = "postgresql"
+
+    class FakeResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [
+                {
+                    "embedding_id": "embedding-1",
+                    "chunk_id": "chunk-1",
+                    "embedding_version": "emb_test",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "score": 0.82,
+                }
+            ]
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def execute(self, statement):
+            captured["sql"] = str(statement.compile(dialect=postgresql.dialect()))
+            captured["params"] = statement.compile(dialect=postgresql.dialect()).params
+            return FakeResult()
+
+    class FakeEngine:
+        dialect = FakeDialect()
+
+        def connect(self):
+            return FakeConnection()
+
+    class FakeProvider:
+        def embed(self, text):
+            assert text == "hydraulic"
+            return [1.0, 0.0]
+
+    results = vector_search(
+        FakeEngine(),
+        "hydraulic",
+        active_embedding_version="emb_test",
+        embedding_provider=FakeProvider(),
+    )
+
+    assert "<=>" in captured["sql"]
+    assert "LIMIT" in captured["sql"]
+    assert len(captured["params"]["query_embedding"]) == 1024
+    assert results == [
+        {
+            "chunk_id": "chunk-1",
+            "score": 0.82,
+            "chunk_type": ChunkType.TEXT.value,
+            "embedding_version": "emb_test",
+            "embedding_id": "embedding-1",
+            "vector_ref": "pgvector://chunk_vector_embeddings/embedding-1",
+        }
+    ]
+
+
+def test_visual_page_search_uses_pgvector_distance_operator_for_postgres() -> None:
+    captured = {}
+
+    class FakeDialect:
+        name = "postgresql"
+
+    class FakeResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [
+                {
+                    "embedding_id": "visual-embedding-1",
+                    "asset_id": "asset-1",
+                    "document_id": "doc-1",
+                    "page_number": 1,
+                    "embedding_version": "vis_test",
+                    "storage_uri": "file:///tmp/page.png",
+                    "source_locator": {"type": "pdf_page", "page": 1},
+                    "ocr_text": "hydraulic diagram",
+                    "visual_observation": {"description": "pump"},
+                    "score": 0.77,
+                }
+            ]
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def execute(self, statement):
+            captured["sql"] = str(statement.compile(dialect=postgresql.dialect()))
+            captured["params"] = statement.compile(dialect=postgresql.dialect()).params
+            return FakeResult()
+
+    class FakeEngine:
+        dialect = FakeDialect()
+
+        def connect(self):
+            return FakeConnection()
+
+    class FakeProvider:
+        def embed_query(self, text):
+            assert text == "hydraulic page"
+            return [1.0, 0.0]
+
+    results = visual_page_search(
+        FakeEngine(),
+        "hydraulic page",
+        active_embedding_version="vis_test",
+        embedding_provider=FakeProvider(),
+    )
+
+    assert "<=>" in captured["sql"]
+    assert "LIMIT" in captured["sql"]
+    assert len(captured["params"]["query_embedding"]) == 1024
+    assert results[0]["asset_id"] == "asset-1"
+    assert results[0]["vector_ref"] == "pgvector://visual_page_vector_embeddings/visual-embedding-1"
+
+
 def test_vector_search_filters_to_active_embedding_version(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     document_id, chunk_id = seed_searchable_document(engine, content="dashboard hydraulic warning")
@@ -312,6 +442,9 @@ def test_run_once_uses_configured_embedding_provider(tmp_path, monkeypatch) -> N
     class FakeEmbeddingProvider:
         pass
 
+    class FakeVisualEmbeddingProvider:
+        pass
+
     class FakeSearchIndexer:
         def __init__(self, active_engine, *, embedding_provider):
             captured["engine"] = active_engine
@@ -320,12 +453,23 @@ def test_run_once_uses_configured_embedding_provider(tmp_path, monkeypatch) -> N
         def index_document(self, document_id):
             return type("IndexResult", (), {"chunk_count": 1})()
 
+    class FakeVisualPageIndexer:
+        def __init__(self, active_engine, *, embedding_provider):
+            captured["visual_engine"] = active_engine
+            captured["visual_embedding_provider"] = embedding_provider
+
     fake_embedding_provider = FakeEmbeddingProvider()
+    fake_visual_embedding_provider = FakeVisualEmbeddingProvider()
     monkeypatch.setattr(
         "agromech_api.integrations.embeddings.text.build_embedding_provider",
         lambda active_settings: fake_embedding_provider,
     )
+    monkeypatch.setattr(
+        "agromech_api.integrations.embeddings.visual.build_visual_embedding_provider",
+        lambda active_settings: fake_visual_embedding_provider,
+    )
     monkeypatch.setattr("agromech_worker.main.SearchIndexer", FakeSearchIndexer)
+    monkeypatch.setattr("agromech_worker.main.VisualPageIndexer", FakeVisualPageIndexer)
 
     with engine.begin() as connection:
         connection.execute(
@@ -356,7 +500,12 @@ def test_run_once_uses_configured_embedding_provider(tmp_path, monkeypatch) -> N
     result = run_once(engine=engine)
 
     assert result == "succeeded"
-    assert captured == {"engine": engine, "embedding_provider": fake_embedding_provider}
+    assert captured == {
+        "engine": engine,
+        "embedding_provider": fake_embedding_provider,
+        "visual_engine": engine,
+        "visual_embedding_provider": fake_visual_embedding_provider,
+    }
 
 
 def test_keyword_search_recalls_text_table_and_image_chunks(tmp_path) -> None:

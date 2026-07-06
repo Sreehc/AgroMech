@@ -8,7 +8,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from sqlalchemy import Engine, delete, insert, or_, select
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import Engine, bindparam, delete, insert, literal, or_, select
 
 from agromech_api.core.config import get_settings
 from agromech_api.db.enums import AssetType
@@ -25,6 +26,7 @@ from agromech_api.integrations.embeddings.visual import DeterministicVisualEmbed
 
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]+|[\u4e00-\u9fff]+")
+PGVECTOR_DIMENSION = 1024
 
 
 @dataclass(frozen=True)
@@ -253,6 +255,14 @@ def vector_search(
     provider = embedding_provider or DeterministicEmbeddingProvider(dimension=settings.embedding_dimension)
     embedding_version = active_embedding_version or settings.embedding_version
     query_embedding = provider.embed(query)
+    if engine.dialect.name == "postgresql":
+        return postgres_vector_search(
+            engine,
+            pgvector_storage_embedding(query_embedding),
+            embedding_version=embedding_version,
+            limit=limit,
+            viewer_user_id=viewer_user_id,
+        )
     statement = (
         select(
             chunk_vector_embeddings.c.id.label("embedding_id"),
@@ -310,6 +320,14 @@ def visual_page_search(
     )
     embedding_version = active_embedding_version or settings.visual_embedding_version
     query_embedding = provider.embed_query(query)
+    if engine.dialect.name == "postgresql":
+        return postgres_visual_page_search(
+            engine,
+            pgvector_storage_embedding(query_embedding),
+            embedding_version=embedding_version,
+            limit=limit,
+            viewer_user_id=viewer_user_id,
+        )
     statement = (
         select(
             visual_page_vector_embeddings.c.id.label("embedding_id"),
@@ -378,6 +396,129 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     return sum(a * b for a, b in zip(left, right))
 
 
+def postgres_vector_search(
+    engine: Engine,
+    query_embedding: list[float],
+    *,
+    embedding_version: str,
+    limit: int,
+    viewer_user_id: str | None,
+) -> list[dict[str, object]]:
+    distance = chunk_vector_embeddings.c.embedding.op("<=>")(
+        bindparam("query_embedding", query_embedding, type_=Vector(PGVECTOR_DIMENSION))
+    )
+    score = (literal(1.0) - distance).label("score")
+    statement = (
+        select(
+            chunk_vector_embeddings.c.id.label("embedding_id"),
+            chunk_vector_embeddings.c.chunk_id,
+            chunk_vector_embeddings.c.embedding_version,
+            document_chunks.c.chunk_type,
+            score,
+        )
+        .select_from(
+            chunk_vector_embeddings.join(
+                document_chunks,
+                chunk_vector_embeddings.c.chunk_id == document_chunks.c.id,
+            ).join(
+                documents,
+                chunk_vector_embeddings.c.document_id == documents.c.id,
+            )
+        )
+        .where(chunk_vector_embeddings.c.embedding_version == embedding_version)
+        .where(chunk_vector_embeddings.c.status == "ready")
+        .where(visible_document_condition(viewer_user_id))
+        .order_by(distance)
+        .limit(limit)
+    )
+    with engine.connect() as connection:
+        rows = connection.execute(statement).mappings().all()
+    results = []
+    for row in rows:
+        score_value = float(row["score"])
+        if score_value <= 0:
+            continue
+        embedding_id = str(row["embedding_id"])
+        results.append(
+            {
+                "chunk_id": row["chunk_id"],
+                "score": score_value,
+                "chunk_type": row["chunk_type"],
+                "embedding_version": row["embedding_version"],
+                "embedding_id": embedding_id,
+                "vector_ref": f"pgvector://chunk_vector_embeddings/{embedding_id}",
+            }
+        )
+    return results
+
+
+def postgres_visual_page_search(
+    engine: Engine,
+    query_embedding: list[float],
+    *,
+    embedding_version: str,
+    limit: int,
+    viewer_user_id: str | None,
+) -> list[dict[str, object]]:
+    distance = visual_page_vector_embeddings.c.embedding.op("<=>")(
+        bindparam("query_embedding", query_embedding, type_=Vector(PGVECTOR_DIMENSION))
+    )
+    score = (literal(1.0) - distance).label("score")
+    statement = (
+        select(
+            visual_page_vector_embeddings.c.id.label("embedding_id"),
+            visual_page_vector_embeddings.c.asset_id,
+            visual_page_vector_embeddings.c.document_id,
+            visual_page_vector_embeddings.c.page_number,
+            visual_page_vector_embeddings.c.embedding_version,
+            document_assets.c.storage_uri,
+            document_assets.c.source_locator,
+            document_assets.c.ocr_text,
+            document_assets.c.visual_observation,
+            score,
+        )
+        .select_from(
+            visual_page_vector_embeddings.join(
+                document_assets,
+                visual_page_vector_embeddings.c.asset_id == document_assets.c.id,
+            ).join(
+                documents,
+                visual_page_vector_embeddings.c.document_id == documents.c.id,
+            )
+        )
+        .where(visual_page_vector_embeddings.c.embedding_version == embedding_version)
+        .where(visual_page_vector_embeddings.c.status == "ready")
+        .where(visible_document_condition(viewer_user_id))
+        .order_by(distance)
+        .limit(limit)
+    )
+    with engine.connect() as connection:
+        rows = connection.execute(statement).mappings().all()
+    results = []
+    for row in rows:
+        score_value = float(row["score"])
+        if score_value <= 0:
+            continue
+        embedding_id = str(row["embedding_id"])
+        results.append(
+            {
+                "asset_id": row["asset_id"],
+                "document_id": row["document_id"],
+                "page_number": row["page_number"],
+                "score": score_value,
+                "source_locator": row["source_locator"],
+                "ocr_text": row["ocr_text"],
+                "visual_observation": row["visual_observation"],
+                "image_uri": row["storage_uri"],
+                "evidence_type": "visual_page",
+                "embedding_version": row["embedding_version"],
+                "embedding_id": embedding_id,
+                "vector_ref": f"pgvector://visual_page_vector_embeddings/{embedding_id}",
+            }
+        )
+    return results
+
+
 def visible_document_condition(viewer_user_id: str | None):
     conditions = [documents.c.visibility == "public"]
     if viewer_user_id is not None:
@@ -392,9 +533,11 @@ def vector_values(value) -> list[float]:
 
 
 def pgvector_storage_embedding(embedding: list[float]) -> list[float]:
-    if len(embedding) >= 1024:
+    if len(embedding) > PGVECTOR_DIMENSION:
+        raise ValueError(f"Embedding dimension {len(embedding)} exceeds pgvector({PGVECTOR_DIMENSION})")
+    if len(embedding) == PGVECTOR_DIMENSION:
         return embedding
-    return [*embedding, *([0.0] * (1024 - len(embedding)))]
+    return [*embedding, *([0.0] * (PGVECTOR_DIMENSION - len(embedding)))]
 
 
 def local_file_path(storage_uri: str) -> Path:

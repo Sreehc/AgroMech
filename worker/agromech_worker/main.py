@@ -35,6 +35,7 @@ def process_ingest_task(
     ocr_reader=None,
     visual_reader=None,
     indexer: SearchIndexer | None = None,
+    visual_indexer: VisualPageIndexer | None = None,
     graph_service=None,
     ocr_document_processor=None,
     metadata_extractor=SKIP_METADATA_EXTRACTION,
@@ -151,8 +152,8 @@ def process_ingest_task(
     index_result = active_indexer.index_document(task.document_id)
     visual_index_result = None
     if any(asset["asset_type"] == "page_image" for asset in _document_page_assets(engine, task.document_id)):
-        visual_indexer = VisualPageIndexer(engine)
-        visual_index_result = visual_indexer.index_document(task.document_id)
+        active_visual_indexer = visual_indexer or VisualPageIndexer(engine)
+        visual_index_result = active_visual_indexer.index_document(task.document_id)
     LOGGER.info(
         "Processed ingest task: task_id=%s document_id=%s task_type=%s chunk_kind=%s chunks=%s metadata_fields=%s entity_links=%s indexed_chunks=%s visual_indexed=%s",
         task.id,
@@ -183,12 +184,18 @@ def run_once(*, engine: Engine | None = None, processor=None) -> str:
         # provider (Bailian when selected) so real ingestion uses real vectors.
         # Direct process_ingest_task callers keep the deterministic default.
         from agromech_api.integrations.embeddings.text import build_embedding_provider
+        from agromech_api.integrations.embeddings.visual import build_visual_embedding_provider
 
         settings = get_settings()
         text_embeddings = build_embedding_provider(settings)
+        visual_embeddings = build_visual_embedding_provider(settings)
         indexer = SearchIndexer(
             active_engine,
             embedding_provider=text_embeddings,
+        )
+        visual_indexer = VisualPageIndexer(
+            active_engine,
+            embedding_provider=visual_embeddings,
         )
         visual_reader = build_visual_reader(settings)
         metadata_extractor = build_metadata_extractor(settings)
@@ -196,6 +203,7 @@ def run_once(*, engine: Engine | None = None, processor=None) -> str:
             active_engine,
             task,
             indexer=indexer,
+            visual_indexer=visual_indexer,
             visual_reader=visual_reader,
             metadata_extractor=metadata_extractor,
             asset_root=Path(settings.local_file_storage_path) if settings.file_storage_backend == "local" else None,

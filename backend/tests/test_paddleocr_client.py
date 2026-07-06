@@ -15,7 +15,6 @@ def ocr_settings(**overrides) -> Settings:
         "_env_file": None,
         "file_storage_backend": "local",
         "graph_backend": "local",
-        "vector_backend": "local",
         "model_provider": "local",
         "embedding_provider": "local",
         "paddleocr_api_token": "test-token",
