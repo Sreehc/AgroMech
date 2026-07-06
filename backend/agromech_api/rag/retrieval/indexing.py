@@ -285,10 +285,12 @@ def vector_search(
     query_embedding = provider.embed(query)
     active_version = active_embedding_version or get_settings().embedding_version
     if vector_store is not None:
+        if collection is None:
+            raise ValueError("collection is required when vector_store is provided")
         return zvec_vector_search(
             engine,
             vector_store=vector_store,
-            collection=collection or get_settings().zvec_collection,
+            collection=collection,
             query_embedding=query_embedding,
             active_embedding_version=active_version,
             limit=limit,

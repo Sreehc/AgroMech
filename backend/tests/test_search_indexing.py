@@ -282,6 +282,21 @@ def test_vector_search_can_query_zvec_and_return_vector_refs(tmp_path) -> None:
     assert {result["chunk_type"] for result in results} >= {ChunkType.TEXT.value, ChunkType.TABLE.value, ChunkType.IMAGE.value}
 
 
+def test_vector_search_requires_collection_for_compatibility_vector_store(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+
+    class FakeVectorStore:
+        def query(self, *, collection, embedding, limit):
+            return []
+
+    try:
+        vector_search(engine, "dashboard hydraulic warning", vector_store=FakeVectorStore(), collection=None)
+    except ValueError as exc:
+        assert str(exc) == "collection is required when vector_store is provided"
+    else:
+        raise AssertionError("expected ValueError when vector_store is provided without collection")
+
+
 def test_run_once_uses_configured_zvec_store(tmp_path, monkeypatch) -> None:
     engine = create_test_engine(tmp_path)
     source_path = tmp_path / "manual.txt"
