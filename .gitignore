@@ -26,3 +26,4 @@ storage/*
 *.log
 
 .superpowers/
+.worktrees/
