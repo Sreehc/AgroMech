@@ -48,6 +48,16 @@ def test_pgvector_migration_file_exists() -> None:
     assert "visual_page_vector_embeddings" in contents
 
 
+def test_initial_migration_enables_pgvector_before_creating_metadata() -> None:
+    path = Path("backend/alembic/versions/0001_create_core_tables.py")
+    contents = path.read_text(encoding="utf-8")
+
+    extension_position = contents.index("CREATE EXTENSION IF NOT EXISTS vector")
+    create_all_position = contents.index("metadata.create_all")
+
+    assert extension_position < create_all_position
+
+
 def test_alembic_migration_can_run_repeatedly(tmp_path: Path) -> None:
     database_path = tmp_path / "agromech.db"
     config = Config("alembic.ini")
