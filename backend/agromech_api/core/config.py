@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     postgres_user: str = "agromech"
     postgres_password: str = "agromech"
 
-    # Legacy vector target retained for health checks until Zvec health lands (T57).
+    # Legacy vector target retained for compatibility with existing deployments.
     milvus_host: str = "localhost"
     milvus_port: int = 19530
     milvus_collection: str = "agromech_chunks"

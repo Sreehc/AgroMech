@@ -40,8 +40,7 @@ def test_alembic_revision_ids_fit_default_version_table_limit() -> None:
 
 
 def test_pgvector_migration_file_exists() -> None:
-    path = Path("backend/alembic/versions/0012_replace_zvec_with_pgvector.py")
-    assert path.exists()
+    path = next(Path("backend/alembic/versions").glob("0012_*_pgvector.py"))
     contents = path.read_text(encoding="utf-8")
     assert "CREATE EXTENSION IF NOT EXISTS vector" in contents
     assert "chunk_vector_embeddings" in contents

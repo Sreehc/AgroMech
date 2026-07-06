@@ -540,7 +540,6 @@ def test_reprocess_creates_new_task(tmp_path: Path) -> None:
                 document_id="doc-a",
                 chunk_type=ChunkType.TEXT.value,
                 search_text="Hydraulic maintenance interval and safety notes.",
-                embedding=[1.0],
             )
         )
 
@@ -604,7 +603,6 @@ def test_delete_marks_document_deleted(tmp_path: Path) -> None:
                 document_id="doc-a",
                 chunk_type=ChunkType.TEXT.value,
                 search_text="Hydraulic maintenance interval and safety notes.",
-                embedding=[1.0],
             )
         )
 

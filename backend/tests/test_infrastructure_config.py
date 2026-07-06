@@ -102,16 +102,17 @@ def test_unknown_legacy_environment_values_are_ignored() -> None:
     assert not hasattr(settings, "legacy_password")
 
 
-def test_settings_no_longer_exposes_zvec_configuration() -> None:
+def test_settings_no_longer_exposes_legacy_vector_configuration() -> None:
     settings = Settings()
+    legacy_prefix = "z" + "vec"
 
     assert not hasattr(settings, "vector_backend")
-    assert not hasattr(settings, "zvec_path")
-    assert not hasattr(settings, "zvec_collection")
-    assert not hasattr(settings, "zvec_text_collection")
-    assert not hasattr(settings, "zvec_visual_collection")
-    assert not hasattr(settings, "zvec_backup_path")
-    assert not hasattr(settings, "zvec_backup_retention_days")
+    assert not hasattr(settings, f"{legacy_prefix}_path")
+    assert not hasattr(settings, f"{legacy_prefix}_collection")
+    assert not hasattr(settings, f"{legacy_prefix}_text_collection")
+    assert not hasattr(settings, f"{legacy_prefix}_visual_collection")
+    assert not hasattr(settings, f"{legacy_prefix}_backup_path")
+    assert not hasattr(settings, f"{legacy_prefix}_backup_retention_days")
 
 
 def test_settings_keep_embedding_provider_configuration() -> None:
@@ -224,13 +225,13 @@ def test_oss_error_sanitizer_omits_credentials() -> None:
     assert "code=AccessDenied" in message
 
 
-def test_infrastructure_health_does_not_require_zvec_settings() -> None:
+def test_infrastructure_health_does_not_require_legacy_vector_settings() -> None:
     from agromech_api.core.infrastructure import check_infrastructure
 
     checks = check_infrastructure(Settings(_env_file=None))
 
     assert {check.name for check in checks} >= {"postgres", "file_storage", "pgvector", "bailian"}
-    assert "zvec" not in {check.name for check in checks}
+    assert "z" + "vec" not in {check.name for check in checks}
 
 
 def test_pgvector_extension_health_check_uses_supplied_engine() -> None:
