@@ -182,22 +182,13 @@ def run_once(*, engine: Engine | None = None, processor=None) -> str:
         # Production path: build the indexer from the configured embedding
         # provider (Bailian when selected) so real ingestion uses real vectors.
         # Direct process_ingest_task callers keep the deterministic default.
-        from agromech_api.rag.langchain.adapters import build_text_vector_components
-        from agromech_api.integrations.vectorstores.zvec import build_vector_store
+        from agromech_api.integrations.embeddings.text import build_embedding_provider
 
         settings = get_settings()
-        text_embeddings, text_vector_store, text_collection = build_text_vector_components(settings)
-        if settings.vector_backend != "zvec":
-            from agromech_api.integrations.embeddings.text import build_embedding_provider
-
-            text_embeddings = build_embedding_provider(settings)
-            text_vector_store = build_vector_store(settings)
-            text_collection = None
+        text_embeddings = build_embedding_provider(settings)
         indexer = SearchIndexer(
             active_engine,
             embedding_provider=text_embeddings,
-            vector_store=text_vector_store,
-            collection=text_collection,
         )
         visual_reader = build_visual_reader(settings)
         metadata_extractor = build_metadata_extractor(settings)

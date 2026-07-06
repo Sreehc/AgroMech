@@ -290,14 +290,30 @@ def test_run_once_uses_configured_zvec_store(tmp_path, monkeypatch) -> None:
         _env_file=None,
         file_storage_backend="local",
         graph_backend="local",
-        vector_backend="zvec",
         model_provider="local",
         embedding_provider="local",
-        zvec_path=str(tmp_path / "zvec"),
-        zvec_collection="agromech_text_chunks",
         embedding_dimension=256,
     )
     monkeypatch.setattr("agromech_worker.main.get_settings", lambda: settings)
+    captured = {}
+
+    class FakeEmbeddingProvider:
+        pass
+
+    class FakeSearchIndexer:
+        def __init__(self, active_engine, *, embedding_provider):
+            captured["engine"] = active_engine
+            captured["embedding_provider"] = embedding_provider
+
+        def index_document(self, document_id):
+            return type("IndexResult", (), {"chunk_count": 1})()
+
+    fake_embedding_provider = FakeEmbeddingProvider()
+    monkeypatch.setattr(
+        "agromech_api.integrations.embeddings.text.build_embedding_provider",
+        lambda active_settings: fake_embedding_provider,
+    )
+    monkeypatch.setattr("agromech_worker.main.SearchIndexer", FakeSearchIndexer)
 
     with engine.begin() as connection:
         connection.execute(
@@ -328,12 +344,7 @@ def test_run_once_uses_configured_zvec_store(tmp_path, monkeypatch) -> None:
     result = run_once(engine=engine)
 
     assert result == "succeeded"
-    with engine.connect() as connection:
-        embedding = connection.execute(select(embedding_references)).mappings().one()
-    assert embedding["vector_store"] == "zvec"
-    assert embedding["collection"] == "agromech_text_chunks"
-    assert embedding["vector_id"].startswith("zvec://agromech_text_chunks/")
-    assert (tmp_path / "zvec" / "agromech_text_chunks.json").exists()
+    assert captured == {"engine": engine, "embedding_provider": fake_embedding_provider}
 
 
 def test_keyword_and_vector_search_recall_text_table_and_image_chunks(tmp_path) -> None:

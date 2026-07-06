@@ -8,7 +8,6 @@ from agromech_api.core.infrastructure import dependency_targets
 # `_env_file=None` isolates these unit tests from a developer's populated .env.
 LOCAL_BACKENDS = {
     "file_storage_backend": "local",
-    "vector_backend": "local",
     "graph_backend": "local",
     "model_provider": "local",
     "embedding_provider": "local",
@@ -223,6 +222,46 @@ def test_oss_error_sanitizer_omits_credentials() -> None:
     assert "secret-access-key-leaked" not in message
     assert "status=403" in message
     assert "code=AccessDenied" in message
+
+
+def test_infrastructure_health_does_not_require_zvec_settings() -> None:
+    from agromech_api.core.infrastructure import check_infrastructure
+
+    checks = check_infrastructure(Settings(_env_file=None))
+
+    assert {check.name for check in checks} >= {"postgres", "file_storage", "pgvector", "bailian"}
+    assert "zvec" not in {check.name for check in checks}
+
+
+def test_pgvector_extension_health_check_uses_supplied_engine() -> None:
+    from agromech_api.core.infrastructure import check_pgvector_extension
+
+    class FakeResult:
+        def scalar_one_or_none(self):
+            return "vector"
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, statement):
+            assert "pg_extension" in str(statement)
+            return FakeResult()
+
+    class FakeEngine:
+        url = "postgresql+psycopg://agromech:***@localhost:5432/agromech"
+
+        def connect(self):
+            return FakeConnection()
+
+    check = check_pgvector_extension(FakeEngine())
+
+    assert check.name == "pgvector"
+    assert check.status == "ok"
+    assert check.target == "postgresql+psycopg://agromech:***@localhost:5432/agromech"
 
 
 def test_bailian_health_check_reports_unavailable_when_required_config_is_missing() -> None:

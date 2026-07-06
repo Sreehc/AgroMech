@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from sqlalchemy import text
+
 from agromech_api.core.config import Settings
+from agromech_api.core.database import get_engine
 
 
 @dataclass(frozen=True)
@@ -123,22 +126,19 @@ def sanitize_oss_error(exc: Exception) -> str:
     return " ".join(parts)
 
 
-def check_zvec_storage(settings: Settings) -> DependencyCheck:
-    target = settings.zvec_path
+def check_pgvector_extension(engine=None) -> DependencyCheck:
+    active_engine = engine or get_engine()
+    target = str(active_engine.url)
     try:
-        root = Path(settings.zvec_path)
-        root.mkdir(parents=True, exist_ok=True)
-        backup_root = Path(settings.zvec_backup_path)
-        backup_root.mkdir(parents=True, exist_ok=True)
-        probe = root / ".health-probe"
-        probe.write_bytes(b"ok")
-        probe.unlink()
-        backup_probe = backup_root / ".health-probe"
-        backup_probe.write_bytes(b"ok")
-        backup_probe.unlink()
-        return DependencyCheck("zvec", "ok", target)
-    except OSError as exc:
-        return DependencyCheck("zvec", "unavailable", target, str(exc))
+        with active_engine.connect() as connection:
+            extension = connection.execute(
+                text("SELECT extname FROM pg_extension WHERE extname = 'vector'")
+            ).scalar_one_or_none()
+        if extension == "vector":
+            return DependencyCheck("pgvector", "ok", target)
+        return DependencyCheck("pgvector", "unavailable", target, "pgvector extension is not installed")
+    except Exception as exc:  # noqa: BLE001 - health checks report dependency status instead of raising
+        return DependencyCheck("pgvector", "unavailable", target, str(exc))
 
 
 def check_bailian_config(settings: Settings) -> DependencyCheck:
@@ -157,6 +157,6 @@ def check_infrastructure(settings: Settings) -> list[DependencyCheck]:
         for target in dependency_targets(settings).values()
     ]
     checks.append(check_file_storage(settings))
-    checks.append(check_zvec_storage(settings))
+    checks.append(check_pgvector_extension())
     checks.append(check_bailian_config(settings))
     return checks

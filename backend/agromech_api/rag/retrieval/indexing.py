@@ -80,7 +80,7 @@ class SearchIndexer:
         self.engine = engine
         self.embedding_provider = embedding_provider or DeterministicEmbeddingProvider()
         self.vector_store = vector_store or LocalVectorStore()
-        self.collection = collection or settings.zvec_text_collection
+        self.collection = collection or "agromech_text_chunks"
         self.embedding_version = embedding_version or settings.embedding_version
         self.chunk_profile = chunk_profile or settings.chunk_profile
         self.embedding_dimension = embedding_dimension or settings.embedding_dimension
@@ -184,7 +184,7 @@ class VisualPageIndexer:
             dimension=settings.visual_embedding_dimension
         )
         self.vector_store = vector_store or LocalVectorStore()
-        self.collection = collection or settings.zvec_visual_collection
+        self.collection = collection or "agromech_visual_pages"
         self.embedding_version = embedding_version or settings.visual_embedding_version
         self.embedding_dimension = embedding_dimension or settings.visual_embedding_dimension
 
@@ -340,7 +340,7 @@ def visual_page_search(
     )
     query_embedding = provider.embed_query(query)
     active_version = active_embedding_version or settings.visual_embedding_version
-    active_collection = collection or settings.zvec_visual_collection
+    active_collection = collection or "agromech_visual_pages"
     if vector_store is None:
         with engine.connect() as connection:
             rows = connection.execute(

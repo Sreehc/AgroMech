@@ -9,8 +9,6 @@ from agromech_api.rag.agent.controller import AgentController
 from agromech_api.rag.generation.answer import AnswerGenerationError, build_answer_generator
 from agromech_api.rag.langchain.adapters import (
     build_answer_chain,
-    build_text_vector_components,
-    build_visual_vector_components,
 )
 from agromech_api.rag.retrieval.evidence_check import check_evidence_sufficiency
 from agromech_api.rag.retrieval.hybrid import hybrid_retrieve_with_trace
@@ -157,8 +155,6 @@ def retrieve_for_text_agent(
     vector_collection = None
     graph_service = None
     rerank_provider = None
-    if settings.vector_backend == "zvec":
-        embedding_provider, vector_store, vector_collection = build_text_vector_components(settings)
     # Graph RAG is currently out of scope for the main QA path, even when
     # experimental graph settings are present.
     if settings.rerank_enabled:
@@ -202,8 +198,6 @@ def retrieve_visual_for_text_agent(
     embedding_provider = None
     vector_store = None
     vector_collection = None
-    if settings.vector_backend == "zvec":
-        embedding_provider, vector_store, vector_collection = build_visual_vector_components(settings)
     retrieval = visual_page_search(
         engine,
         query,
