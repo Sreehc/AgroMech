@@ -13,12 +13,12 @@ from sqlalchemy import Engine, delete, insert, or_, select
 from agromech_api.core.config import get_settings
 from agromech_api.db.enums import AssetType
 from agromech_api.db.models import (
+    chunk_vector_embeddings,
     chunk_search_index,
     document_assets,
     document_chunks,
     documents,
-    embedding_references,
-    visual_page_embeddings,
+    visual_page_vector_embeddings,
 )
 from agromech_api.ingestion.runner import IngestFailure
 from agromech_api.integrations.embeddings.visual import DeterministicVisualEmbeddingProvider
@@ -36,8 +36,11 @@ class DeterministicEmbeddingProvider:
     provider = "local"
     model = "deterministic-token-hash"
 
+    def __init__(self, *, dimension: int = 1024) -> None:
+        self.dimension = dimension
+
     def embed(self, text: str) -> list[float]:
-        vector = [0.0] * 256
+        vector = [0.0] * self.dimension
         for token in tokenize(text):
             digest = hashlib.sha256(token.encode("utf-8")).digest()
             index = digest[0] % len(vector)
@@ -56,31 +59,21 @@ class FailingEmbeddingProvider:
         raise RuntimeError("Embedding service unavailable")
 
 
-class LocalVectorStore:
-    name = "milvus"
-
-    def upsert(self, *, collection: str, chunk_id: str, embedding: list[float]) -> str:
-        digest = hashlib.sha256(f"{collection}:{chunk_id}:{embedding}".encode("utf-8")).hexdigest()
-        return f"{collection}:{digest[:24]}"
-
-
 class SearchIndexer:
     def __init__(
         self,
         engine: Engine,
         *,
         embedding_provider=None,
-        vector_store=None,
-        collection: str | None = None,
         embedding_version: str | None = None,
         chunk_profile: str | None = None,
         embedding_dimension: int | None = None,
     ) -> None:
         settings = get_settings()
         self.engine = engine
-        self.embedding_provider = embedding_provider or DeterministicEmbeddingProvider()
-        self.vector_store = vector_store or LocalVectorStore()
-        self.collection = collection or "agromech_text_chunks"
+        self.embedding_provider = embedding_provider or DeterministicEmbeddingProvider(
+            dimension=embedding_dimension or settings.embedding_dimension
+        )
         self.embedding_version = embedding_version or settings.embedding_version
         self.chunk_profile = chunk_profile or settings.chunk_profile
         self.embedding_dimension = embedding_dimension or settings.embedding_dimension
@@ -104,14 +97,6 @@ class SearchIndexer:
                 embedding = self.embedding_provider.embed(search_text)
             except Exception as exc:
                 raise IngestFailure("embedding_failed", str(exc), stage="index") from exc
-            try:
-                vector_id = self.vector_store.upsert(
-                    collection=self.collection,
-                    chunk_id=chunk["id"],
-                    embedding=embedding,
-                )
-            except Exception as exc:
-                raise IngestFailure("vector_index_failed", str(exc), stage="index") from exc
 
             search_rows.append(
                 {
@@ -120,7 +105,6 @@ class SearchIndexer:
                     "document_id": document_id,
                     "chunk_type": chunk["chunk_type"],
                     "search_text": search_text,
-                    "embedding": embedding,
                     "embedding_version": self.embedding_version,
                     "chunk_profile": self.chunk_profile,
                     "embedding_dimension": len(embedding),
@@ -130,14 +114,13 @@ class SearchIndexer:
                 {
                     "id": str(uuid4()),
                     "chunk_id": chunk["id"],
+                    "document_id": document_id,
                     "provider": self.embedding_provider.provider,
                     "model": self.embedding_provider.model,
                     "embedding_version": self.embedding_version,
                     "chunk_profile": self.chunk_profile,
                     "embedding_dimension": len(embedding),
-                    "vector_store": self.vector_store.name,
-                    "collection": self.collection,
-                    "vector_id": vector_id,
+                    "embedding": embedding,
                     "status": "ready",
                 }
             )
@@ -155,15 +138,15 @@ class SearchIndexer:
                     )
                 )
                 connection.execute(
-                    delete(embedding_references).where(
-                        embedding_references.c.chunk_id.in_(chunk_ids),
-                        embedding_references.c.embedding_version == self.embedding_version,
+                    delete(chunk_vector_embeddings).where(
+                        chunk_vector_embeddings.c.chunk_id.in_(chunk_ids),
+                        chunk_vector_embeddings.c.embedding_version == self.embedding_version,
                     )
                 )
             if search_rows:
                 connection.execute(insert(chunk_search_index), search_rows)
             if embedding_rows:
-                connection.execute(insert(embedding_references), embedding_rows)
+                connection.execute(insert(chunk_vector_embeddings), embedding_rows)
         return IndexResult(chunk_count=len(search_rows))
 
 
@@ -173,8 +156,6 @@ class VisualPageIndexer:
         engine: Engine,
         *,
         embedding_provider=None,
-        vector_store=None,
-        collection: str | None = None,
         embedding_version: str | None = None,
         embedding_dimension: int | None = None,
     ) -> None:
@@ -183,8 +164,6 @@ class VisualPageIndexer:
         self.embedding_provider = embedding_provider or DeterministicVisualEmbeddingProvider(
             dimension=settings.visual_embedding_dimension
         )
-        self.vector_store = vector_store or LocalVectorStore()
-        self.collection = collection or "agromech_visual_pages"
         self.embedding_version = embedding_version or settings.visual_embedding_version
         self.embedding_dimension = embedding_dimension or settings.visual_embedding_dimension
 
@@ -203,14 +182,6 @@ class VisualPageIndexer:
                 embedding = self.embedding_provider.embed_image(image_path, text=asset["ocr_text"])
             except Exception as exc:
                 raise IngestFailure("visual_embedding_failed", str(exc), stage="visual_embedding") from exc
-            try:
-                vector_id = self.vector_store.upsert(
-                    collection=self.collection,
-                    chunk_id=asset["id"],
-                    embedding=embedding,
-                )
-            except Exception as exc:
-                raise IngestFailure("visual_vector_index_failed", str(exc), stage="visual_embedding") from exc
             rows.append(
                 {
                     "id": str(uuid4()),
@@ -221,9 +192,7 @@ class VisualPageIndexer:
                     "model": self.embedding_provider.model,
                     "embedding_version": self.embedding_version,
                     "embedding_dimension": len(embedding),
-                    "vector_store": self.vector_store.name,
-                    "collection": self.collection,
-                    "vector_id": vector_id,
+                    "embedding": embedding,
                     "status": "ready",
                 }
             )
@@ -232,13 +201,13 @@ class VisualPageIndexer:
             asset_ids = [asset["id"] for asset in assets]
             if asset_ids:
                 connection.execute(
-                    delete(visual_page_embeddings).where(
-                        visual_page_embeddings.c.asset_id.in_(asset_ids),
-                        visual_page_embeddings.c.embedding_version == self.embedding_version,
+                    delete(visual_page_vector_embeddings).where(
+                        visual_page_vector_embeddings.c.asset_id.in_(asset_ids),
+                        visual_page_vector_embeddings.c.embedding_version == self.embedding_version,
                     )
                 )
             if rows:
-                connection.execute(insert(visual_page_embeddings), rows)
+                connection.execute(insert(visual_page_vector_embeddings), rows)
         return IndexResult(chunk_count=len(rows))
 
 
@@ -281,7 +250,9 @@ def vector_search(
     vector_store=None,
     collection: str | None = None,
 ) -> list[dict[str, object]]:
-    provider = embedding_provider or DeterministicEmbeddingProvider()
+    provider = embedding_provider or DeterministicEmbeddingProvider(
+        dimension=get_settings().embedding_dimension
+    )
     query_embedding = provider.embed(query)
     active_version = active_embedding_version or get_settings().embedding_version
     if vector_store is not None:
@@ -297,7 +268,16 @@ def vector_search(
         )
     with engine.connect() as connection:
         rows = connection.execute(
-            select(chunk_search_index).where(chunk_search_index.c.embedding_version == active_version)
+            select(
+                chunk_search_index.c.chunk_id,
+                chunk_search_index.c.chunk_type,
+                chunk_search_index.c.embedding_version,
+                chunk_vector_embeddings.c.embedding,
+            )
+            .join(chunk_vector_embeddings, chunk_vector_embeddings.c.chunk_id == chunk_search_index.c.chunk_id)
+            .where(chunk_search_index.c.embedding_version == active_version)
+            .where(chunk_vector_embeddings.c.embedding_version == active_version)
+            .where(chunk_vector_embeddings.c.status == "ready")
         ).mappings().all()
     scored = []
     for row in rows:
@@ -342,24 +322,24 @@ def visual_page_search(
     )
     query_embedding = provider.embed_query(query)
     active_version = active_embedding_version or settings.visual_embedding_version
-    active_collection = collection or "agromech_visual_pages"
     if vector_store is None:
         with engine.connect() as connection:
             rows = connection.execute(
-                select(visual_page_embeddings)
-                .where(visual_page_embeddings.c.embedding_version == active_version)
-                .where(visual_page_embeddings.c.collection == active_collection)
-                .where(visual_page_embeddings.c.status == "ready")
+                select(visual_page_vector_embeddings)
+                .where(visual_page_vector_embeddings.c.embedding_version == active_version)
+                .where(visual_page_vector_embeddings.c.status == "ready")
             ).mappings().all()
         store_results = [
             {
                 "chunk_id": row["asset_id"],
-                "score": 1.0,
-                "vector_ref": row["vector_id"],
+                "score": cosine_similarity(query_embedding, row["embedding"]),
+                "vector_ref": f"pgvector://visual_page_vector_embeddings/{row['asset_id']}",
             }
             for row in rows
+            if cosine_similarity(query_embedding, row["embedding"]) > 0
         ][:limit]
     else:
+        active_collection = collection or "agromech_visual_pages"
         store_results = vector_store.query(
             collection=active_collection,
             embedding=query_embedding,
@@ -371,23 +351,21 @@ def visual_page_search(
     with engine.connect() as connection:
         rows = connection.execute(
             select(
-                visual_page_embeddings.c.asset_id,
-                visual_page_embeddings.c.document_id,
-                visual_page_embeddings.c.page_number,
-                visual_page_embeddings.c.vector_id,
-                visual_page_embeddings.c.embedding_version,
+                visual_page_vector_embeddings.c.asset_id,
+                visual_page_vector_embeddings.c.document_id,
+                visual_page_vector_embeddings.c.page_number,
+                visual_page_vector_embeddings.c.embedding_version,
                 document_assets.c.storage_uri,
                 document_assets.c.source_locator,
                 document_assets.c.ocr_text,
                 document_assets.c.visual_observation,
                 documents.c.title.label("document_title"),
             )
-            .join(document_assets, document_assets.c.id == visual_page_embeddings.c.asset_id)
-            .join(documents, documents.c.id == visual_page_embeddings.c.document_id)
-            .where(visual_page_embeddings.c.asset_id.in_(asset_ids))
-            .where(visual_page_embeddings.c.embedding_version == active_version)
-            .where(visual_page_embeddings.c.collection == active_collection)
-            .where(visual_page_embeddings.c.status == "ready")
+            .join(document_assets, document_assets.c.id == visual_page_vector_embeddings.c.asset_id)
+            .join(documents, documents.c.id == visual_page_vector_embeddings.c.document_id)
+            .where(visual_page_vector_embeddings.c.asset_id.in_(asset_ids))
+            .where(visual_page_vector_embeddings.c.embedding_version == active_version)
+            .where(visual_page_vector_embeddings.c.status == "ready")
             .where(_visual_visibility_condition(viewer_user_id))
         ).mappings().all()
     metadata_by_asset = {row["asset_id"]: row for row in rows}
@@ -410,7 +388,8 @@ def visual_page_search(
                 "visual_observation": metadata["visual_observation"],
                 "score": result["score"],
                 "embedding_version": metadata["embedding_version"],
-                "vector_ref": result.get("vector_ref") or metadata["vector_id"],
+                "vector_ref": result.get("vector_ref")
+                or f"pgvector://visual_page_vector_embeddings/{asset_id}",
                 "accessible": True,
             }
         )
@@ -435,14 +414,12 @@ def zvec_vector_search(
             select(
                 document_chunks.c.id,
                 document_chunks.c.chunk_type,
-                embedding_references.c.vector_id,
-                embedding_references.c.embedding_version,
+                chunk_vector_embeddings.c.embedding_version,
             )
-            .join(embedding_references, embedding_references.c.chunk_id == document_chunks.c.id)
+            .join(chunk_vector_embeddings, chunk_vector_embeddings.c.chunk_id == document_chunks.c.id)
             .where(document_chunks.c.id.in_(chunk_ids))
-            .where(embedding_references.c.embedding_version == active_embedding_version)
-            .where(embedding_references.c.collection == collection)
-            .where(embedding_references.c.status == "ready")
+            .where(chunk_vector_embeddings.c.embedding_version == active_embedding_version)
+            .where(chunk_vector_embeddings.c.status == "ready")
         ).mappings().all()
     metadata_by_chunk = {row["id"]: row for row in rows}
     results = []
@@ -473,7 +450,7 @@ def token_score(query_tokens: list[str], text: str) -> int:
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
-    if not left or not right:
+    if len(left) == 0 or len(right) == 0:
         return 0.0
     return sum(a * b for a, b in zip(left, right))
 

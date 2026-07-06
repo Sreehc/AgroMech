@@ -12,13 +12,14 @@ from agromech_api.db.models import (
     answer_citations,
     chunk_entity_links,
     chunk_search_index,
+    chunk_vector_embeddings,
     document_assets,
     document_chunks,
     document_entity_extractions,
     documents,
-    embedding_references,
     graph_edges,
     ingest_tasks,
+    visual_page_vector_embeddings,
 )
 from agromech_api.documents.service import TaskResult, get_document_or_404
 from agromech_api.core.errors import AppError, ErrorCode
@@ -209,7 +210,7 @@ def cleanup_deleted_document(connection, document_id: str) -> None:
     )
     if chunk_ids:
         connection.execute(delete(chunk_search_index).where(chunk_search_index.c.chunk_id.in_(chunk_ids)))
-        connection.execute(delete(embedding_references).where(embedding_references.c.chunk_id.in_(chunk_ids)))
+        connection.execute(delete(chunk_vector_embeddings).where(chunk_vector_embeddings.c.chunk_id.in_(chunk_ids)))
         connection.execute(delete(chunk_entity_links).where(chunk_entity_links.c.chunk_id.in_(chunk_ids)))
         connection.execute(
             update(graph_edges)
@@ -217,6 +218,7 @@ def cleanup_deleted_document(connection, document_id: str) -> None:
             .where(graph_edges.c.is_active.is_(True))
             .values(is_active=False, valid_to=datetime.now(UTC))
         )
+    connection.execute(delete(visual_page_vector_embeddings).where(visual_page_vector_embeddings.c.document_id == document_id))
     connection.execute(delete(document_entity_extractions).where(document_entity_extractions.c.document_id == document_id))
     connection.execute(delete(document_assets).where(document_assets.c.document_id == document_id))
     connection.execute(delete(document_chunks).where(document_chunks.c.document_id == document_id))
