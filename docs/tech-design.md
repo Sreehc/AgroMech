@@ -43,7 +43,7 @@ backend/agromech_api/
   db/                      # SQLAlchemy Core 表和枚举
   documents/               # 资料库上传、查询、详情服务
   ingestion/               # 文档解析、OCR、视觉观察、元数据回填
-  integrations/            # 外部服务适配器、队列、存储、向量库
+  integrations/            # 外部服务适配器、队列、存储、模型服务
   qa/                      # /qa/text 和 /qa/image 路由及响应组织
   rag/                     # Agent、检索、生成、LangChain/LangGraph 组件
 ```
@@ -237,6 +237,7 @@ npm run dev --prefix frontend
 - `RABBITMQ_URL`
 - `OCR_TEXT_MODE=legacy|cloud_text`
 - Postgres 容器需安装 pgvector，目标数据库通过迁移执行 `CREATE EXTENSION IF NOT EXISTS vector`
+- 迁移后既有 indexed 文档可运行 `.venv/bin/python scripts/rebuild-vector-index.py` 重建文本和视觉向量
 - `GRAPH_BACKEND=local`，当前默认不启用 Graph RAG
 - `MODEL_PROVIDER=bailian`
 - `EMBEDDING_PROVIDER=bailian`

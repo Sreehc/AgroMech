@@ -6,9 +6,12 @@
 
 截至当前代码状态：
 
-- 后端/worker 测试：`304 passed, 6 warnings`。
-- 前端测试：`96 passed`。
-- 文档同步测试覆盖当前 docs 文件名、API 关键字段、RabbitMQ worker、Agent Controller。
+- 后端/worker 测试：`364 passed, 6 warnings`。
+- `scripts/lint.sh`：0 error，1 个既有 frontend warning（`anonymous-chat-store.test.ts` 中 `vi` 未使用）。
+- 前端测试当前有既有失败：`npm run test --prefix frontend` 失败 6 个测试，集中在 `window is not defined` 和无 token 错误期望不匹配。
+- 前端构建当前有既有失败：`npm run build --prefix frontend` 在 `/` 静态预渲染时因 assistant-ui `ThreadHistoryAdapter.withFormat` 缺失失败。
+- `scripts/test-all.sh` 当前会在后端/worker 通过后停在 frontend Vitest 阶段。
+- 文档同步测试覆盖当前 docs 文件名、API 关键字段、RabbitMQ worker、Agent Controller 和旧向量存储引用。
 
 ## 2. 已确认技术决策
 
@@ -16,19 +19,21 @@
 - 前端使用 Next.js App Router + React + TypeScript + Tailwind CSS + assistant-ui。
 - Postgres、RabbitMQ 复用同级目录 `../infrastructure`；Neo4j / Graph RAG 暂不在当前主链路启用。
 - PostgreSQL + pgvector 作为当前向量存储，文本和视觉向量与业务数据同库。
+- pgvector 检索在 PostgreSQL 上使用 `<=>` cosine distance 排序和 HNSW 索引；SQLite 测试环境保留 Python fallback。
 - 文件存储支持 local fallback 和阿里云 OSS。
 - LLM、embedding、vision、rerank 使用阿里云百炼。
 - 认证用户、角色、状态和 token version 存入 Postgres，不再依赖静态账号配置。
 - OCR 默认保留 legacy 路径；`OCR_TEXT_MODE=cloud_text` 时 PDF 可走 PaddleOCR 云 API。
 - RabbitMQ 只做分发和唤醒，`ingest_tasks` 是权威任务状态。
 - QA 使用 LangGraph 做受控工作流，不使用自由 ReAct agent。
-- LangChain 使用范围限定在 `langchain-core` tool 包装，不替换现有检索、向量库、图谱或回答生成实现。
+- LangChain 使用范围限定在 `langchain-core` tool 包装，不替换现有检索、向量召回、图谱或回答生成实现。
 
 ## 3. 重要完成记录
 
 ### 基础系统
 
 - 配置加载、条件校验和 `.env.example` 已覆盖 OSS、pgvector、Bailian、RabbitMQ、评估等配置；Neo4j 配置保留为后续实验。
+- 旧外部向量库配置、遗留字段和可选 vector backend 配置已移除。
 - 认证读取 `users` 表，登录审计写入 `auth_audit_logs`，token 校验会检查用户状态和 `token_version`。
 - 统一错误响应、trace id 和敏感信息脱敏已接入。
 
@@ -37,6 +42,7 @@
 - 上传、重复文件识别、类型/大小校验已实现。
 - 文本、表格、PDF、图片处理链路已接入 worker。
 - PaddleOCR、视觉观察、LLM 元数据回填、实体抽取、pgvector 索引和全文索引已进入导入链路；Graph RAG 已从当前主链路停用。
+- 迁移后既有文档向量通过 `scripts/rebuild-vector-index.py` 从 Postgres chunks/assets 重建，不迁移旧向量文件。
 - reprocess 失败不会破坏旧 indexed 文档。
 - delete 任务清理新检索可见性，并保留历史 citation 元数据。
 
@@ -90,6 +96,6 @@
 - 旧大写命名文档。
 - `requirements.md`、`spec.md`、`tasks.md` 的重复规划内容。
 - `archive/` 中已完成前端改造草案。
-- `superpowers/` 中临时实施计划和设计 spec。
+- 临时实施计划和设计 spec。
 
 后续新增文档应优先合并到上述 8 份之一，除非出现新的长期维护主题。
