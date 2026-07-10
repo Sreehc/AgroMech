@@ -100,20 +100,6 @@ class Settings(BaseSettings):
     postgres_user: str = "agromech"
     postgres_password: str = "agromech"
 
-    # Legacy vector target retained for health checks until Zvec health lands (T57).
-    milvus_host: str = "localhost"
-    milvus_port: int = 19530
-    milvus_collection: str = "agromech_chunks"
-
-    # Vector storage: Zvec
-    vector_backend: str = "zvec"
-    zvec_path: str = "./.agromech-data/zvec"
-    zvec_collection: str = "agromech_chunks"
-    zvec_text_collection: str = "agromech_text_chunks"
-    zvec_visual_collection: str = "agromech_visual_pages"
-    zvec_backup_path: str = "./.agromech-data/backups/zvec"
-    zvec_backup_retention_days: int = 7
-
     # Embedding
     embedding_provider: str = "local"
     embedding_model: str = "text-embedding-v4"
@@ -190,7 +176,6 @@ class Settings(BaseSettings):
 
     @field_validator(
         "database_url",
-        "milvus_host",
         "neo4j_uri",
         "neo4j_user",
         "neo4j_password",
@@ -210,7 +195,7 @@ class Settings(BaseSettings):
 
         Keeping the checks conditional lets local development run with the
         deterministic fallbacks while still failing fast and readably once a
-        real backend (OSS, Zvec, Neo4j, Bailian) is switched on.
+        real backend (OSS, Neo4j, Bailian) is switched on.
         """
         if self.file_storage_backend == "oss":
             require_settings(
@@ -218,8 +203,6 @@ class Settings(BaseSettings):
                 ["oss_access_key_id", "oss_access_key_secret", "oss_bucket", "oss_endpoint"],
                 mode="FILE_STORAGE_BACKEND=oss",
             )
-        if self.vector_backend == "zvec":
-            require_settings(self, ["zvec_path", "zvec_collection"], mode="VECTOR_BACKEND=zvec")
         if self.graph_backend == "neo4j":
             require_settings(self, ["neo4j_uri", "neo4j_user", "neo4j_password"], mode="GRAPH_BACKEND=neo4j")
         if "bailian" in {self.model_provider, self.embedding_provider, self.visual_embedding_provider}:

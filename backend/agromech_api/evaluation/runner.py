@@ -92,7 +92,7 @@ def model_config_from_settings(settings: Settings) -> dict[str, object]:
         "embedding_provider": settings.embedding_provider,
         "embedding_model": settings.embedding_model,
         "embedding_version": settings.embedding_version,
-        "vector_backend": settings.vector_backend,
+        "vector_backend": "pgvector",
         "graph_backend": settings.graph_backend,
         "rerank_enabled": settings.rerank_enabled,
         "rerank_model": settings.rerank_model if settings.rerank_enabled else None,

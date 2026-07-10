@@ -20,7 +20,6 @@ def e2e_settings(tmp_path: Path) -> Settings:
         upload_max_file_size_mb=1,
         upload_max_image_size_mb=1,
         graph_backend="local",
-        vector_backend="local",
         model_provider="local",
         embedding_provider="local",
         embedding_dimension=256,

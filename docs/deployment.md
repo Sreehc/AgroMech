@@ -17,7 +17,7 @@
   _next/
 ```
 
-`/opt/agromech/.env` 可参考 `deploy/env.prod.example`，必须填真实的 `DATABASE_URL`、`RABBITMQ_URL`、`AUTH_TOKEN_SECRET`、百炼配置和存储配置。
+`/opt/agromech/.env` 可参考 `deploy/env.prod.example`，必须填真实的 `DATABASE_URL`、`RABBITMQ_URL`、`AUTH_TOKEN_SECRET`、百炼配置和存储配置。Postgres 容器必须安装 pgvector；Alembic 迁移会在目标库执行 `CREATE EXTENSION IF NOT EXISTS vector`。如果使用 Docker PostgreSQL，镜像需要预装 pgvector，例如基于官方 Postgres 自建镜像或使用 pgvector-enabled 镜像。
 
 ## 2. Nginx
 
@@ -58,6 +58,14 @@ docker compose run --rm api python -m alembic upgrade head
 docker compose up -d api worker
 ```
 
+pgvector 迁移完成后，重建既有文档向量：
+
+```bash
+docker compose run --rm api python scripts/rebuild-vector-index.py
+```
+
+该命令会使用当前 `.env` 中配置的文本和视觉 embedding provider 重建 `chunk_vector_embeddings` 与 `visual_page_vector_embeddings`，不会迁移旧向量文件。
+
 创建首个管理员：
 
 ```bash
@@ -85,6 +93,8 @@ Workflow：`.github/workflows/deploy.yml`。
 - 执行 `sudo nginx -t` 和 `sudo systemctl reload nginx` 的权限。
 
 workflow 会在部署期间让服务器登录 GHCR。默认使用本次 Actions job 的 `github.token`；只有需要改用固定 PAT 或专用机器账号时，才需要配置 `GHCR_USERNAME`/`GHCR_TOKEN`。
+
+当前分支的 frontend Vitest 和静态构建仍有既有失败；在修复 `anonymous-chat-store.test.ts`、`agromech-chat.test.ts` 和 assistant-ui `ThreadHistoryAdapter.withFormat` 前，包含 frontend build 的自动部署检查不会完整通过。
 
 推送 `main` 或手动触发 workflow 后会执行：
 

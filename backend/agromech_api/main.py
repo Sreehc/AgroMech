@@ -36,7 +36,7 @@ def create_app(
     register_retrieval_trace_routes(app, engine=database_engine)
     register_text_qa_routes(app, settings=settings, engine=database_engine)
     register_image_qa_routes(app, settings=settings, engine=database_engine)
-    checker = dependency_checker or (lambda: check_infrastructure(settings))
+    checker = dependency_checker or (lambda: check_infrastructure(settings, engine=database_engine))
 
     @app.middleware("http")
     async def attach_trace_id(request: Request, call_next):

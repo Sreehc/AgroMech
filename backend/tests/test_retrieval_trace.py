@@ -18,7 +18,6 @@ def trace_settings(tmp_path: Path) -> Settings:
         auth_token_secret="test-secret",
         local_file_storage_path=str(tmp_path / "files"),
         graph_backend="local",
-        vector_backend="local",
         model_provider="local",
         embedding_provider="local",
         embedding_dimension=256,
@@ -45,7 +44,6 @@ def test_retrieve_with_trace_logs_query_filters_channels_rerank_and_final_eviden
         bailian_api_key="test-key",
         bailian_base_url="https://bailian.example",
         graph_backend="neo4j",
-        vector_backend="zvec",
         model_provider="bailian",
         embedding_provider="bailian",
     )
@@ -74,7 +72,8 @@ def test_retrieve_with_trace_logs_query_filters_channels_rerank_and_final_eviden
     assert log["model_config"]["embedding_provider"] == "bailian"
     assert log["model_config"]["embedding_model"] == "text-embedding-v4"
     assert log["model_config"]["embedding_version"]
-    assert log["model_config"]["vector_backend"] == "zvec"
+    assert log["model_config"]["vector_backend"] == "pgvector"
+    assert log["model_config"]["vector_collection"] is None
     assert log["model_config"]["graph_backend"] == "neo4j"
     assert log["model_config"]["rerank_enabled"] is True
     assert log["model_config"]["rerank_model"] == "qwen3-rerank"

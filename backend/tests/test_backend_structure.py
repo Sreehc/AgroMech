@@ -44,8 +44,6 @@ def test_integration_modules_are_available_from_structured_packages() -> None:
     from agromech_api.integrations.ocr.paddleocr import PaddleOcrApiClient
     from agromech_api.integrations.queue.task_queue import build_task_publisher
     from agromech_api.integrations.storage.file_storage import build_file_storage
-    from agromech_api.integrations.vectorstores.zvec import ZvecVectorStore
-    from agromech_api.integrations.vectorstores.zvec_backup import backup_zvec
     from agromech_api.integrations.service_adapters import ServiceTimeouts
 
     assert build_embedding_provider.__name__ == "build_embedding_provider"
@@ -54,9 +52,14 @@ def test_integration_modules_are_available_from_structured_packages() -> None:
     assert PaddleOcrApiClient.__name__ == "PaddleOcrApiClient"
     assert build_task_publisher.__name__ == "build_task_publisher"
     assert build_file_storage.__name__ == "build_file_storage"
-    assert ZvecVectorStore.__name__ == "ZvecVectorStore"
-    assert backup_zvec.__name__ == "backup_zvec"
     assert ServiceTimeouts.__name__ == "ServiceTimeouts"
+
+
+def test_pgvector_tables_are_importable() -> None:
+    from agromech_api.db.models import chunk_vector_embeddings, visual_page_vector_embeddings
+
+    assert chunk_vector_embeddings.name == "chunk_vector_embeddings"
+    assert visual_page_vector_embeddings.name == "visual_page_vector_embeddings"
 
 
 def test_api_modules_are_available_from_structured_package() -> None:

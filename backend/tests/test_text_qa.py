@@ -11,7 +11,6 @@ from agromech_api.db.enums import ChunkType, DocumentStatus, UserRole
 from agromech_api.db.models import answer_citations, chat_sessions, document_chunks, documents, metadata, qa_messages, qa_records, retrieval_logs
 from agromech_api.main import create_app
 from agromech_api.rag.retrieval.indexing import SearchIndexer
-from agromech_api.integrations.vectorstores.zvec import ZvecVectorStore
 from test_hybrid_retrieval import seed_retrieval_corpus
 
 
@@ -20,7 +19,6 @@ def qa_settings(tmp_path: Path) -> Settings:
         auth_token_secret="test-secret",
         local_file_storage_path=str(tmp_path / "files"),
         graph_backend="local",
-        vector_backend="local",
         model_provider="local",
         embedding_provider="local",
         embedding_dimension=256,
@@ -203,35 +201,36 @@ def test_text_qa_rejects_session_id_owned_by_another_user(tmp_path: Path) -> Non
     assert response.json()["error"]["code"] == "not_found"
 
 
-def test_text_qa_uses_configured_zvec_vector_search(tmp_path: Path) -> None:
+def test_text_qa_uses_pgvector_vector_search(tmp_path: Path) -> None:
     settings = qa_settings(tmp_path)
-    settings.vector_backend = "zvec"
-    settings.zvec_path = str(tmp_path / "zvec")
-    settings.zvec_text_collection = "agromech_text_chunks"
     settings.embedding_provider = "local"
     settings.model_provider = "local"
     settings.embedding_dimension = 256
     engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
     metadata.create_all(engine)
     seed_retrieval_corpus(engine)
-    store = ZvecVectorStore.from_path(tmp_path / "zvec", expected_dimension=256)
-    for document_id in ["doc-m7040", "doc-l3901", "doc-image"]:
-        SearchIndexer(engine, vector_store=store, collection="agromech_text_chunks").index_document(document_id)
     token = auth_token_for_user(engine, settings, username=UserRole.USER.value, role=UserRole.USER)
     client = TestClient(create_app(settings=settings, database_engine=engine))
 
     response = client.post(
         "/qa/text",
-        headers=auth_header(token, "trace-zvec-vector"),
+        headers=auth_header(token, "trace-pgvector-vector"),
         json={"question": "dashboard hydraulic warning"},
     )
 
     assert response.status_code == 200
     with engine.connect() as connection:
         retrieval_log = connection.execute(
-            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-zvec-vector")
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-pgvector-vector")
         ).mappings().one()
-    assert any(candidate["vector_ref"] for candidate in retrieval_log["candidates"] if "vector" in candidate["channels"])
+    vector_candidates = [
+        candidate for candidate in retrieval_log["candidates"] if "vector" in candidate["channels"]
+    ]
+    assert vector_candidates
+    assert all(
+        candidate["vector_ref"].startswith("pgvector://chunk_vector_embeddings/")
+        for candidate in vector_candidates
+    )
 
 
 def test_text_qa_refuses_requests_to_fabricate_or_ignore_citations(tmp_path: Path) -> None:

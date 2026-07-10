@@ -157,35 +157,49 @@ asset 类型：
 
 ### `chunk_search_index`
 
-全文和本地检索索引引用。包含：
+全文检索索引引用。包含：
 
 - `chunk_id`
 - `document_id`
 - `chunk_type`
 - `search_text`
-- `embedding`
 - `embedding_version`
 - `chunk_profile`
 - `embedding_dimension`
 
-`chunk_id + embedding_version` 唯一。
+`chunk_id + embedding_version` 唯一。`embedding_version`、`chunk_profile` 和 `embedding_dimension` 与 `chunk_vector_embeddings` 对齐，用于检索 trace 和重建校验。
 
-### `embedding_references`
+### `chunk_vector_embeddings`
 
-Zvec 向量引用表。包含：
+文本 chunk 向量表。embedding 直接保存在 Postgres pgvector 中，并通过 `chunk_id` 回连 `document_chunks`：
 
 - `chunk_id`
+- `document_id`
 - `provider`
 - `model`
 - `embedding_version`
 - `chunk_profile`
 - `embedding_dimension`
-- `vector_store`
-- `collection`
-- `vector_id`
+- `embedding vector(1024)`
 - `status`
 
-Postgres 不保存生产向量库主体，Zvec collection 保存实际向量；本表保存业务回连信息。
+`chunk_id + embedding_version` 唯一；`document_id` 用于文档级清理和过滤；pgvector HNSW 索引用于 cosine 召回。`embedding_version` 标记模型、维度和 chunk profile，便于重建和灰度切换。
+
+### `visual_page_vector_embeddings`
+
+PDF 页面渲染图、图片和 OCR 视觉资产的页面级向量表。embedding 直接保存在 Postgres pgvector 中，并通过 `asset_id` 回连 `document_assets`：
+
+- `asset_id`
+- `document_id`
+- `page_number`
+- `provider`
+- `model`
+- `embedding_version`
+- `embedding_dimension`
+- `embedding vector(1024)`
+- `status`
+
+`asset_id + embedding_version` 唯一；`document_id` 用于文档级清理和过滤；pgvector HNSW 索引用于视觉页召回。`embedding_version` 标记视觉 embedding 模型和页面索引版本。
 
 ### `retrieval_logs`
 

@@ -1,26 +1,29 @@
+import pytest
 from sqlalchemy import create_engine, insert, select
+from sqlalchemy.dialects import postgresql
 
 from agromech_api.db.enums import ChunkType, DocumentStatus, TaskType
 from agromech_api.db.models import (
+    chunk_vector_embeddings,
     chunk_search_index,
     document_assets,
     document_chunks,
     documents,
     ingest_tasks,
-    embedding_references,
     metadata,
-    visual_page_embeddings,
+    visual_page_vector_embeddings,
 )
 from agromech_api.ingestion import IngestFailure, QueuedTask
 from agromech_api.rag.retrieval.indexing import (
+    DeterministicEmbeddingProvider,
+    DeterministicVisualEmbeddingProvider,
     FailingEmbeddingProvider,
     SearchIndexer,
     VisualPageIndexer,
     keyword_search,
-    visual_page_search,
     vector_search,
+    visual_page_search,
 )
-from agromech_api.integrations.vectorstores.zvec import ZvecVectorStore
 from agromech_api.core.config import Settings
 from agromech_worker.main import run_once
 from agromech_worker.main import process_ingest_task
@@ -32,7 +35,13 @@ def create_test_engine(tmp_path):
     return engine
 
 
-def seed_document_with_chunks(engine) -> None:
+def seed_searchable_document(engine, *, content: str = "Kubota M7040 hydraulic pump fault code E01") -> tuple[str, str]:
+    default_text = "Kubota M7040 hydraulic pump fault code E01"
+    image_content = (
+        "Visual description: hydraulic warning light on dashboard"
+        if content == default_text
+        else "Visual description: generic instrument panel"
+    )
     with engine.begin() as connection:
         connection.execute(
             insert(documents).values(
@@ -55,7 +64,7 @@ def seed_document_with_chunks(engine) -> None:
                     "id": "text-1",
                     "document_id": "doc-1",
                     "chunk_type": ChunkType.TEXT.value,
-                    "content": "Kubota M7040 hydraulic pump fault code E01",
+                    "content": content,
                     "summary": "M7040 hydraulic pump",
                     "source_locator": {"type": "text", "line_start": 1, "line_end": 1},
                 },
@@ -79,15 +88,16 @@ def seed_document_with_chunks(engine) -> None:
                     "id": "image-1",
                     "document_id": "doc-1",
                     "chunk_type": ChunkType.IMAGE.value,
-                    "content": "Visual description: hydraulic warning light on dashboard",
-                    "summary": "hydraulic warning light",
+                    "content": image_content,
+                    "summary": "hydraulic warning light" if content == default_text else "instrument panel",
                     "source_locator": {"type": "image", "source_file": "label.png"},
                 },
             ],
         )
+    return "doc-1", "text-1"
 
 
-def seed_document_with_page_asset(engine, tmp_path) -> None:
+def seed_page_image_asset(engine, tmp_path) -> tuple[str, str]:
     page_path = tmp_path / "page-1.png"
     page_path.write_bytes(b"fake image bytes")
     with engine.begin() as connection:
@@ -118,57 +128,46 @@ def seed_document_with_page_asset(engine, tmp_path) -> None:
                 visual_observation={"vision": {"description": "hydraulic pump location"}},
             )
         )
+    return "doc-visual", "asset-page-1"
 
 
-def test_index_document_creates_fulltext_and_embedding_references(tmp_path) -> None:
+def test_index_document_writes_pgvector_rows(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
-    seed_document_with_chunks(engine)
+    seed_searchable_document(engine)
 
-    result = SearchIndexer(engine).index_document("doc-1")
+    result = SearchIndexer(engine, embedding_version="emb_test").index_document("doc-1")
 
     assert result.chunk_count == 3
     with engine.connect() as connection:
         search_rows = connection.execute(select(chunk_search_index)).mappings().all()
-        embeddings = connection.execute(select(embedding_references)).mappings().all()
+        embeddings = connection.execute(select(chunk_vector_embeddings)).mappings().all()
     assert {row["chunk_id"] for row in search_rows} == {"text-1", "table-1", "image-1"}
     assert any("M7040" in row["search_text"] for row in search_rows)
     assert any("Faults" in row["search_text"] for row in search_rows)
+    assert len(embeddings) == 3
+    assert {row["chunk_id"] for row in embeddings} == {"text-1", "table-1", "image-1"}
+    assert {row["document_id"] for row in embeddings} == {"doc-1"}
+    assert {row["provider"] for row in embeddings} == {"local"}
+    assert {row["embedding_version"] for row in embeddings} == {"emb_test"}
     assert {row["status"] for row in embeddings} == {"ready"}
-    assert {row["vector_store"] for row in embeddings} == {"milvus"}
-    assert {row["collection"] for row in embeddings} == {"agromech_text_chunks"}
+    assert {row["embedding_dimension"] for row in embeddings} == {1024}
+    assert all(len(row["embedding"]) == 1024 for row in embeddings)
 
 
-def test_index_document_can_write_vectors_to_zvec_store(tmp_path) -> None:
+def test_index_document_replaces_pgvector_rows_for_same_chunk_and_version(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
-    seed_document_with_chunks(engine)
-    store = ZvecVectorStore.from_path(
-        tmp_path / "zvec",
-        expected_dimension=256,
-    )
+    seed_searchable_document(engine)
+    SearchIndexer(engine).index_document("doc-1")
+    SearchIndexer(engine).index_document("doc-1")
 
-    result = SearchIndexer(
-        engine,
-        vector_store=store,
-        collection="agromech_text_chunks",
-    ).index_document("doc-1")
-
-    assert result.chunk_count == 3
     with engine.connect() as connection:
-        embeddings = connection.execute(select(embedding_references)).mappings().all()
-    assert {row["vector_store"] for row in embeddings} == {"zvec"}
-    assert {row["collection"] for row in embeddings} == {"agromech_text_chunks"}
-    assert all(row["vector_id"].startswith("zvec://agromech_text_chunks/") for row in embeddings)
-    assert {result["chunk_id"] for result in store.query(collection="agromech_text_chunks", embedding=[1.0] + [0.0] * 255)} <= {
-        "text-1",
-        "table-1",
-        "image-1",
-    }
+        embeddings = connection.execute(select(chunk_vector_embeddings)).mappings().all()
+    assert len(embeddings) == 3
 
 
-def test_visual_page_indexer_writes_page_image_vectors_to_separate_zvec_collection(tmp_path) -> None:
+def test_visual_page_indexer_writes_pgvector_rows(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
-    seed_document_with_page_asset(engine, tmp_path)
-    store = ZvecVectorStore.from_path(tmp_path / "zvec", expected_dimension=4)
+    seed_page_image_asset(engine, tmp_path)
 
     class FakeVisualEmbeddingProvider:
         provider = "bailian"
@@ -177,112 +176,255 @@ def test_visual_page_indexer_writes_page_image_vectors_to_separate_zvec_collecti
         def embed_image(self, path, *, text=None):
             assert path.name == "page-1.png"
             assert text == "Hydraulic pump location diagram"
-            return [1.0, 0.0, 0.0, 0.0]
+            return [1.0] + [0.0] * 1023
 
         def embed_query(self, text):
-            return [1.0, 0.0, 0.0, 0.0]
+            return [1.0] + [0.0] * 1023
 
     result = VisualPageIndexer(
         engine,
         embedding_provider=FakeVisualEmbeddingProvider(),
-        vector_store=store,
-        collection="agromech_visual_pages",
         embedding_version="vis_v1",
-        embedding_dimension=4,
+        embedding_dimension=1024,
     ).index_document("doc-visual")
 
     assert result.chunk_count == 1
     with engine.connect() as connection:
-        rows = connection.execute(select(visual_page_embeddings)).mappings().all()
+        rows = connection.execute(select(visual_page_vector_embeddings)).mappings().all()
+    assert len(rows) == 1
     assert rows[0]["asset_id"] == "asset-page-1"
-    assert rows[0]["collection"] == "agromech_visual_pages"
-    assert rows[0]["vector_id"] == "zvec://agromech_visual_pages/asset-page-1"
-    assert (tmp_path / "zvec" / "agromech_visual_pages.json").exists()
-
-    results = visual_page_search(
-        engine,
-        "hydraulic pump location",
-        embedding_provider=FakeVisualEmbeddingProvider(),
-        vector_store=store,
-        collection="agromech_visual_pages",
-        active_embedding_version="vis_v1",
-    )
-    assert results[0]["evidence_type"] == "visual_page"
-    assert results[0]["asset_id"] == "asset-page-1"
-    assert results[0]["page_number"] == 1
+    assert rows[0]["document_id"] == "doc-visual"
+    assert rows[0]["embedding_version"] == "vis_v1"
+    assert rows[0]["status"] == "ready"
+    assert rows[0]["embedding_dimension"] == 1024
+    assert len(rows[0]["embedding"]) == 1024
 
 
 def test_index_document_records_embedding_version_profile_and_dimension(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
-    seed_document_with_chunks(engine)
+    seed_searchable_document(engine)
 
     SearchIndexer(
         engine,
         embedding_version="emb_v2",
         chunk_profile="chunk-v2",
-        embedding_dimension=256,
+        embedding_dimension=1024,
     ).index_document("doc-1")
 
     with engine.connect() as connection:
         search_rows = connection.execute(select(chunk_search_index)).mappings().all()
-        embeddings = connection.execute(select(embedding_references)).mappings().all()
+        embeddings = connection.execute(select(chunk_vector_embeddings)).mappings().all()
     assert {row["embedding_version"] for row in search_rows} == {"emb_v2"}
     assert {row["chunk_profile"] for row in search_rows} == {"chunk-v2"}
-    assert {row["embedding_dimension"] for row in search_rows} == {256}
+    assert {row["embedding_dimension"] for row in search_rows} == {1024}
     assert {row["embedding_version"] for row in embeddings} == {"emb_v2"}
     assert {row["chunk_profile"] for row in embeddings} == {"chunk-v2"}
-    assert {row["embedding_dimension"] for row in embeddings} == {256}
+    assert {row["embedding_dimension"] for row in embeddings} == {1024}
 
 
-def test_vector_search_filters_to_active_embedding_version(tmp_path) -> None:
+def test_vector_search_returns_pgvector_refs(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
-    seed_document_with_chunks(engine)
-    SearchIndexer(engine, embedding_version="emb_old").index_document("doc-1")
-
-    with engine.begin() as connection:
-        connection.execute(
-            insert(document_chunks).values(
-                id="image-new",
-                document_id="doc-1",
-                chunk_type=ChunkType.IMAGE.value,
-                content="Visual description: dashboard hydraulic warning",
-                summary="dashboard hydraulic warning",
-                source_locator={"type": "image", "source_file": "new-label.png"},
-            )
-        )
-    SearchIndexer(engine, embedding_version="emb_new").index_document("doc-1")
-
-    old_results = vector_search(engine, "dashboard hydraulic warning", active_embedding_version="emb_old")
-    new_results = vector_search(engine, "dashboard hydraulic warning", active_embedding_version="emb_new")
-
-    assert "image-new" not in {result["chunk_id"] for result in old_results}
-    assert all(result["embedding_version"] == "emb_old" for result in old_results)
-    assert "image-new" in {result["chunk_id"] for result in new_results}
-    assert all(result["embedding_version"] == "emb_new" for result in new_results)
-
-
-def test_vector_search_can_query_zvec_and_return_vector_refs(tmp_path) -> None:
-    engine = create_test_engine(tmp_path)
-    seed_document_with_chunks(engine)
-    store = ZvecVectorStore.from_path(tmp_path / "zvec", expected_dimension=256)
-    SearchIndexer(engine, vector_store=store, collection="agromech_text_chunks").index_document("doc-1")
+    document_id, chunk_id = seed_searchable_document(engine, content="dashboard hydraulic warning")
+    SearchIndexer(
+        engine,
+        embedding_provider=DeterministicEmbeddingProvider(),
+        embedding_version="emb_test",
+        embedding_dimension=256,
+    ).index_document(document_id)
 
     results = vector_search(
         engine,
         "dashboard hydraulic warning",
-        vector_store=store,
-        collection="agromech_text_chunks",
-        limit=5,
+        active_embedding_version="emb_test",
+        embedding_provider=DeterministicEmbeddingProvider(),
     )
 
-    chunk_ids = {result["chunk_id"] for result in results}
-    assert {"text-1", "table-1", "image-1"}.issubset(chunk_ids)
-    assert results[0]["vector_ref"].startswith("zvec://agromech_text_chunks/")
-    assert all(result["score"] > 0 for result in results)
-    assert {result["chunk_type"] for result in results} >= {ChunkType.TEXT.value, ChunkType.TABLE.value, ChunkType.IMAGE.value}
+    assert results[0]["chunk_id"] == chunk_id
+    assert results[0]["embedding_id"]
+    assert results[0]["vector_ref"].startswith("pgvector://chunk_vector_embeddings/")
 
 
-def test_run_once_uses_configured_zvec_store(tmp_path, monkeypatch) -> None:
+def test_visual_page_search_returns_pgvector_refs(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    document_id, asset_id = seed_page_image_asset(engine, tmp_path)
+    provider = DeterministicVisualEmbeddingProvider(dimension=4)
+    VisualPageIndexer(
+        engine,
+        embedding_provider=provider,
+        embedding_version="vis_test",
+        embedding_dimension=4,
+    ).index_document(document_id)
+
+    results = visual_page_search(
+        engine,
+        "hydraulic page",
+        active_embedding_version="vis_test",
+        embedding_provider=provider,
+    )
+
+    assert results[0]["asset_id"] == asset_id
+    assert results[0]["embedding_id"]
+    assert results[0]["vector_ref"].startswith("pgvector://visual_page_vector_embeddings/")
+
+
+def test_vector_search_uses_pgvector_distance_operator_for_postgres() -> None:
+    captured = {}
+
+    class FakeDialect:
+        name = "postgresql"
+
+    class FakeResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [
+                {
+                    "embedding_id": "embedding-1",
+                    "chunk_id": "chunk-1",
+                    "embedding_version": "emb_test",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "score": 0.82,
+                }
+            ]
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def execute(self, statement):
+            captured["sql"] = str(statement.compile(dialect=postgresql.dialect()))
+            captured["params"] = statement.compile(dialect=postgresql.dialect()).params
+            return FakeResult()
+
+    class FakeEngine:
+        dialect = FakeDialect()
+
+        def connect(self):
+            return FakeConnection()
+
+    class FakeProvider:
+        def embed(self, text):
+            assert text == "hydraulic"
+            return [1.0, 0.0]
+
+    results = vector_search(
+        FakeEngine(),
+        "hydraulic",
+        active_embedding_version="emb_test",
+        embedding_provider=FakeProvider(),
+    )
+
+    assert "<=>" in captured["sql"]
+    assert "LIMIT" in captured["sql"]
+    assert len(captured["params"]["query_embedding"]) == 1024
+    assert results == [
+        {
+            "chunk_id": "chunk-1",
+            "score": 0.82,
+            "chunk_type": ChunkType.TEXT.value,
+            "embedding_version": "emb_test",
+            "embedding_id": "embedding-1",
+            "vector_ref": "pgvector://chunk_vector_embeddings/embedding-1",
+        }
+    ]
+
+
+def test_visual_page_search_uses_pgvector_distance_operator_for_postgres() -> None:
+    captured = {}
+
+    class FakeDialect:
+        name = "postgresql"
+
+    class FakeResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [
+                {
+                    "embedding_id": "visual-embedding-1",
+                    "asset_id": "asset-1",
+                    "document_id": "doc-1",
+                    "page_number": 1,
+                    "embedding_version": "vis_test",
+                    "storage_uri": "file:///tmp/page.png",
+                    "source_locator": {"type": "pdf_page", "page": 1},
+                    "ocr_text": "hydraulic diagram",
+                    "visual_observation": {"description": "pump"},
+                    "score": 0.77,
+                }
+            ]
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def execute(self, statement):
+            captured["sql"] = str(statement.compile(dialect=postgresql.dialect()))
+            captured["params"] = statement.compile(dialect=postgresql.dialect()).params
+            return FakeResult()
+
+    class FakeEngine:
+        dialect = FakeDialect()
+
+        def connect(self):
+            return FakeConnection()
+
+    class FakeProvider:
+        def embed_query(self, text):
+            assert text == "hydraulic page"
+            return [1.0, 0.0]
+
+    results = visual_page_search(
+        FakeEngine(),
+        "hydraulic page",
+        active_embedding_version="vis_test",
+        embedding_provider=FakeProvider(),
+    )
+
+    assert "<=>" in captured["sql"]
+    assert "LIMIT" in captured["sql"]
+    assert len(captured["params"]["query_embedding"]) == 1024
+    assert results[0]["asset_id"] == "asset-1"
+    assert results[0]["vector_ref"] == "pgvector://visual_page_vector_embeddings/visual-embedding-1"
+
+
+def test_vector_search_filters_to_active_embedding_version(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    document_id, chunk_id = seed_searchable_document(engine, content="dashboard hydraulic warning")
+    SearchIndexer(
+        engine,
+        embedding_provider=DeterministicEmbeddingProvider(),
+        embedding_version="emb_active",
+        embedding_dimension=256,
+    ).index_document(document_id)
+    SearchIndexer(
+        engine,
+        embedding_provider=DeterministicEmbeddingProvider(),
+        embedding_version="emb_old",
+        embedding_dimension=256,
+    ).index_document(document_id)
+
+    results = vector_search(
+        engine,
+        "dashboard hydraulic warning",
+        active_embedding_version="emb_active",
+        embedding_provider=DeterministicEmbeddingProvider(),
+    )
+
+    assert results
+    assert results[0]["chunk_id"] == chunk_id
+    assert {result["embedding_version"] for result in results} == {"emb_active"}
+
+
+def test_run_once_uses_configured_embedding_provider(tmp_path, monkeypatch) -> None:
     engine = create_test_engine(tmp_path)
     source_path = tmp_path / "manual.txt"
     source_path.write_text("Kubota M7040 hydraulic pump", encoding="utf-8")
@@ -290,14 +432,44 @@ def test_run_once_uses_configured_zvec_store(tmp_path, monkeypatch) -> None:
         _env_file=None,
         file_storage_backend="local",
         graph_backend="local",
-        vector_backend="zvec",
         model_provider="local",
         embedding_provider="local",
-        zvec_path=str(tmp_path / "zvec"),
-        zvec_collection="agromech_text_chunks",
         embedding_dimension=256,
     )
     monkeypatch.setattr("agromech_worker.main.get_settings", lambda: settings)
+    captured = {}
+
+    class FakeEmbeddingProvider:
+        pass
+
+    class FakeVisualEmbeddingProvider:
+        pass
+
+    class FakeSearchIndexer:
+        def __init__(self, active_engine, *, embedding_provider):
+            captured["engine"] = active_engine
+            captured["embedding_provider"] = embedding_provider
+
+        def index_document(self, document_id):
+            return type("IndexResult", (), {"chunk_count": 1})()
+
+    class FakeVisualPageIndexer:
+        def __init__(self, active_engine, *, embedding_provider):
+            captured["visual_engine"] = active_engine
+            captured["visual_embedding_provider"] = embedding_provider
+
+    fake_embedding_provider = FakeEmbeddingProvider()
+    fake_visual_embedding_provider = FakeVisualEmbeddingProvider()
+    monkeypatch.setattr(
+        "agromech_api.integrations.embeddings.text.build_embedding_provider",
+        lambda active_settings: fake_embedding_provider,
+    )
+    monkeypatch.setattr(
+        "agromech_api.integrations.embeddings.visual.build_visual_embedding_provider",
+        lambda active_settings: fake_visual_embedding_provider,
+    )
+    monkeypatch.setattr("agromech_worker.main.SearchIndexer", FakeSearchIndexer)
+    monkeypatch.setattr("agromech_worker.main.VisualPageIndexer", FakeVisualPageIndexer)
 
     with engine.begin() as connection:
         connection.execute(
@@ -328,30 +500,29 @@ def test_run_once_uses_configured_zvec_store(tmp_path, monkeypatch) -> None:
     result = run_once(engine=engine)
 
     assert result == "succeeded"
-    with engine.connect() as connection:
-        embedding = connection.execute(select(embedding_references)).mappings().one()
-    assert embedding["vector_store"] == "zvec"
-    assert embedding["collection"] == "agromech_text_chunks"
-    assert embedding["vector_id"].startswith("zvec://agromech_text_chunks/")
-    assert (tmp_path / "zvec" / "agromech_text_chunks.json").exists()
+    assert captured == {
+        "engine": engine,
+        "embedding_provider": fake_embedding_provider,
+        "visual_engine": engine,
+        "visual_embedding_provider": fake_visual_embedding_provider,
+    }
 
 
-def test_keyword_and_vector_search_recall_text_table_and_image_chunks(tmp_path) -> None:
+def test_keyword_search_recalls_text_table_and_image_chunks(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
-    seed_document_with_chunks(engine)
+    seed_searchable_document(engine)
     SearchIndexer(engine).index_document("doc-1")
 
     keyword_results = keyword_search(engine, "E02 fuel filter")
-    vector_results = vector_search(engine, "dashboard hydraulic warning")
 
     assert keyword_results[0]["chunk_id"] == "table-1"
     assert any(result["chunk_id"] == "text-1" for result in keyword_search(engine, "M7040 pump"))
-    assert vector_results[0]["chunk_id"] == "image-1"
+    assert any(result["chunk_id"] == "image-1" for result in keyword_search(engine, "dashboard hydraulic warning"))
 
 
 def test_keyword_search_recalls_document_title_and_table_fields(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
-    seed_document_with_chunks(engine)
+    seed_searchable_document(engine)
     SearchIndexer(engine).index_document("doc-1")
 
     title_results = keyword_search(engine, "维修手册")

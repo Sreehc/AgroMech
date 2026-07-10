@@ -19,6 +19,7 @@ dependencies = [
   "pydantic-settings>=2.4.0",
   "oss2>=2.18.0",
   "neo4j>=5.28.0",
+  "pgvector>=0.3.0",
   "pika>=1.3.2",
   "langchain-core>=0.3.0",
   "langgraph>=0.2.0"
@@ -35,4 +36,4 @@ where = ["backend", "worker"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests", "worker/tests"]
-pythonpath = ["backend", "worker"]
+pythonpath = [".", "backend", "worker"]

@@ -8,7 +8,7 @@
 - 数据库：Postgres，复用 `../infrastructure`。
 - 队列：RabbitMQ，复用 `../infrastructure/compose/docker-compose.mq.yml`。
 - 图谱：当前主链路暂不启用；Neo4j 和本地图谱代码保留为后续增强。
-- 向量：Zvec，本项目 `.agromech-data/zvec`。
+- 向量：PostgreSQL + pgvector，文本和视觉向量与业务数据同库。
 - 文件：local fallback 或阿里云 OSS。
 - 模型：阿里云百炼用于 LLM、embedding、vision、rerank；PaddleOCR 云 API 可用于 OCR 文本模式。
 - Agentic QA：LangGraph 编排；langchain-core tool 包装检索工具。
@@ -20,7 +20,7 @@ Frontend
   -> FastAPI API
      -> Documents / Auth / Chat Sessions / QA / Retrieval Trace
      -> Postgres
-     -> Zvec
+     -> Postgres / pgvector
      -> Bailian / PaddleOCR
   -> Worker
      -> IngestTaskRunner
@@ -43,7 +43,7 @@ backend/agromech_api/
   db/                      # SQLAlchemy Core 表和枚举
   documents/               # 资料库上传、查询、详情服务
   ingestion/               # 文档解析、OCR、视觉观察、元数据回填
-  integrations/            # 外部服务适配器、队列、存储、向量库
+  integrations/            # 外部服务适配器、队列、存储、模型服务
   qa/                      # /qa/text 和 /qa/image 路由及响应组织
   rag/                     # Agent、检索、生成、LangChain/LangGraph 组件
 ```
@@ -91,7 +91,7 @@ POST /documents
 
 - `backfill_document_metadata()` 使用 LLM 回填空的品牌、型号、类型、语言和来源字段。
 - `process_document_entities()`。
-- `SearchIndexer.index_document()` 写全文索引、embedding reference 和 Zvec。
+- `SearchIndexer.index_document()` 写全文索引和 `chunk_vector_embeddings` pgvector 向量。
 
 Graph RAG / Neo4j sync 当前不在主导入链路启用，相关模块暂存为后续增强。
 
@@ -104,7 +104,7 @@ Graph RAG / Neo4j sync 当前不在主导入链路启用，相关模块暂存为
 - query understanding：解析意图、型号、品牌、系统、部件、故障码、配件号和安全敏感性。
 - keyword：精确匹配型号、故障码、配件号、标题、表格字段。
 - structured：按文档元数据和实体链接过滤/加权。
-- vector：使用百炼 embedding 查询 Zvec。
+- vector：使用百炼 embedding 生成查询向量，在 pgvector 表中召回文本 chunk。
 - vision：图片 OCR、视觉描述和实体线索进入文本检索链路。
 - rerank：百炼 rerank，失败时 deterministic fallback，并写入 trace。
 
@@ -236,7 +236,8 @@ npm run dev --prefix frontend
 - `RABBITMQ_PUBLISH_ENABLED=false|true`
 - `RABBITMQ_URL`
 - `OCR_TEXT_MODE=legacy|cloud_text`
-- `VECTOR_BACKEND=zvec`
+- Postgres 容器需安装 pgvector，目标数据库通过迁移执行 `CREATE EXTENSION IF NOT EXISTS vector`
+- 迁移后既有 indexed 文档可运行 `.venv/bin/python scripts/rebuild-vector-index.py` 重建文本和视觉向量
 - `GRAPH_BACKEND=local`，当前默认不启用 Graph RAG
 - `MODEL_PROVIDER=bailian`
 - `EMBEDDING_PROVIDER=bailian`
@@ -260,7 +261,8 @@ curl http://127.0.0.1:8000/health/dependencies
 - 文档导入失败：看 task `stage/error_code/error_message`，确认文件类型、OCR、metadata、embedding、index 阶段。
 - RabbitMQ 不消费：确认 `infra-rabbitmq`、`RABBITMQ_URL`、`RABBITMQ_PUBLISH_ENABLED` 和 `consume_forever()`。
 - 回答无引用：检查 retrieval trace 的 final_evidence、rerank 阈值和 citations。
-- Zvec 异常：检查 `ZVEC_PATH`、collection、embedding dimension/version。
+- pgvector 异常：确认 Postgres 镜像已安装 pgvector、Alembic 迁移已执行到 head，且目标库存在 `vector` extension。
+- 向量召回为空：确认文档已完成索引；迁移后可运行 `.venv/bin/python scripts/rebuild-vector-index.py` 重建既有文档向量。
 - Bailian 失败：检查 API key、base URL、限流和 trace 中 degraded channel。
 
 ## 10. 评估

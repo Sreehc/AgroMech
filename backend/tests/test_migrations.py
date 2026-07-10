@@ -39,6 +39,24 @@ def test_alembic_revision_ids_fit_default_version_table_limit() -> None:
     assert too_long == []
 
 
+def test_pgvector_migration_file_exists() -> None:
+    path = next(Path("backend/alembic/versions").glob("0012_*_pgvector.py"))
+    contents = path.read_text(encoding="utf-8")
+    assert "CREATE EXTENSION IF NOT EXISTS vector" in contents
+    assert "chunk_vector_embeddings" in contents
+    assert "visual_page_vector_embeddings" in contents
+
+
+def test_initial_migration_enables_pgvector_before_creating_metadata() -> None:
+    path = Path("backend/alembic/versions/0001_create_core_tables.py")
+    contents = path.read_text(encoding="utf-8")
+
+    extension_position = contents.index("CREATE EXTENSION IF NOT EXISTS vector")
+    create_all_position = contents.index("metadata.create_all")
+
+    assert extension_position < create_all_position
+
+
 def test_alembic_migration_can_run_repeatedly(tmp_path: Path) -> None:
     database_path = tmp_path / "agromech.db"
     config = Config("alembic.ini")
@@ -57,14 +75,21 @@ def test_alembic_migration_can_run_repeatedly(tmp_path: Path) -> None:
     assert "qa_messages" in inspector.get_table_names()
     assert "ingest_tasks" in inspector.get_table_names()
     assert "evaluation_questions" in inspector.get_table_names()
+    assert "embedding_references" not in inspector.get_table_names()
+    assert "visual_page_embeddings" not in inspector.get_table_names()
+    assert "chunk_vector_embeddings" in inspector.get_table_names()
+    assert "visual_page_vector_embeddings" in inspector.get_table_names()
 
     search_columns = {column["name"] for column in inspector.get_columns("chunk_search_index")}
-    embedding_columns = {column["name"] for column in inspector.get_columns("embedding_references")}
+    chunk_embedding_columns = {column["name"] for column in inspector.get_columns("chunk_vector_embeddings")}
+    visual_embedding_columns = {column["name"] for column in inspector.get_columns("visual_page_vector_embeddings")}
     graph_edge_columns = {column["name"] for column in inspector.get_columns("graph_edges")}
     document_columns = {column["name"] for column in inspector.get_columns("documents")}
     retrieval_log_columns = {column["name"] for column in inspector.get_columns("retrieval_logs")}
     assert {"embedding_version", "chunk_profile", "embedding_dimension"}.issubset(search_columns)
-    assert {"embedding_version", "chunk_profile", "embedding_dimension"}.issubset(embedding_columns)
+    assert "embedding" not in search_columns
+    assert {"embedding_version", "chunk_profile", "embedding_dimension", "embedding"}.issubset(chunk_embedding_columns)
+    assert {"embedding_version", "embedding_dimension", "embedding"}.issubset(visual_embedding_columns)
     assert {"schema_version", "is_active", "valid_to"}.issubset(graph_edge_columns)
     assert "document_version" in document_columns
     assert "model_config" in retrieval_log_columns

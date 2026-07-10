@@ -8,7 +8,6 @@ from agromech_api.core.infrastructure import dependency_targets
 # `_env_file=None` isolates these unit tests from a developer's populated .env.
 LOCAL_BACKENDS = {
     "file_storage_backend": "local",
-    "vector_backend": "local",
     "graph_backend": "local",
     "model_provider": "local",
     "embedding_provider": "local",
@@ -38,8 +37,6 @@ def test_all_env_example_keys_load_into_settings() -> None:
     for field_name in (
         "oss_access_key_id",
         "oss_signed_url_ttl_seconds",
-        "zvec_path",
-        "zvec_backup_retention_days",
         "embedding_model",
         "embedding_dimension",
         "neo4j_uri",
@@ -103,6 +100,35 @@ def test_unknown_legacy_environment_values_are_ignored() -> None:
 
     assert not hasattr(settings, "legacy_username")
     assert not hasattr(settings, "legacy_password")
+
+
+def test_settings_no_longer_exposes_legacy_vector_configuration() -> None:
+    settings = Settings()
+    legacy_prefix = "z" + "vec"
+
+    assert not hasattr(settings, "vector_backend")
+    assert not hasattr(settings, f"{legacy_prefix}_path")
+    assert not hasattr(settings, f"{legacy_prefix}_collection")
+    assert not hasattr(settings, f"{legacy_prefix}_text_collection")
+    assert not hasattr(settings, f"{legacy_prefix}_visual_collection")
+    assert not hasattr(settings, f"{legacy_prefix}_backup_path")
+    assert not hasattr(settings, f"{legacy_prefix}_backup_retention_days")
+
+
+def test_settings_keep_embedding_provider_configuration() -> None:
+    settings = Settings(
+        embedding_provider="local",
+        embedding_model="text-embedding-v4",
+        embedding_dimension=1024,
+        visual_embedding_provider="local",
+        visual_embedding_model="qwen3-vl-embedding",
+        visual_embedding_dimension=1024,
+    )
+
+    assert settings.embedding_provider == "local"
+    assert settings.embedding_dimension == 1024
+    assert settings.visual_embedding_provider == "local"
+    assert settings.visual_embedding_dimension == 1024
 
 
 def test_auth_token_secret_remains_required_for_database_auth() -> None:
@@ -199,37 +225,103 @@ def test_oss_error_sanitizer_omits_credentials() -> None:
     assert "code=AccessDenied" in message
 
 
-def test_zvec_health_check_reports_ok_when_storage_paths_are_available(tmp_path) -> None:
-    from agromech_api.core.infrastructure import check_zvec_storage
+def test_infrastructure_health_does_not_require_legacy_vector_settings() -> None:
+    from agromech_api.core.infrastructure import check_infrastructure
 
-    settings = local_settings(
-        vector_backend="zvec",
-        zvec_path=str(tmp_path / "zvec"),
-        zvec_backup_path=str(tmp_path / "backups"),
-    )
+    checks = check_infrastructure(Settings(_env_file=None))
 
-    check = check_zvec_storage(settings)
+    assert {check.name for check in checks} >= {"postgres", "file_storage", "pgvector", "bailian"}
+    assert "z" + "vec" not in {check.name for check in checks}
 
-    assert check.name == "zvec"
+
+def test_pgvector_extension_health_check_uses_supplied_engine() -> None:
+    from agromech_api.core.infrastructure import check_pgvector_extension
+
+    class FakeResult:
+        def scalar_one_or_none(self):
+            return "vector"
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, statement):
+            assert "pg_extension" in str(statement)
+            return FakeResult()
+
+    class FakeEngine:
+        url = "postgresql+psycopg://agromech:***@localhost:5432/agromech"
+
+        def connect(self):
+            return FakeConnection()
+
+    check = check_pgvector_extension(FakeEngine())
+
+    assert check.name == "pgvector"
     assert check.status == "ok"
-    assert check.target == str(tmp_path / "zvec")
+    assert check.target == "postgres:extension/vector"
 
 
-def test_zvec_health_check_reports_unavailable_on_unwritable_storage_path(tmp_path) -> None:
-    from agromech_api.core.infrastructure import check_zvec_storage
+def test_pgvector_extension_health_check_reports_missing_extension() -> None:
+    from agromech_api.core.infrastructure import check_pgvector_extension
 
-    blocker = tmp_path / "zvec-blocker"
-    blocker.write_bytes(b"not a directory")
-    settings = local_settings(
-        vector_backend="zvec",
-        zvec_path=str(blocker / "store"),
-        zvec_backup_path=str(tmp_path / "backups"),
-    )
+    class FakeResult:
+        def scalar_one_or_none(self):
+            return None
 
-    check = check_zvec_storage(settings)
+    class FakeConnection:
+        def __enter__(self):
+            return self
 
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, statement):
+            assert "pg_extension" in str(statement)
+            return FakeResult()
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    check = check_pgvector_extension(FakeEngine())
+
+    assert check.name == "pgvector"
     assert check.status == "unavailable"
-    assert "secret" not in (check.error or "")
+    assert check.target == "postgres:extension/vector"
+    assert check.error == "pgvector extension is not installed"
+
+
+def test_pgvector_extension_health_check_sanitizes_database_errors() -> None:
+    from agromech_api.core.infrastructure import check_pgvector_extension
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, statement):
+            raise RuntimeError(
+                "could not connect to postgresql+psycopg://user:secret@localhost:5432/agromech"
+            )
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    check = check_pgvector_extension(FakeEngine())
+
+    assert check.name == "pgvector"
+    assert check.status == "unavailable"
+    assert check.error
+    assert "secret" not in check.error
+    assert "user:secret" not in check.error
+    assert "postgresql+psycopg://" not in check.error
 
 
 def test_bailian_health_check_reports_unavailable_when_required_config_is_missing() -> None:

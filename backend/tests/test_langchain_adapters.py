@@ -7,10 +7,8 @@ from agromech_api.rag.langchain.adapters import (
     AgroMechTextRetriever,
     AgroMechVisualPageRetriever,
     ProviderEmbeddings,
-    ZvecLangChainVectorStore,
     build_answer_chain,
 )
-from agromech_api.integrations.vectorstores.zvec import ZvecVectorStore
 
 
 class FakeProvider:
@@ -31,26 +29,18 @@ def test_provider_embeddings_exposes_langchain_and_project_interfaces() -> None:
     assert embeddings.model == "fake-embedding"
 
 
-def test_zvec_langchain_vectorstore_wraps_zvec_queries(tmp_path) -> None:
-    native_store = ZvecVectorStore.from_path(tmp_path / "zvec", expected_dimension=2)
-    embeddings = ProviderEmbeddings(FakeProvider())
-    documents = {
-        "chunk-a": Document(page_content="aaa", metadata={"chunk_id": "chunk-a"}),
-        "chunk-b": Document(page_content="bbbbbb", metadata={"chunk_id": "chunk-b"}),
-    }
-    vector_store = ZvecLangChainVectorStore(
-        native_store,
-        collection="agromech_text_chunks",
-        embedding=embeddings,
-        document_lookup=lambda chunk_id: documents[chunk_id],
-    )
+def test_provider_embeddings_wraps_project_embedding_provider() -> None:
+    class Provider:
+        provider = "local"
+        model = "deterministic"
 
-    ids = vector_store.add_texts(["aaa", "bbbbbb"], ids=["chunk-a", "chunk-b"])
-    results = vector_store.similarity_search("bbbbbb", k=1)
+        def embed(self, text: str) -> list[float]:
+            return [float(len(text))]
 
-    assert ids == ["zvec://agromech_text_chunks/chunk-a", "zvec://agromech_text_chunks/chunk-b"]
-    assert results == [documents["chunk-b"]]
-    assert vector_store.query(collection="agromech_text_chunks", embedding=[6.0, 1.0], limit=1)[0]["chunk_id"] == "chunk-b"
+    embeddings = ProviderEmbeddings(Provider())
+
+    assert embeddings.embed_query("abc") == [3.0]
+    assert embeddings.embed_documents(["a", "abcd"]) == [[1.0], [4.0]]
 
 
 def test_text_retriever_returns_langchain_documents_and_original_payload() -> None:

@@ -25,7 +25,6 @@ def test_build_task_publisher_returns_noop_when_disabled() -> None:
     settings = Settings(
         _env_file=None,
         file_storage_backend="local",
-        vector_backend="local",
         graph_backend="local",
         model_provider="local",
         embedding_provider="local",

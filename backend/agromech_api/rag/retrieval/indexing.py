@@ -8,23 +8,25 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from sqlalchemy import Engine, delete, insert, or_, select
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import Engine, bindparam, delete, insert, literal, or_, select
 
 from agromech_api.core.config import get_settings
 from agromech_api.db.enums import AssetType
 from agromech_api.db.models import (
+    chunk_vector_embeddings,
     chunk_search_index,
     document_assets,
     document_chunks,
     documents,
-    embedding_references,
-    visual_page_embeddings,
+    visual_page_vector_embeddings,
 )
 from agromech_api.ingestion.runner import IngestFailure
 from agromech_api.integrations.embeddings.visual import DeterministicVisualEmbeddingProvider
 
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]+|[\u4e00-\u9fff]+")
+PGVECTOR_DIMENSION = 1024
 
 
 @dataclass(frozen=True)
@@ -36,8 +38,11 @@ class DeterministicEmbeddingProvider:
     provider = "local"
     model = "deterministic-token-hash"
 
+    def __init__(self, *, dimension: int = 1024) -> None:
+        self.dimension = dimension
+
     def embed(self, text: str) -> list[float]:
-        vector = [0.0] * 256
+        vector = [0.0] * self.dimension
         for token in tokenize(text):
             digest = hashlib.sha256(token.encode("utf-8")).digest()
             index = digest[0] % len(vector)
@@ -56,31 +61,21 @@ class FailingEmbeddingProvider:
         raise RuntimeError("Embedding service unavailable")
 
 
-class LocalVectorStore:
-    name = "milvus"
-
-    def upsert(self, *, collection: str, chunk_id: str, embedding: list[float]) -> str:
-        digest = hashlib.sha256(f"{collection}:{chunk_id}:{embedding}".encode("utf-8")).hexdigest()
-        return f"{collection}:{digest[:24]}"
-
-
 class SearchIndexer:
     def __init__(
         self,
         engine: Engine,
         *,
         embedding_provider=None,
-        vector_store=None,
-        collection: str | None = None,
         embedding_version: str | None = None,
         chunk_profile: str | None = None,
         embedding_dimension: int | None = None,
     ) -> None:
         settings = get_settings()
         self.engine = engine
-        self.embedding_provider = embedding_provider or DeterministicEmbeddingProvider()
-        self.vector_store = vector_store or LocalVectorStore()
-        self.collection = collection or settings.zvec_text_collection
+        self.embedding_provider = embedding_provider or DeterministicEmbeddingProvider(
+            dimension=embedding_dimension or settings.embedding_dimension
+        )
         self.embedding_version = embedding_version or settings.embedding_version
         self.chunk_profile = chunk_profile or settings.chunk_profile
         self.embedding_dimension = embedding_dimension or settings.embedding_dimension
@@ -104,14 +99,6 @@ class SearchIndexer:
                 embedding = self.embedding_provider.embed(search_text)
             except Exception as exc:
                 raise IngestFailure("embedding_failed", str(exc), stage="index") from exc
-            try:
-                vector_id = self.vector_store.upsert(
-                    collection=self.collection,
-                    chunk_id=chunk["id"],
-                    embedding=embedding,
-                )
-            except Exception as exc:
-                raise IngestFailure("vector_index_failed", str(exc), stage="index") from exc
 
             search_rows.append(
                 {
@@ -120,7 +107,6 @@ class SearchIndexer:
                     "document_id": document_id,
                     "chunk_type": chunk["chunk_type"],
                     "search_text": search_text,
-                    "embedding": embedding,
                     "embedding_version": self.embedding_version,
                     "chunk_profile": self.chunk_profile,
                     "embedding_dimension": len(embedding),
@@ -130,14 +116,13 @@ class SearchIndexer:
                 {
                     "id": str(uuid4()),
                     "chunk_id": chunk["id"],
+                    "document_id": document_id,
                     "provider": self.embedding_provider.provider,
                     "model": self.embedding_provider.model,
                     "embedding_version": self.embedding_version,
                     "chunk_profile": self.chunk_profile,
                     "embedding_dimension": len(embedding),
-                    "vector_store": self.vector_store.name,
-                    "collection": self.collection,
-                    "vector_id": vector_id,
+                    "embedding": pgvector_storage_embedding(embedding),
                     "status": "ready",
                 }
             )
@@ -155,15 +140,15 @@ class SearchIndexer:
                     )
                 )
                 connection.execute(
-                    delete(embedding_references).where(
-                        embedding_references.c.chunk_id.in_(chunk_ids),
-                        embedding_references.c.embedding_version == self.embedding_version,
+                    delete(chunk_vector_embeddings).where(
+                        chunk_vector_embeddings.c.chunk_id.in_(chunk_ids),
+                        chunk_vector_embeddings.c.embedding_version == self.embedding_version,
                     )
                 )
             if search_rows:
                 connection.execute(insert(chunk_search_index), search_rows)
             if embedding_rows:
-                connection.execute(insert(embedding_references), embedding_rows)
+                connection.execute(insert(chunk_vector_embeddings), embedding_rows)
         return IndexResult(chunk_count=len(search_rows))
 
 
@@ -173,8 +158,6 @@ class VisualPageIndexer:
         engine: Engine,
         *,
         embedding_provider=None,
-        vector_store=None,
-        collection: str | None = None,
         embedding_version: str | None = None,
         embedding_dimension: int | None = None,
     ) -> None:
@@ -183,8 +166,6 @@ class VisualPageIndexer:
         self.embedding_provider = embedding_provider or DeterministicVisualEmbeddingProvider(
             dimension=settings.visual_embedding_dimension
         )
-        self.vector_store = vector_store or LocalVectorStore()
-        self.collection = collection or settings.zvec_visual_collection
         self.embedding_version = embedding_version or settings.visual_embedding_version
         self.embedding_dimension = embedding_dimension or settings.visual_embedding_dimension
 
@@ -203,14 +184,6 @@ class VisualPageIndexer:
                 embedding = self.embedding_provider.embed_image(image_path, text=asset["ocr_text"])
             except Exception as exc:
                 raise IngestFailure("visual_embedding_failed", str(exc), stage="visual_embedding") from exc
-            try:
-                vector_id = self.vector_store.upsert(
-                    collection=self.collection,
-                    chunk_id=asset["id"],
-                    embedding=embedding,
-                )
-            except Exception as exc:
-                raise IngestFailure("visual_vector_index_failed", str(exc), stage="visual_embedding") from exc
             rows.append(
                 {
                     "id": str(uuid4()),
@@ -221,9 +194,7 @@ class VisualPageIndexer:
                     "model": self.embedding_provider.model,
                     "embedding_version": self.embedding_version,
                     "embedding_dimension": len(embedding),
-                    "vector_store": self.vector_store.name,
-                    "collection": self.collection,
-                    "vector_id": vector_id,
+                    "embedding": pgvector_storage_embedding(embedding),
                     "status": "ready",
                 }
             )
@@ -232,13 +203,13 @@ class VisualPageIndexer:
             asset_ids = [asset["id"] for asset in assets]
             if asset_ids:
                 connection.execute(
-                    delete(visual_page_embeddings).where(
-                        visual_page_embeddings.c.asset_id.in_(asset_ids),
-                        visual_page_embeddings.c.embedding_version == self.embedding_version,
+                    delete(visual_page_vector_embeddings).where(
+                        visual_page_vector_embeddings.c.asset_id.in_(asset_ids),
+                        visual_page_vector_embeddings.c.embedding_version == self.embedding_version,
                     )
                 )
             if rows:
-                connection.execute(insert(visual_page_embeddings), rows)
+                connection.execute(insert(visual_page_vector_embeddings), rows)
         return IndexResult(chunk_count=len(rows))
 
 
@@ -278,49 +249,60 @@ def vector_search(
     limit: int = 10,
     active_embedding_version: str | None = None,
     embedding_provider=None,
-    vector_store=None,
-    collection: str | None = None,
+    viewer_user_id: str | None = None,
 ) -> list[dict[str, object]]:
-    provider = embedding_provider or DeterministicEmbeddingProvider()
+    settings = get_settings()
+    provider = embedding_provider or DeterministicEmbeddingProvider(dimension=settings.embedding_dimension)
+    embedding_version = active_embedding_version or settings.embedding_version
     query_embedding = provider.embed(query)
-    active_version = active_embedding_version or get_settings().embedding_version
-    if vector_store is not None:
-        return zvec_vector_search(
+    if engine.dialect.name == "postgresql":
+        return postgres_vector_search(
             engine,
-            vector_store=vector_store,
-            collection=collection or get_settings().zvec_collection,
-            query_embedding=query_embedding,
-            active_embedding_version=active_version,
+            pgvector_storage_embedding(query_embedding),
+            embedding_version=embedding_version,
             limit=limit,
+            viewer_user_id=viewer_user_id,
         )
+    statement = (
+        select(
+            chunk_vector_embeddings.c.id.label("embedding_id"),
+            chunk_vector_embeddings.c.chunk_id,
+            chunk_vector_embeddings.c.embedding_version,
+            chunk_vector_embeddings.c.embedding,
+            document_chunks.c.chunk_type,
+        )
+        .select_from(
+            chunk_vector_embeddings.join(
+                document_chunks,
+                chunk_vector_embeddings.c.chunk_id == document_chunks.c.id,
+            ).join(
+                documents,
+                chunk_vector_embeddings.c.document_id == documents.c.id,
+            )
+        )
+        .where(chunk_vector_embeddings.c.embedding_version == embedding_version)
+        .where(chunk_vector_embeddings.c.status == "ready")
+        .where(visible_document_condition(viewer_user_id))
+    )
     with engine.connect() as connection:
-        rows = connection.execute(
-            select(chunk_search_index).where(chunk_search_index.c.embedding_version == active_version)
-        ).mappings().all()
+        rows = connection.execute(statement).mappings().all()
+
     scored = []
     for row in rows:
-        score = cosine_similarity(query_embedding, row["embedding"])
+        score = cosine_similarity(query_embedding, vector_values(row["embedding"]))
         if score > 0:
+            embedding_id = str(row["embedding_id"])
             scored.append(
                 {
                     "chunk_id": row["chunk_id"],
                     "score": score,
                     "chunk_type": row["chunk_type"],
                     "embedding_version": row["embedding_version"],
+                    "embedding_id": embedding_id,
+                    "vector_ref": f"pgvector://chunk_vector_embeddings/{embedding_id}",
                 }
             )
     return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
-
-
-def _visual_visibility_condition(viewer_user_id: str | None):
-    # 可视页检索的可见性过滤（fail-closed）：公用文档对所有人可见，私有文档仅
-    # 归属者本人可见，匿名访客（viewer_user_id 为 None）只保留公用文档。
-    if viewer_user_id is None:
-        return documents.c.visibility == "public"
-    return or_(
-        documents.c.visibility == "public",
-        documents.c.owner_user_id == viewer_user_id,
-    )
 
 
 def visual_page_search(
@@ -330,135 +312,73 @@ def visual_page_search(
     limit: int = 5,
     active_embedding_version: str | None = None,
     embedding_provider=None,
-    vector_store=None,
-    collection: str | None = None,
     viewer_user_id: str | None = None,
 ) -> list[dict[str, object]]:
     settings = get_settings()
     provider = embedding_provider or DeterministicVisualEmbeddingProvider(
         dimension=settings.visual_embedding_dimension
     )
+    embedding_version = active_embedding_version or settings.visual_embedding_version
     query_embedding = provider.embed_query(query)
-    active_version = active_embedding_version or settings.visual_embedding_version
-    active_collection = collection or settings.zvec_visual_collection
-    if vector_store is None:
-        with engine.connect() as connection:
-            rows = connection.execute(
-                select(visual_page_embeddings)
-                .where(visual_page_embeddings.c.embedding_version == active_version)
-                .where(visual_page_embeddings.c.collection == active_collection)
-                .where(visual_page_embeddings.c.status == "ready")
-            ).mappings().all()
-        store_results = [
-            {
-                "chunk_id": row["asset_id"],
-                "score": 1.0,
-                "vector_ref": row["vector_id"],
-            }
-            for row in rows
-        ][:limit]
-    else:
-        store_results = vector_store.query(
-            collection=active_collection,
-            embedding=query_embedding,
+    if engine.dialect.name == "postgresql":
+        return postgres_visual_page_search(
+            engine,
+            pgvector_storage_embedding(query_embedding),
+            embedding_version=embedding_version,
             limit=limit,
+            viewer_user_id=viewer_user_id,
         )
-    if not store_results:
-        return []
-    asset_ids = [str(result["chunk_id"]) for result in store_results]
-    with engine.connect() as connection:
-        rows = connection.execute(
-            select(
-                visual_page_embeddings.c.asset_id,
-                visual_page_embeddings.c.document_id,
-                visual_page_embeddings.c.page_number,
-                visual_page_embeddings.c.vector_id,
-                visual_page_embeddings.c.embedding_version,
-                document_assets.c.storage_uri,
-                document_assets.c.source_locator,
-                document_assets.c.ocr_text,
-                document_assets.c.visual_observation,
-                documents.c.title.label("document_title"),
+    statement = (
+        select(
+            visual_page_vector_embeddings.c.id.label("embedding_id"),
+            visual_page_vector_embeddings.c.asset_id,
+            visual_page_vector_embeddings.c.document_id,
+            visual_page_vector_embeddings.c.page_number,
+            visual_page_vector_embeddings.c.embedding_version,
+            visual_page_vector_embeddings.c.embedding,
+            document_assets.c.storage_uri,
+            document_assets.c.source_locator,
+            document_assets.c.ocr_text,
+            document_assets.c.visual_observation,
+        )
+        .select_from(
+            visual_page_vector_embeddings.join(
+                document_assets,
+                visual_page_vector_embeddings.c.asset_id == document_assets.c.id,
+            ).join(
+                documents,
+                visual_page_vector_embeddings.c.document_id == documents.c.id,
             )
-            .join(document_assets, document_assets.c.id == visual_page_embeddings.c.asset_id)
-            .join(documents, documents.c.id == visual_page_embeddings.c.document_id)
-            .where(visual_page_embeddings.c.asset_id.in_(asset_ids))
-            .where(visual_page_embeddings.c.embedding_version == active_version)
-            .where(visual_page_embeddings.c.collection == active_collection)
-            .where(visual_page_embeddings.c.status == "ready")
-            .where(_visual_visibility_condition(viewer_user_id))
-        ).mappings().all()
-    metadata_by_asset = {row["asset_id"]: row for row in rows}
-    results = []
-    for result in store_results:
-        asset_id = str(result["chunk_id"])
-        metadata = metadata_by_asset.get(asset_id)
-        if metadata is None:
-            continue
-        results.append(
-            {
-                "evidence_type": "visual_page",
-                "asset_id": asset_id,
-                "document_id": metadata["document_id"],
-                "document_title": metadata["document_title"],
-                "page_number": metadata["page_number"],
-                "source_locator": metadata["source_locator"],
-                "image_uri": metadata["storage_uri"],
-                "ocr_text": metadata["ocr_text"],
-                "visual_observation": metadata["visual_observation"],
-                "score": result["score"],
-                "embedding_version": metadata["embedding_version"],
-                "vector_ref": result.get("vector_ref") or metadata["vector_id"],
-                "accessible": True,
-            }
         )
-    return results
-
-
-def zvec_vector_search(
-    engine: Engine,
-    *,
-    vector_store,
-    collection: str,
-    query_embedding: list[float],
-    active_embedding_version: str,
-    limit: int,
-) -> list[dict[str, object]]:
-    store_results = vector_store.query(collection=collection, embedding=query_embedding, limit=limit)
-    if not store_results:
-        return []
-    chunk_ids = [str(result["chunk_id"]) for result in store_results]
+        .where(visual_page_vector_embeddings.c.embedding_version == embedding_version)
+        .where(visual_page_vector_embeddings.c.status == "ready")
+        .where(visible_document_condition(viewer_user_id))
+    )
     with engine.connect() as connection:
-        rows = connection.execute(
-            select(
-                document_chunks.c.id,
-                document_chunks.c.chunk_type,
-                embedding_references.c.vector_id,
-                embedding_references.c.embedding_version,
+        rows = connection.execute(statement).mappings().all()
+
+    scored = []
+    for row in rows:
+        score = cosine_similarity(query_embedding, vector_values(row["embedding"]))
+        if score > 0:
+            embedding_id = str(row["embedding_id"])
+            scored.append(
+                {
+                    "asset_id": row["asset_id"],
+                    "document_id": row["document_id"],
+                    "page_number": row["page_number"],
+                    "score": score,
+                    "source_locator": row["source_locator"],
+                    "ocr_text": row["ocr_text"],
+                    "visual_observation": row["visual_observation"],
+                    "image_uri": row["storage_uri"],
+                    "evidence_type": "visual_page",
+                    "embedding_version": row["embedding_version"],
+                    "embedding_id": embedding_id,
+                    "vector_ref": f"pgvector://visual_page_vector_embeddings/{embedding_id}",
+                }
             )
-            .join(embedding_references, embedding_references.c.chunk_id == document_chunks.c.id)
-            .where(document_chunks.c.id.in_(chunk_ids))
-            .where(embedding_references.c.embedding_version == active_embedding_version)
-            .where(embedding_references.c.collection == collection)
-            .where(embedding_references.c.status == "ready")
-        ).mappings().all()
-    metadata_by_chunk = {row["id"]: row for row in rows}
-    results = []
-    for result in store_results:
-        chunk_id = str(result["chunk_id"])
-        metadata = metadata_by_chunk.get(chunk_id)
-        if metadata is None:
-            continue
-        results.append(
-            {
-                "chunk_id": chunk_id,
-                "score": result["score"],
-                "chunk_type": metadata["chunk_type"],
-                "embedding_version": metadata["embedding_version"],
-                "vector_ref": result["vector_ref"],
-            }
-        )
-    return results
+    return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
 
 
 def tokenize(text: str) -> list[str]:
@@ -471,9 +391,153 @@ def token_score(query_tokens: list[str], text: str) -> int:
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
-    if not left or not right:
+    if len(left) == 0 or len(right) == 0:
         return 0.0
     return sum(a * b for a, b in zip(left, right))
+
+
+def postgres_vector_search(
+    engine: Engine,
+    query_embedding: list[float],
+    *,
+    embedding_version: str,
+    limit: int,
+    viewer_user_id: str | None,
+) -> list[dict[str, object]]:
+    distance = chunk_vector_embeddings.c.embedding.op("<=>")(
+        bindparam("query_embedding", query_embedding, type_=Vector(PGVECTOR_DIMENSION))
+    )
+    score = (literal(1.0) - distance).label("score")
+    statement = (
+        select(
+            chunk_vector_embeddings.c.id.label("embedding_id"),
+            chunk_vector_embeddings.c.chunk_id,
+            chunk_vector_embeddings.c.embedding_version,
+            document_chunks.c.chunk_type,
+            score,
+        )
+        .select_from(
+            chunk_vector_embeddings.join(
+                document_chunks,
+                chunk_vector_embeddings.c.chunk_id == document_chunks.c.id,
+            ).join(
+                documents,
+                chunk_vector_embeddings.c.document_id == documents.c.id,
+            )
+        )
+        .where(chunk_vector_embeddings.c.embedding_version == embedding_version)
+        .where(chunk_vector_embeddings.c.status == "ready")
+        .where(visible_document_condition(viewer_user_id))
+        .order_by(distance)
+        .limit(limit)
+    )
+    with engine.connect() as connection:
+        rows = connection.execute(statement).mappings().all()
+    results = []
+    for row in rows:
+        score_value = float(row["score"])
+        if score_value <= 0:
+            continue
+        embedding_id = str(row["embedding_id"])
+        results.append(
+            {
+                "chunk_id": row["chunk_id"],
+                "score": score_value,
+                "chunk_type": row["chunk_type"],
+                "embedding_version": row["embedding_version"],
+                "embedding_id": embedding_id,
+                "vector_ref": f"pgvector://chunk_vector_embeddings/{embedding_id}",
+            }
+        )
+    return results
+
+
+def postgres_visual_page_search(
+    engine: Engine,
+    query_embedding: list[float],
+    *,
+    embedding_version: str,
+    limit: int,
+    viewer_user_id: str | None,
+) -> list[dict[str, object]]:
+    distance = visual_page_vector_embeddings.c.embedding.op("<=>")(
+        bindparam("query_embedding", query_embedding, type_=Vector(PGVECTOR_DIMENSION))
+    )
+    score = (literal(1.0) - distance).label("score")
+    statement = (
+        select(
+            visual_page_vector_embeddings.c.id.label("embedding_id"),
+            visual_page_vector_embeddings.c.asset_id,
+            visual_page_vector_embeddings.c.document_id,
+            visual_page_vector_embeddings.c.page_number,
+            visual_page_vector_embeddings.c.embedding_version,
+            document_assets.c.storage_uri,
+            document_assets.c.source_locator,
+            document_assets.c.ocr_text,
+            document_assets.c.visual_observation,
+            score,
+        )
+        .select_from(
+            visual_page_vector_embeddings.join(
+                document_assets,
+                visual_page_vector_embeddings.c.asset_id == document_assets.c.id,
+            ).join(
+                documents,
+                visual_page_vector_embeddings.c.document_id == documents.c.id,
+            )
+        )
+        .where(visual_page_vector_embeddings.c.embedding_version == embedding_version)
+        .where(visual_page_vector_embeddings.c.status == "ready")
+        .where(visible_document_condition(viewer_user_id))
+        .order_by(distance)
+        .limit(limit)
+    )
+    with engine.connect() as connection:
+        rows = connection.execute(statement).mappings().all()
+    results = []
+    for row in rows:
+        score_value = float(row["score"])
+        if score_value <= 0:
+            continue
+        embedding_id = str(row["embedding_id"])
+        results.append(
+            {
+                "asset_id": row["asset_id"],
+                "document_id": row["document_id"],
+                "page_number": row["page_number"],
+                "score": score_value,
+                "source_locator": row["source_locator"],
+                "ocr_text": row["ocr_text"],
+                "visual_observation": row["visual_observation"],
+                "image_uri": row["storage_uri"],
+                "evidence_type": "visual_page",
+                "embedding_version": row["embedding_version"],
+                "embedding_id": embedding_id,
+                "vector_ref": f"pgvector://visual_page_vector_embeddings/{embedding_id}",
+            }
+        )
+    return results
+
+
+def visible_document_condition(viewer_user_id: str | None):
+    conditions = [documents.c.visibility == "public"]
+    if viewer_user_id is not None:
+        conditions.append(documents.c.owner_user_id == viewer_user_id)
+    return or_(*conditions)
+
+
+def vector_values(value) -> list[float]:
+    if hasattr(value, "to_list"):
+        return [float(item) for item in value.to_list()]
+    return [float(item) for item in value]
+
+
+def pgvector_storage_embedding(embedding: list[float]) -> list[float]:
+    if len(embedding) > PGVECTOR_DIMENSION:
+        raise ValueError(f"Embedding dimension {len(embedding)} exceeds pgvector({PGVECTOR_DIMENSION})")
+    if len(embedding) == PGVECTOR_DIMENSION:
+        return embedding
+    return [*embedding, *([0.0] * (PGVECTOR_DIMENSION - len(embedding)))]
 
 
 def local_file_path(storage_uri: str) -> Path:

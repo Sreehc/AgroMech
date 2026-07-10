@@ -42,3 +42,21 @@ def test_docs_directory_only_contains_curated_markdown_set() -> None:
     actual = {path.name for path in Path("docs").glob("*.md")}
 
     assert actual == expected
+
+
+def test_current_docs_do_not_describe_legacy_vector_store_as_active() -> None:
+    paths = [
+        "README.md",
+        "docs/README.md",
+        "docs/tech-design.md",
+        "docs/database-design.md",
+        "docs/api-spec.md",
+        "docs/deployment.md",
+        "docs/prd.md",
+        "docs/history.md",
+    ]
+
+    for path in paths:
+        text = Path(path).read_text(encoding="utf-8")
+        assert ("Z" + "vec") not in text, path
+        assert ("z" + "vec") not in text, path

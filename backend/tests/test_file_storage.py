@@ -16,7 +16,6 @@ def oss_settings(**overrides) -> Settings:
         "_env_file": None,
         "file_storage_backend": "oss",
         "graph_backend": "local",
-        "vector_backend": "local",
         "model_provider": "local",
         "embedding_provider": "local",
         "oss_region": "cn-beijing",
@@ -72,7 +71,6 @@ def test_build_file_storage_selects_local_by_default() -> None:
         _env_file=None,
         file_storage_backend="local",
         graph_backend="local",
-        vector_backend="local",
         model_provider="local",
         embedding_provider="local",
     )
