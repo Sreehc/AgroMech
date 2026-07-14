@@ -8,6 +8,9 @@ from agromech_api.core.config import Settings
 from agromech_api.core.infrastructure import DependencyCheck
 
 
+HEALTHY_DEPENDENCY_STATUSES = frozenset({"ok", "not_applicable"})
+
+
 def register_health_routes(
     app,
     *,
@@ -25,7 +28,11 @@ def register_health_routes(
     @app.get("/health/dependencies", tags=["system"])
     def dependency_health() -> dict[str, object]:
         checks = dependency_checker()
-        status = "ok" if all(check.status == "ok" for check in checks) else "degraded"
+        status = (
+            "ok"
+            if all(check.status in HEALTHY_DEPENDENCY_STATUSES for check in checks)
+            else "degraded"
+        )
         return {
             "status": status,
             "dependencies": [check.to_dict() for check in checks],
@@ -34,7 +41,7 @@ def register_health_routes(
     @app.get("/health/ready", tags=["system"])
     def readiness(response: Response) -> dict[str, object]:
         checks = dependency_checker()
-        ready = all(check.status == "ok" for check in checks)
+        ready = all(check.status in HEALTHY_DEPENDENCY_STATUSES for check in checks)
         if not ready:
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {

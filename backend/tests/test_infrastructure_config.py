@@ -1,4 +1,9 @@
+from contextlib import nullcontext
+import os
+from types import SimpleNamespace
+
 import pytest
+from sqlalchemy import create_engine
 
 from agromech_api.core.config import Settings
 from agromech_api.core.infrastructure import dependency_targets
@@ -245,6 +250,63 @@ def test_infrastructure_health_does_not_require_legacy_vector_settings() -> None
     assert "z" + "vec" not in {check.name for check in checks}
 
 
+def test_local_infrastructure_list_marks_postgres_extensions_and_bailian_not_applicable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from agromech_api.core.infrastructure import check_infrastructure
+
+    monkeypatch.setattr(
+        "agromech_api.core.infrastructure.socket.create_connection",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    settings = local_settings(
+        database_url="sqlite:///:memory:",
+        local_file_storage_path=str(tmp_path / "files"),
+    )
+    engine = create_engine(settings.database_url)
+
+    try:
+        checks = check_infrastructure(settings, engine=engine)
+    finally:
+        engine.dispose()
+
+    assert [(check.name, check.status) for check in checks] == [
+        ("postgres", "ok"),
+        ("file_storage", "ok"),
+        ("pgvector", "not_applicable"),
+        ("pg_search", "not_applicable"),
+        ("bailian", "not_applicable"),
+    ]
+
+
+@pytest.mark.skipif(
+    not os.getenv("AGROMECH_TEST_POSTGRES_URL"),
+    reason="PostgreSQL infrastructure URL not configured",
+)
+def test_postgres_infrastructure_list_checks_required_extensions(tmp_path) -> None:
+    from agromech_api.core.infrastructure import check_infrastructure
+
+    settings = local_settings(
+        database_url=os.environ["AGROMECH_TEST_POSTGRES_URL"],
+        local_file_storage_path=str(tmp_path / "files"),
+    )
+    engine = create_engine(settings.database_url)
+
+    try:
+        checks = check_infrastructure(settings, engine=engine)
+    finally:
+        engine.dispose()
+
+    assert [(check.name, check.status) for check in checks] == [
+        ("postgres", "ok"),
+        ("file_storage", "ok"),
+        ("pgvector", "ok"),
+        ("pg_search", "ok"),
+        ("bailian", "not_applicable"),
+    ]
+
+
 def test_pgvector_extension_health_check_uses_supplied_engine() -> None:
     from agromech_api.core.infrastructure import check_pgvector_extension
 
@@ -264,6 +326,7 @@ def test_pgvector_extension_health_check_uses_supplied_engine() -> None:
             return FakeResult()
 
     class FakeEngine:
+        dialect = SimpleNamespace(name="postgresql")
         url = "postgresql+psycopg://agromech:***@localhost:5432/agromech"
 
         def connect(self):
@@ -295,6 +358,8 @@ def test_pgvector_extension_health_check_reports_missing_extension() -> None:
             return FakeResult()
 
     class FakeEngine:
+        dialect = SimpleNamespace(name="postgresql")
+
         def connect(self):
             return FakeConnection()
 
@@ -322,6 +387,8 @@ def test_pgvector_extension_health_check_sanitizes_database_errors() -> None:
             )
 
     class FakeEngine:
+        dialect = SimpleNamespace(name="postgresql")
+
         def connect(self):
             return FakeConnection()
 
@@ -353,11 +420,21 @@ def test_pg_search_extension_health_check_reports_bm25_index() -> None:
             return False
 
         def execute(self, statement):
-            assert "pg_search" in str(statement)
-            assert "ix_chunk_search_index_bm25" in str(statement)
+            sql = " ".join(str(statement).split())
+            assert "pg_catalog.pg_extension" in sql
+            assert "pg_catalog.pg_class" in sql
+            assert "pg_catalog.pg_namespace" in sql
+            assert "pg_catalog.pg_index" in sql
+            assert "pg_catalog.pg_am" in sql
+            assert "current_schema()" in sql
+            assert "chunk_search_index" in sql
+            assert "ix_chunk_search_index_bm25" in sql
+            assert "access_method.amname = 'bm25'" in sql
             return FakeResult()
 
     class FakeEngine:
+        dialect = SimpleNamespace(name="postgresql")
+
         def connect(self):
             return FakeConnection()
 
@@ -367,7 +444,7 @@ def test_pg_search_extension_health_check_reports_bm25_index() -> None:
     assert check.name == "pg_search"
 
 
-def test_bailian_health_check_reports_unavailable_when_required_config_is_missing() -> None:
+def test_bailian_health_check_is_not_applicable_when_no_bailian_provider_is_enabled() -> None:
     from agromech_api.core.infrastructure import check_bailian_config
 
     settings = local_settings(
@@ -375,6 +452,31 @@ def test_bailian_health_check_reports_unavailable_when_required_config_is_missin
         embedding_provider="local",
         bailian_api_key="",
         bailian_base_url="",
+    )
+
+    check = check_bailian_config(settings)
+
+    assert check.name == "bailian"
+    assert check.status == "not_applicable"
+    assert check.target == "unconfigured"
+    assert check.error is None
+
+
+@pytest.mark.parametrize(
+    "provider_field",
+    ["model_provider", "embedding_provider", "visual_embedding_provider"],
+)
+def test_bailian_health_check_reports_unavailable_when_enabled_config_is_missing(
+    provider_field,
+) -> None:
+    from agromech_api.core.infrastructure import check_bailian_config
+
+    settings = local_settings().model_copy(
+        update={
+            provider_field: "bailian",
+            "bailian_api_key": "",
+            "bailian_base_url": "",
+        }
     )
 
     check = check_bailian_config(settings)

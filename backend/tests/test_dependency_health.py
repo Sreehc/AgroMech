@@ -48,6 +48,36 @@ def test_dependency_health_endpoint_returns_degraded_when_any_dependency_is_unav
     assert response.json()["dependencies"][1]["error"] == "extension missing"
 
 
+def test_dependency_health_endpoint_treats_not_applicable_as_healthy() -> None:
+    client = TestClient(
+        create_app(
+            dependency_checker=lambda: [
+                DependencyCheck("postgres", "ok", "localhost:5432"),
+                DependencyCheck(
+                    "bailian",
+                    "not_applicable",
+                    "unconfigured",
+                ),
+            ]
+        )
+    )
+
+    response = client.get("/health/dependencies")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "dependencies": [
+            {"name": "postgres", "status": "ok", "target": "localhost:5432"},
+            {
+                "name": "bailian",
+                "status": "not_applicable",
+                "target": "unconfigured",
+            },
+        ],
+    }
+
+
 def test_dependency_health_endpoint_uses_app_database_engine(monkeypatch) -> None:
     captured = {}
     settings = Settings(_env_file=None)
@@ -87,3 +117,24 @@ def test_readiness_returns_503_when_required_search_dependency_is_missing() -> N
 
     assert response.status_code == 503
     assert response.json()["status"] == "unavailable"
+
+
+def test_readiness_treats_not_applicable_dependencies_as_healthy() -> None:
+    client = TestClient(
+        create_app(
+            dependency_checker=lambda: [
+                DependencyCheck("postgres", "ok", "localhost:5432"),
+                DependencyCheck(
+                    "pg_search",
+                    "not_applicable",
+                    "postgres:extension/pg_search",
+                ),
+                DependencyCheck("bailian", "not_applicable", "unconfigured"),
+            ]
+        )
+    )
+
+    response = client.get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"

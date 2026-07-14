@@ -6,8 +6,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sqlalchemy import Engine, create_engine, delete, insert
+from sqlalchemy import Engine, create_engine, delete, insert, text
 
+from agromech_api.core.infrastructure import check_pg_search_extension
 from agromech_api.db.enums import ChunkType, DocumentStatus
 from agromech_api.db.models import chunk_search_index, document_chunks, documents, metadata
 from agromech_api.rag.retrieval.bm25 import (
@@ -466,6 +467,7 @@ def test_postgres_bm25_selects_latest_index_version_before_limit() -> None:
 )
 def test_postgres_bm25_uses_pg_search_jieba_and_filters_before_limit() -> None:
     engine = create_engine(os.environ["AGROMECH_TEST_POSTGRES_URL"])
+    assert check_pg_search_extension(engine).status == "ok"
     chunk_ids = ["chunk-m", "chunk-l"]
     document_ids = [f"doc-{chunk_id}" for chunk_id in chunk_ids]
     with engine.begin() as connection:
@@ -497,6 +499,43 @@ def test_postgres_bm25_uses_pg_search_jieba_and_filters_before_limit() -> None:
 
     assert [hit.chunk_id for hit in chinese_hits] == ["chunk-m"]
     assert [hit.chunk_id for hit in filtered_hits] == ["chunk-m"]
+
+
+@pytest.mark.skipif(
+    not os.getenv("AGROMECH_TEST_POSTGRES_URL"),
+    reason="PostgreSQL BM25 URL not configured",
+)
+def test_postgres_readiness_rejects_same_named_non_bm25_index_in_current_schema() -> None:
+    database_url = os.environ["AGROMECH_TEST_POSTGRES_URL"]
+    engine = create_engine(database_url)
+    schema = "agromech_readiness_probe"
+    probe_engine = None
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+            connection.execute(text(f"CREATE SCHEMA {schema}"))
+            connection.execute(text(f"CREATE TABLE {schema}.chunk_search_index (id TEXT PRIMARY KEY)"))
+            connection.execute(
+                text(
+                    f"CREATE INDEX ix_chunk_search_index_bm25 "
+                    f"ON {schema}.chunk_search_index (id)"
+                )
+            )
+        probe_engine = create_engine(
+            database_url,
+            connect_args={"options": f"-csearch_path={schema}"},
+        )
+
+        check = check_pg_search_extension(probe_engine)
+
+        assert check.status == "unavailable"
+        assert check.error == "pg_search extension or BM25 index is missing"
+    finally:
+        if probe_engine is not None:
+            probe_engine.dispose()
+        with engine.begin() as connection:
+            connection.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+        engine.dispose()
 
 
 def test_build_bm25_retriever_selects_backend_from_dialect(tmp_path) -> None:

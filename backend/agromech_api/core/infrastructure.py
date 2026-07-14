@@ -142,6 +142,8 @@ def sanitize_database_error(exc: Exception) -> str:
 def check_pgvector_extension(engine=None) -> DependencyCheck:
     active_engine = engine or get_engine()
     target = "postgres:extension/vector"
+    if active_engine.dialect.name != "postgresql":
+        return DependencyCheck("pgvector", "not_applicable", target)
     try:
         with active_engine.connect() as connection:
             extension = connection.execute(
@@ -157,6 +159,8 @@ def check_pgvector_extension(engine=None) -> DependencyCheck:
 def check_pg_search_extension(engine=None) -> DependencyCheck:
     active_engine = engine or get_engine()
     target = "postgres:extension/pg_search"
+    if active_engine.dialect.name != "postgresql":
+        return DependencyCheck("pg_search", "not_applicable", target)
     try:
         with active_engine.connect() as connection:
             row = connection.execute(
@@ -164,11 +168,28 @@ def check_pg_search_extension(engine=None) -> DependencyCheck:
                     """
                     SELECT
                         EXISTS (
-                            SELECT 1 FROM pg_extension WHERE extname = 'pg_search'
+                            SELECT 1
+                            FROM pg_catalog.pg_extension
+                            WHERE extname = 'pg_search'
                         ) AS extension,
                         EXISTS (
-                            SELECT 1 FROM pg_indexes
-                            WHERE indexname = 'ix_chunk_search_index_bm25'
+                            SELECT 1
+                            FROM pg_catalog.pg_class AS index_relation
+                            JOIN pg_catalog.pg_namespace AS index_namespace
+                                ON index_namespace.oid = index_relation.relnamespace
+                            JOIN pg_catalog.pg_index AS index_definition
+                                ON index_definition.indexrelid = index_relation.oid
+                            JOIN pg_catalog.pg_class AS table_relation
+                                ON table_relation.oid = index_definition.indrelid
+                            JOIN pg_catalog.pg_namespace AS table_namespace
+                                ON table_namespace.oid = table_relation.relnamespace
+                            JOIN pg_catalog.pg_am AS access_method
+                                ON access_method.oid = index_relation.relam
+                            WHERE index_namespace.nspname = current_schema()
+                                AND table_namespace.nspname = current_schema()
+                                AND table_relation.relname = 'chunk_search_index'
+                                AND index_relation.relname = 'ix_chunk_search_index_bm25'
+                                AND access_method.amname = 'bm25'
                         ) AS index
                     """
                 )
@@ -187,9 +208,13 @@ def check_pg_search_extension(engine=None) -> DependencyCheck:
 
 def check_bailian_config(settings: Settings) -> DependencyCheck:
     target = settings.bailian_base_url or "unconfigured"
-    bailian_enabled = "bailian" in {settings.model_provider, settings.embedding_provider}
+    bailian_enabled = "bailian" in {
+        settings.model_provider,
+        settings.embedding_provider,
+        settings.visual_embedding_provider,
+    }
     if not bailian_enabled:
-        return DependencyCheck("bailian", "unavailable", target, "bailian configuration missing")
+        return DependencyCheck("bailian", "not_applicable", target)
     if not settings.bailian_api_key or not settings.bailian_base_url:
         return DependencyCheck("bailian", "unavailable", target, "bailian configuration missing")
     return DependencyCheck("bailian", "ok", settings.bailian_base_url)
