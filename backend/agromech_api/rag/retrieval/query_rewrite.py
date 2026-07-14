@@ -10,8 +10,10 @@ from typing import Any
 from typing import Protocol
 
 from agromech_api.core.config import Settings
+from agromech_api.domain.entities import MODEL_RE
 from agromech_api.rag.retrieval.query_understanding import (
     DOCUMENT_TYPE_TERMS,
+    MODEL_ALIAS_RE,
     PART_NUMBER_RE,
     YEAR_RE,
     ParsedQuery,
@@ -193,31 +195,83 @@ def _parsed_models(parsed: ParsedQuery) -> list[str]:
         for category in ("fault_code", "part_number")
         for value in parsed.entities.get(category, [])
     }
-    language_regions = [
-        match.group(0).rsplit("-", 1)[-1]
-        for match in LANGUAGE_TAG_RE.finditer(parsed.original_query)
+    candidates = [
+        value
+        for value in candidates
+        if value and _normalize_identifier("model", value) not in excluded
     ]
-    year_versions = [match.group(0) for match in YEAR_RE.finditer(parsed.original_query)]
-    tagged_versions = [
-        match.group(0) for match in DOCUMENT_VERSION_TAG_RE.finditer(parsed.original_query)
-    ]
-    versions = [*year_versions, *tagged_versions]
-    excluded.update(_normalize_identifier("model", version) for version in versions)
-    excluded.update(
-        _normalize_identifier("model", version.split(".", 1)[0])
-        for version in tagged_versions
-    )
-    excluded.update(
-        _normalize_identifier("model", f"{region}{version}")
-        for region in language_regions
-        for version in versions
-    )
+    return _exclude_cross_category_model_matches(parsed.original_query, candidates)
 
-    values: list[str] = []
+
+def _exclude_cross_category_model_matches(query: str, candidates: list[str]) -> list[str]:
+    candidates_by_normalized: dict[str, list[str]] = {}
     for value in candidates:
-        if _normalize_identifier("model", value) not in excluded:
+        normalized = _normalize_identifier("model", value)
+        values = candidates_by_normalized.setdefault(normalized, [])
+        if value not in values:
             values.append(value)
-    return list(dict.fromkeys(value for value in values if value))
+
+    matches_by_normalized: dict[str, list[tuple[tuple[int, int], str]]] = {}
+    seen_matches: set[tuple[int, int, str]] = set()
+    for pattern in (MODEL_ALIAS_RE, MODEL_RE):
+        for match in pattern.finditer(query):
+            value = match.group(0)
+            normalized = _normalize_identifier("model", value)
+            key = (*match.span(), normalized)
+            if normalized in candidates_by_normalized and key not in seen_matches:
+                seen_matches.add(key)
+                matches_by_normalized.setdefault(normalized, []).append((match.span(), value))
+
+    excluded_spans = _cross_category_model_spans(query)
+    values: list[str] = []
+    for normalized, spellings in candidates_by_normalized.items():
+        matches = matches_by_normalized.get(normalized, [])
+        ambiguous_spans = excluded_spans.get(normalized, [])
+        unambiguous = [
+            (span, value)
+            for span, value in matches
+            if not any(_spans_overlap(span, excluded) for excluded in ambiguous_spans)
+        ]
+        if matches and not unambiguous:
+            continue
+        if unambiguous and (len(spellings) > 1 or len(unambiguous) < len(matches)):
+            values.append(unambiguous[0][1])
+        else:
+            values.append(spellings[0])
+    return values
+
+
+def _cross_category_model_spans(query: str) -> dict[str, list[tuple[int, int]]]:
+    language_matches = list(LANGUAGE_TAG_RE.finditer(query))
+    year_matches = list(YEAR_RE.finditer(query))
+    tagged_version_matches = list(DOCUMENT_VERSION_TAG_RE.finditer(query))
+    version_matches = [*year_matches, *tagged_version_matches]
+    spans: dict[str, list[tuple[int, int]]] = {}
+
+    for match in version_matches:
+        normalized = _normalize_identifier("model", match.group(0))
+        spans.setdefault(normalized, []).append(match.span())
+    for match in tagged_version_matches:
+        prefix = match.group(0).split(".", 1)[0]
+        normalized = _normalize_identifier("model", prefix)
+        spans.setdefault(normalized, []).append(match.span())
+    for language_match in language_matches:
+        region = language_match.group(0).rsplit("-", 1)[-1]
+        for version_match in version_matches:
+            separator = query[language_match.end() : version_match.start()]
+            if language_match.end() < version_match.start() and separator.isspace():
+                normalized = _normalize_identifier(
+                    "model",
+                    f"{region}{version_match.group(0)}",
+                )
+                spans.setdefault(normalized, []).append(
+                    (language_match.start(), version_match.end())
+                )
+    return spans
+
+
+def _spans_overlap(first: tuple[int, int], second: tuple[int, int]) -> bool:
+    return first[0] < second[1] and second[0] < first[1]
 
 
 def _extract_identifier_groups(

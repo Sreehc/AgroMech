@@ -309,6 +309,107 @@ def test_rewrite_protects_explicit_version_in_question(
     assert result.protected_identifiers == ["v2.1"]
 
 
+def test_rewrite_rejects_independent_model_matching_version_prefix() -> None:
+    provider = BailianQueryRewriteProvider(
+        rewrite_settings(),
+        transport=lambda _request, _timeout: {
+            "choices": [{"message": {"content": '{"query":"v2.1 液压泵查询 V2"}'}}]
+        },
+    )
+    question = "v2.1 液压泵查询"
+
+    result = rewrite_query(
+        question=question,
+        parsed=parse_query(question),
+        request_filters={},
+        provider=provider,
+        supplemental=False,
+    )
+
+    assert result.fallback is True
+    assert result.reason == "protected_identifier_added:V2"
+
+
+def test_rewrite_protects_version_and_independent_matching_model() -> None:
+    provider = BailianQueryRewriteProvider(
+        rewrite_settings(),
+        transport=lambda _request, _timeout: {
+            "choices": [{"message": {"content": '{"query":"v2.1 液压泵查询 V2"}'}}]
+        },
+    )
+    question = "v2.1 液压泵查询 V2"
+
+    result = rewrite_query(
+        question=question,
+        parsed=parse_query(question),
+        request_filters={},
+        provider=provider,
+        supplemental=False,
+    )
+
+    assert result.fallback is False
+    assert set(result.protected_identifiers) == {"v2.1", "V2"}
+
+
+def test_rewrite_rejects_independent_model_matching_language_year_fragment() -> None:
+    provider = BailianQueryRewriteProvider(
+        rewrite_settings(),
+        transport=lambda _request, _timeout: {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"query":"repair_manual zh-CN 2024 查询 CN2024"}'
+                    }
+                }
+            ]
+        },
+    )
+    question = "repair_manual zh-CN 2024 查询"
+
+    result = rewrite_query(
+        question=question,
+        parsed=parse_query(question),
+        request_filters={},
+        provider=provider,
+        supplemental=False,
+    )
+
+    assert result.fallback is True
+    assert result.reason == "protected_identifier_added:CN2024"
+
+
+def test_rewrite_protects_language_year_and_independent_matching_model() -> None:
+    provider = BailianQueryRewriteProvider(
+        rewrite_settings(),
+        transport=lambda _request, _timeout: {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"query":"repair_manual zh-CN 2024 查询 CN2024"}'
+                    }
+                }
+            ]
+        },
+    )
+    question = "repair_manual zh-CN 2024 查询 CN2024"
+
+    result = rewrite_query(
+        question=question,
+        parsed=parse_query(question),
+        request_filters={},
+        provider=provider,
+        supplemental=False,
+    )
+
+    assert result.fallback is False
+    assert set(result.protected_identifiers) == {
+        "CN2024",
+        "2024",
+        "zh-CN",
+        "repair_manual",
+    }
+
+
 def test_rewrite_protects_query_and_explicit_filter_models() -> None:
     provider = BailianQueryRewriteProvider(
         rewrite_settings(),
