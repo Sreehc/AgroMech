@@ -1,5 +1,6 @@
-from sqlalchemy import create_engine, insert, select
+from sqlalchemy import create_engine, event, insert, select
 
+from agromech_api.core.config import Settings
 from agromech_api.db.enums import ChunkType, DocumentStatus
 from agromech_api.db.models import document_chunks, documents, metadata, retrieval_logs
 from agromech_api.domain.entities import process_document_entities
@@ -212,7 +213,51 @@ def test_both_retrieval_channels_failing_returns_evidence_insufficient(tmp_path)
     assert result["final_evidence"] == []
 
 
-def test_dense_and_bm25_share_explicit_model_filter_before_top_k(tmp_path) -> None:
+def test_bm25_receives_same_filters_instance_and_configured_top_k(tmp_path) -> None:
+    class SpyBm25Retriever:
+        filters = None
+        limit = None
+
+        def search(self, _engine, _query, *, filters, limit):
+            self.filters = filters
+            self.limit = limit
+            return [RankedHit(chunk_id="chunk-m7040", rank=1, score=8.0)]
+
+    class FailingEmbeddingProvider:
+        def embed(self, _query):
+            raise RuntimeError("dense unavailable")
+
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    filters = build_retrieval_filters(request_filters={"model": "M7040"}, viewer_user_id=None)
+    settings = Settings(
+        _env_file=None,
+        dense_top_k=8,
+        bm25_top_k=7,
+        fusion_top_k=10,
+        rerank_top_k=10,
+    )
+    retriever = SpyBm25Retriever()
+
+    hybrid_retrieve_with_trace(
+        engine,
+        "E01 repair",
+        filters=filters,
+        embedding_provider=FailingEmbeddingProvider(),
+        bm25_retriever=retriever,
+        settings=settings,
+        trace_id="trace-bm25-filter-contract",
+    )
+
+    assert retriever.filters is filters
+    assert retriever.limit == settings.bm25_top_k
+
+
+def test_fusion_fail_closed_rejects_provider_hits_outside_explicit_filter(tmp_path) -> None:
+    class FailingEmbeddingProvider:
+        def embed(self, _query):
+            raise RuntimeError("dense unavailable")
+
     engine = create_test_engine(tmp_path)
     seed_retrieval_corpus(engine)
     filters = build_retrieval_filters(request_filters={"model": "M7040"}, viewer_user_id=None)
@@ -221,11 +266,53 @@ def test_dense_and_bm25_share_explicit_model_filter_before_top_k(tmp_path) -> No
         engine,
         "E01 repair",
         filters=filters,
+        embedding_provider=FailingEmbeddingProvider(),
         bm25_retriever=FixedBm25Retriever(),
-        trace_id="trace-model-filter",
+        trace_id="trace-model-filter-fail-closed",
     )
 
     assert {candidate["document_id"] for candidate in result["candidates"]} == {"doc-m7040"}
+
+
+def test_model_applicability_loads_candidate_models_in_one_query(tmp_path) -> None:
+    class FailingEmbeddingProvider:
+        def embed(self, _query):
+            raise RuntimeError("dense unavailable")
+
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    applicability_selects = 0
+
+    def count_applicability_selects(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        nonlocal applicability_selects
+        normalized = statement.lstrip().lower()
+        if normalized.startswith("select") and "chunk_entity_links" in normalized:
+            applicability_selects += 1
+
+    event.listen(engine, "before_cursor_execute", count_applicability_selects)
+    try:
+        result = hybrid_retrieve(
+            engine,
+            "M7040 E01 repair",
+            embedding_provider=FailingEmbeddingProvider(),
+            bm25_retriever=FixedBm25Retriever(),
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", count_applicability_selects)
+
+    assert [candidate["chunk_id"] for candidate in result["candidates"]] == [
+        "chunk-m7040",
+        "chunk-l3901",
+    ]
+    assert result["candidates"][1]["not_applicable"] is True
+    assert applicability_selects == 1
 
 
 def test_hybrid_retrieval_marks_unrelated_model_candidates_not_applicable(tmp_path) -> None:

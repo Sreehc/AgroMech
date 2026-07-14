@@ -246,6 +246,120 @@ def test_vector_search_returns_pgvector_refs(tmp_path) -> None:
     assert results[0]["vector_ref"].startswith("pgvector://chunk_vector_embeddings/")
 
 
+def test_vector_search_applies_model_filter_before_limit(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    query_embedding = [1.0] + [0.0] * 1023
+    allowed_embedding = [0.8, 0.6] + [0.0] * 1022
+    with engine.begin() as connection:
+        connection.execute(
+            insert(documents),
+            [
+                {
+                    "id": "doc-forbidden",
+                    "visibility": "public",
+                    "title": "L3901 Manual",
+                    "original_file_name": "l3901.txt",
+                    "file_hash": "hash-forbidden",
+                    "file_size_bytes": 100,
+                    "mime_type": "text/plain",
+                    "storage_uri": "file:///tmp/l3901.txt",
+                    "brand": "Kubota",
+                    "model": "L3901",
+                    "status": DocumentStatus.INDEXED.value,
+                    "created_by_role": "admin",
+                },
+                {
+                    "id": "doc-allowed",
+                    "visibility": "public",
+                    "title": "M7040 Manual",
+                    "original_file_name": "m7040.txt",
+                    "file_hash": "hash-allowed",
+                    "file_size_bytes": 100,
+                    "mime_type": "text/plain",
+                    "storage_uri": "file:///tmp/m7040.txt",
+                    "brand": "Kubota",
+                    "model": "M7040",
+                    "status": DocumentStatus.INDEXED.value,
+                    "created_by_role": "admin",
+                },
+            ],
+        )
+        connection.execute(
+            insert(document_chunks),
+            [
+                {
+                    "id": "chunk-forbidden",
+                    "document_id": "doc-forbidden",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "content": "globally highest dense match",
+                    "source_locator": {"type": "text", "line_start": 1, "line_end": 1},
+                },
+                {
+                    "id": "chunk-allowed",
+                    "document_id": "doc-allowed",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "content": "second highest dense match",
+                    "source_locator": {"type": "text", "line_start": 1, "line_end": 1},
+                },
+            ],
+        )
+        connection.execute(
+            insert(chunk_vector_embeddings),
+            [
+                {
+                    "id": "embedding-forbidden",
+                    "chunk_id": "chunk-forbidden",
+                    "document_id": "doc-forbidden",
+                    "provider": "test",
+                    "model": "fixed",
+                    "embedding_version": "emb_adversarial",
+                    "chunk_profile": "chunk-v1",
+                    "embedding_dimension": 1024,
+                    "embedding": query_embedding,
+                    "status": "ready",
+                },
+                {
+                    "id": "embedding-allowed",
+                    "chunk_id": "chunk-allowed",
+                    "document_id": "doc-allowed",
+                    "provider": "test",
+                    "model": "fixed",
+                    "embedding_version": "emb_adversarial",
+                    "chunk_profile": "chunk-v1",
+                    "embedding_dimension": 1024,
+                    "embedding": allowed_embedding,
+                    "status": "ready",
+                },
+            ],
+        )
+
+    class FixedQueryEmbeddingProvider:
+        def embed(self, _query):
+            return query_embedding
+
+    unfiltered = vector_search(
+        engine,
+        "hydraulic",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
+        limit=1,
+        active_embedding_version="emb_adversarial",
+        embedding_provider=FixedQueryEmbeddingProvider(),
+    )
+    filtered = vector_search(
+        engine,
+        "hydraulic",
+        filters=build_retrieval_filters(
+            request_filters={"model": "M7040"}, viewer_user_id=None
+        ),
+        limit=1,
+        active_embedding_version="emb_adversarial",
+        embedding_provider=FixedQueryEmbeddingProvider(),
+    )
+
+    assert [result["chunk_id"] for result in unfiltered] == ["chunk-forbidden"]
+    assert [result["chunk_id"] for result in filtered] == ["chunk-allowed"]
+
+
 def test_visual_page_search_returns_pgvector_refs(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     document_id, asset_id = seed_page_image_asset(engine, tmp_path)

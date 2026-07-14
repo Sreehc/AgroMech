@@ -229,8 +229,7 @@ def retrieve_candidates(
     )
     candidates = hydrate_fused_candidates(engine, fused)
     candidates = enforce_retrieval_filters(engine, candidates, filters=filters)
-    for candidate in candidates:
-        apply_model_applicability(engine, candidate, parsed)
+    apply_model_applicability(engine, candidates, parsed)
     reranked, rerank_trace = RerankAgent().run(
         candidates,
         parsed,
@@ -658,24 +657,48 @@ def graph_candidates(
     return []
 
 
-def apply_model_applicability(engine: Engine, candidate: dict[str, object], parsed: ParsedQuery) -> None:
+def apply_model_applicability(
+    engine: Engine,
+    candidates: list[dict[str, object]],
+    parsed: ParsedQuery,
+) -> None:
     explicit_model = parsed.filters.get("model")
     if not explicit_model:
         if parsed.scope_uncertain:
-            candidate["scope_uncertain"] = True
+            for candidate in candidates:
+                candidate["scope_uncertain"] = True
         return
 
-    candidate_models = chunk_entity_values(engine, candidate["chunk_id"], "model")
-    if candidate_models and normalize(str(explicit_model)) not in candidate_models:
-        candidate["not_applicable"] = True
-        candidate["applicability_reason"] = "model_mismatch"
+    models_by_chunk = chunk_entity_values_by_id(
+        engine,
+        [str(candidate["chunk_id"]) for candidate in candidates],
+        "model",
+    )
+    normalized_model = normalize(str(explicit_model))
+    for candidate in candidates:
+        candidate_models = models_by_chunk.get(str(candidate["chunk_id"]), set())
+        if candidate_models and normalized_model not in candidate_models:
+            candidate["not_applicable"] = True
+            candidate["applicability_reason"] = "model_mismatch"
 
 
-def chunk_entity_values(engine: Engine, chunk_id: str, entity_type: str) -> set[str]:
+def chunk_entity_values_by_id(
+    engine: Engine,
+    chunk_ids: list[str],
+    entity_type: str,
+) -> dict[str, set[str]]:
+    if not chunk_ids:
+        return {}
     with engine.connect() as connection:
         rows = connection.execute(
-            select(chunk_entity_links.c.normalized_value)
-            .where(chunk_entity_links.c.chunk_id == chunk_id)
+            select(
+                chunk_entity_links.c.chunk_id,
+                chunk_entity_links.c.normalized_value,
+            )
+            .where(chunk_entity_links.c.chunk_id.in_(chunk_ids))
             .where(chunk_entity_links.c.entity_type == entity_type)
-        ).scalars().all()
-    return set(rows)
+        ).all()
+    values_by_chunk: dict[str, set[str]] = {}
+    for chunk_id, normalized_value in rows:
+        values_by_chunk.setdefault(str(chunk_id), set()).add(str(normalized_value))
+    return values_by_chunk
