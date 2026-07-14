@@ -128,6 +128,27 @@ def test_reference_bm25_uses_standard_k1_and_b_formula(tmp_path) -> None:
     assert hits[1].score == pytest.approx(0.4991762683023676)
 
 
+def test_reference_bm25_preserves_fractional_average_document_length(tmp_path) -> None:
+    engine = _sqlite_engine(tmp_path, "fractional-avgdl.db")
+    _seed_search_rows(
+        engine,
+        [
+            ("chunk-token", "pump", "A"),
+            ("chunk-empty", "!!!", "B"),
+        ],
+    )
+
+    hits = ReferenceBm25Retriever().search(
+        engine,
+        "pump",
+        filters=_filters(),
+        limit=10,
+    )
+
+    assert [hit.chunk_id for hit in hits] == ["chunk-token"]
+    assert hits[0].score == pytest.approx(0.4919109023328644)
+
+
 def test_reference_bm25_ranks_relevant_chinese_and_code_tokens(tmp_path) -> None:
     engine = _sqlite_engine(tmp_path, "chinese.db")
     _seed_search_rows(
@@ -258,6 +279,81 @@ def test_reference_bm25_stably_orders_equal_scores_by_chunk_id(tmp_path) -> None
     assert [hit.rank for hit in hits] == [1, 2]
 
 
+def test_reference_bm25_selects_latest_index_version_before_top_k(tmp_path) -> None:
+    engine = _sqlite_engine(tmp_path, "latest-version.db")
+    with engine.begin() as connection:
+        connection.execute(
+            insert(documents),
+            [_document_row("doc-a"), _document_row("doc-b")],
+        )
+        connection.execute(
+            insert(document_chunks),
+            [
+                {
+                    "id": "chunk-a",
+                    "document_id": "doc-a",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "content": "pump",
+                    "source_locator": {"type": "text"},
+                },
+                {
+                    "id": "chunk-b",
+                    "document_id": "doc-b",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "content": "pump",
+                    "source_locator": {"type": "text"},
+                },
+            ],
+        )
+        connection.execute(
+            insert(chunk_search_index),
+            [
+                {
+                    "id": "idx-a-v1",
+                    "chunk_id": "chunk-a",
+                    "document_id": "doc-a",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "search_text": "pump pump pump pump",
+                    "embedding_version": "v1",
+                    "chunk_profile": "chunk-v1",
+                    "embedding_dimension": 1024,
+                    "created_at": datetime(2026, 1, 1, tzinfo=UTC),
+                },
+                {
+                    "id": "idx-a-v2",
+                    "chunk_id": "chunk-a",
+                    "document_id": "doc-a",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "search_text": "pump",
+                    "embedding_version": "v2",
+                    "chunk_profile": "chunk-v2",
+                    "embedding_dimension": 1024,
+                    "created_at": datetime(2026, 1, 2, tzinfo=UTC),
+                },
+                {
+                    "id": "idx-b-v1",
+                    "chunk_id": "chunk-b",
+                    "document_id": "doc-b",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "search_text": "pump",
+                    "embedding_version": "v1",
+                    "chunk_profile": "chunk-v1",
+                    "embedding_dimension": 1024,
+                    "created_at": datetime(2026, 1, 1, tzinfo=UTC),
+                },
+            ],
+        )
+
+    hits = ReferenceBm25Retriever().search(
+        engine,
+        "pump",
+        filters=_filters(),
+        limit=2,
+    )
+
+    assert [hit.chunk_id for hit in hits] == ["chunk-a", "chunk-b"]
+
+
 class _Rows:
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self._rows = rows
@@ -338,6 +434,29 @@ def test_postgres_bm25_uses_parameterized_pg_search_and_all_filters() -> None:
         "limit": 7,
     }
     assert [(hit.chunk_id, hit.rank, hit.score) for hit in hits] == [("chunk-m", 1, 4.25)]
+
+
+def test_postgres_bm25_selects_latest_index_version_before_limit() -> None:
+    engine = _RecordingPostgresEngine()
+
+    PostgresBm25Retriever().search(
+        engine,  # type: ignore[arg-type]
+        "pump",
+        filters=_filters(),
+        limit=2,
+    )
+
+    sql = " ".join(engine.statement.split())
+    assert "csi.search_text ||| :query" in sql
+    assert "pdb.score(csi.id)" in sql
+    assert (
+        "NOT EXISTS ( SELECT 1 FROM chunk_search_index AS newer_csi "
+        "WHERE newer_csi.chunk_id = csi.chunk_id AND ( "
+        "newer_csi.created_at > csi.created_at OR ( "
+        "newer_csi.created_at = csi.created_at AND newer_csi.id > csi.id ) ) )"
+        in sql
+    )
+    assert sql.index("NOT EXISTS") < sql.index("ORDER BY") < sql.index("LIMIT :limit")
 
 
 def test_build_bm25_retriever_selects_backend_from_dialect(tmp_path) -> None:

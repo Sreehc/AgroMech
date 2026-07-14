@@ -7,7 +7,7 @@ from dataclasses import asdict
 from typing import Protocol
 
 import jieba
-from sqlalchemy import Engine, select, text
+from sqlalchemy import Engine, and_, or_, select, text
 
 from agromech_api.db.models import chunk_search_index, documents
 from agromech_api.rag.retrieval.filters import (
@@ -63,6 +63,7 @@ class ReferenceBm25Retriever:
         if not query_tokens or limit <= 0:
             return []
 
+        newer_search_index = chunk_search_index.alias("newer_csi")
         statement = (
             select(chunk_search_index.c.chunk_id, chunk_search_index.c.search_text)
             .select_from(
@@ -73,6 +74,23 @@ class ReferenceBm25Retriever:
             )
             .where(*document_filter_conditions(filters))
             .where(*chunk_filter_conditions(chunk_search_index.c.chunk_id, filters))
+            .where(
+                ~select(1)
+                .where(
+                    newer_search_index.c.chunk_id
+                    == chunk_search_index.c.chunk_id,
+                    or_(
+                        newer_search_index.c.created_at
+                        > chunk_search_index.c.created_at,
+                        and_(
+                            newer_search_index.c.created_at
+                            == chunk_search_index.c.created_at,
+                            newer_search_index.c.id > chunk_search_index.c.id,
+                        ),
+                    ),
+                )
+                .exists()
+            )
         )
         with engine.connect() as connection:
             rows = connection.execute(statement).mappings().all()
@@ -86,6 +104,9 @@ class ReferenceBm25Retriever:
         average_length = sum(len(tokens) for _, tokens in documents_tokens) / len(
             documents_tokens
         )
+        if average_length == 0:
+            return []
+
         document_frequency = {
             term: sum(1 for _, tokens in documents_tokens if term in set(tokens))
             for term in query_tokens
@@ -107,7 +128,7 @@ class ReferenceBm25Retriever:
                 denominator = frequency + self.k1 * (
                     1
                     - self.b
-                    + self.b * len(tokens) / max(1.0, average_length)
+                    + self.b * len(tokens) / average_length
                 )
                 score += idf * frequency * (self.k1 + 1) / denominator
             if score > 0:
@@ -138,6 +159,18 @@ class PostgresBm25Retriever:
             FROM chunk_search_index AS csi
             JOIN documents AS d ON d.id = csi.document_id
             WHERE csi.search_text ||| :query
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM chunk_search_index AS newer_csi
+                    WHERE newer_csi.chunk_id = csi.chunk_id
+                      AND (
+                            newer_csi.created_at > csi.created_at
+                            OR (
+                                newer_csi.created_at = csi.created_at
+                                AND newer_csi.id > csi.id
+                            )
+                      )
+              )
               AND d.status = 'indexed'
               AND d.deleted_at IS NULL
               AND (
