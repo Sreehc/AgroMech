@@ -4,6 +4,7 @@ import {
   chatSessionStorageKey,
   createChatSessionHistoryManager,
   loadLocalChatSessions,
+  resolveChatSessionStorage,
   saveLocalChatSessions,
   type ChatSession,
 } from "./chat-sessions";
@@ -46,6 +47,24 @@ function storage(initial: Record<string, string> = {}): Storage {
 }
 
 describe("chat session history", () => {
+  it("keeps the browser storage reference stable across renders", () => {
+    const firstStorage = storage();
+    const secondStorage = storage();
+    let calls = 0;
+
+    const firstResolved = resolveChatSessionStorage(null, undefined, () => {
+      calls += 1;
+      return firstStorage;
+    });
+    const secondResolved = resolveChatSessionStorage(firstResolved, undefined, () => {
+      calls += 1;
+      return secondStorage;
+    });
+
+    expect(secondResolved).toBe(firstStorage);
+    expect(calls).toBe(1);
+  });
+
   it("stores local fallback sessions per username and ignores other users", () => {
     const localStorage = storage();
 

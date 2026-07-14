@@ -8,6 +8,30 @@ import {
   hasAnonymousThread,
 } from "./anonymous-chat-store";
 
+function storage(): Storage {
+  const data = new Map<string, string>();
+  return {
+    get length() {
+      return data.size;
+    },
+    clear() {
+      data.clear();
+    },
+    getItem(key: string) {
+      return data.get(key) ?? null;
+    },
+    key(index: number) {
+      return Array.from(data.keys())[index] ?? null;
+    },
+    removeItem(key: string) {
+      data.delete(key);
+    },
+    setItem(key: string, value: string) {
+      data.set(key, value);
+    },
+  };
+}
+
 function messageItem(id: string): ExportedMessageRepositoryItem {
   return {
     parentId: null,
@@ -24,6 +48,16 @@ function messageItem(id: string): ExportedMessageRepositoryItem {
 
 describe("anonymous chat store", () => {
   beforeEach(() => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        localStorage: storage(),
+        dispatchEvent: vi.fn(),
+      },
+    });
+  });
+
+  beforeEach(() => {
     window.localStorage.clear();
   });
 
@@ -33,6 +67,12 @@ describe("anonymous chat store", () => {
 
   it("reports no thread when storage is empty", () => {
     expect(hasAnonymousThread()).toBe(false);
+  });
+
+  it("implements the formatted history adapter contract required by useChatRuntime", () => {
+    const adapter = createAnonymousHistoryAdapter();
+
+    expect(adapter.withFormat).toEqual(expect.any(Function));
   });
 
   it("persists appended messages and reports an existing thread", async () => {

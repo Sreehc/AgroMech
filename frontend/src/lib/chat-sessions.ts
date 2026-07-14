@@ -47,6 +47,16 @@ const LOCAL_HISTORY_VERSION = 1;
 const LOCAL_HISTORY_LIMIT = 50;
 const FALLBACK_ERROR = "会话历史暂时无法保存";
 
+export function resolveChatSessionStorage(
+  current: Storage | null,
+  provided?: Storage,
+  getBrowserStorage: () => Storage | null = () => (typeof window === "undefined" ? null : window.localStorage),
+): Storage | null {
+  if (provided) return provided;
+  if (current) return current;
+  return getBrowserStorage();
+}
+
 export function chatSessionStorageKey(username: string): string {
   return `agromech.chat_sessions.v1.${encodeURIComponent(username)}`;
 }
@@ -179,7 +189,10 @@ export function useChatSessionHistory({
   username: string;
   storage?: Storage;
 }) {
-  const resolvedStorage = storage ?? (typeof window === "undefined" ? null : window.localStorage);
+  const [browserStorage] = useState<Storage | null>(() =>
+    resolveChatSessionStorage(null),
+  );
+  const resolvedStorage = storage ?? browserStorage;
   const manager = useMemo(() => {
     if (!resolvedStorage) return null;
     return createChatSessionHistoryManager({ token, username, storage: resolvedStorage });
