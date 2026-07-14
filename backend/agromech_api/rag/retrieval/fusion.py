@@ -31,17 +31,22 @@ def rrf_fuse(
 ) -> tuple[list[FusedHit], dict[str, object]]:
     fused: dict[str, FusedHit] = {}
     for channel, hits in channel_hits.items():
-        seen: set[str] = set()
+        hits_by_chunk: dict[str, list[RankedHit]] = {}
         for hit in hits:
-            if hit.chunk_id in seen:
-                continue
-            seen.add(hit.chunk_id)
-            item = fused.setdefault(hit.chunk_id, FusedHit(chunk_id=hit.chunk_id))
-            item.channel_ranks[channel] = hit.rank
-            item.channel_scores[channel] = hit.score
-            item.rrf_score += weights.get(channel, 0.0) / (rrf_k + hit.rank)
-            item.vector_ref = item.vector_ref or hit.vector_ref
-            item.embedding_id = item.embedding_id or hit.embedding_id
+            hits_by_chunk.setdefault(hit.chunk_id, []).append(hit)
+        for chunk_id, duplicate_hits in hits_by_chunk.items():
+            ranked_hits = sorted(duplicate_hits, key=lambda hit: hit.rank)
+            best_hit = ranked_hits[0]
+            item = fused.setdefault(chunk_id, FusedHit(chunk_id=chunk_id))
+            item.channel_ranks[channel] = best_hit.rank
+            item.channel_scores[channel] = best_hit.score
+            item.rrf_score += weights.get(channel, 0.0) / (rrf_k + best_hit.rank)
+            item.vector_ref = item.vector_ref or next(
+                (hit.vector_ref for hit in ranked_hits if hit.vector_ref), None
+            )
+            item.embedding_id = item.embedding_id or next(
+                (hit.embedding_id for hit in ranked_hits if hit.embedding_id), None
+            )
     ranked = sorted(
         fused.values(),
         key=lambda item: (-item.rrf_score, min(item.channel_ranks.values()), item.chunk_id),

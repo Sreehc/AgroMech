@@ -36,6 +36,58 @@ def test_rrf_supports_one_channel_and_deduplicates_chunk() -> None:
     assert fused[0].channel_ranks == {"dense": 1}
 
 
+def test_rrf_duplicate_selection_uses_best_rank_regardless_of_input_order() -> None:
+    hits = [hit("a", 4, 0.4), hit("a", 1, 0.9), hit("b", 2, 0.8)]
+
+    forward = rrf_fuse(
+        {"dense": hits},
+        rrf_k=60,
+        weights={"dense": 1.0},
+        limit=1,
+    )
+    reversed_order = rrf_fuse(
+        {"dense": list(reversed(hits))},
+        rrf_k=60,
+        weights={"dense": 1.0},
+        limit=1,
+    )
+
+    assert forward == reversed_order
+    fused, trace = forward
+    assert fused[0].channel_ranks == {"dense": 1}
+    assert fused[0].channel_scores == {"dense": 0.9}
+    assert trace["channel_counts"] == {"dense": 3}
+    assert [item["chunk_id"] for item in trace["items"]] == [
+        item.chunk_id for item in fused
+    ]
+
+
+def test_rrf_duplicate_can_fill_missing_references_without_contributing_twice() -> None:
+    fused, _trace = rrf_fuse(
+        {
+            "dense": [
+                hit("a", 1, 0.9),
+                RankedHit(
+                    chunk_id="a",
+                    rank=3,
+                    score=0.7,
+                    vector_ref="pgvector://chunks/embedding-a",
+                    embedding_id="embedding-a",
+                ),
+            ]
+        },
+        rrf_k=60,
+        weights={"dense": 1.0},
+        limit=10,
+    )
+
+    assert fused[0].vector_ref == "pgvector://chunks/embedding-a"
+    assert fused[0].embedding_id == "embedding-a"
+    assert fused[0].channel_ranks == {"dense": 1}
+    assert fused[0].channel_scores == {"dense": 0.9}
+    assert fused[0].rrf_score == pytest.approx(1.0 / 61)
+
+
 def test_rrf_ties_use_best_rank_then_chunk_id() -> None:
     fused, _trace = rrf_fuse(
         {"dense": [hit("b", 1, 0.9), hit("a", 1, 0.9)]},
