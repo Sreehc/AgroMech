@@ -22,6 +22,17 @@ class FusedHit:
     embedding_id: str | None = None
 
 
+def _duplicate_order_key(hit: RankedHit) -> tuple[int, float, bool, bool, str, str]:
+    return (
+        hit.rank,
+        -hit.score,
+        not hit.vector_ref,
+        not hit.embedding_id,
+        hit.vector_ref or "",
+        hit.embedding_id or "",
+    )
+
+
 def rrf_fuse(
     channel_hits: dict[str, list[RankedHit]],
     *,
@@ -35,7 +46,7 @@ def rrf_fuse(
         for hit in hits:
             hits_by_chunk.setdefault(hit.chunk_id, []).append(hit)
         for chunk_id, duplicate_hits in hits_by_chunk.items():
-            ranked_hits = sorted(duplicate_hits, key=lambda hit: hit.rank)
+            ranked_hits = sorted(duplicate_hits, key=_duplicate_order_key)
             best_hit = ranked_hits[0]
             item = fused.setdefault(chunk_id, FusedHit(chunk_id=chunk_id))
             item.channel_ranks[channel] = best_hit.rank

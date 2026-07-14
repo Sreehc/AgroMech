@@ -88,6 +88,35 @@ def test_rrf_duplicate_can_fill_missing_references_without_contributing_twice() 
     assert fused[0].rrf_score == pytest.approx(1.0 / 61)
 
 
+def test_rrf_equal_rank_duplicates_use_deterministic_secondary_order() -> None:
+    hits = [
+        RankedHit("a", 1, 0.9, vector_ref="vector-z"),
+        RankedHit("a", 1, 0.9, vector_ref="vector-a"),
+        RankedHit("a", 1, 0.8, embedding_id="embedding-z"),
+        RankedHit("a", 1, 0.8, embedding_id="embedding-a"),
+    ]
+
+    forward = rrf_fuse(
+        {"dense": hits},
+        rrf_k=60,
+        weights={"dense": 1.0},
+        limit=10,
+    )
+    reversed_order = rrf_fuse(
+        {"dense": list(reversed(hits))},
+        rrf_k=60,
+        weights={"dense": 1.0},
+        limit=10,
+    )
+
+    assert forward == reversed_order
+    fused, trace = forward
+    assert fused[0].channel_scores == {"dense": 0.9}
+    assert fused[0].vector_ref == "vector-a"
+    assert fused[0].embedding_id == "embedding-a"
+    assert trace["items"][0]["channel_scores"] == {"dense": 0.9}
+
+
 def test_rrf_ties_use_best_rank_then_chunk_id() -> None:
     fused, _trace = rrf_fuse(
         {"dense": [hit("b", 1, 0.9), hit("a", 1, 0.9)]},
