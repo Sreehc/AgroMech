@@ -24,6 +24,7 @@ from agromech_api.rag.retrieval.indexing import (
     vector_search,
     visual_page_search,
 )
+from agromech_api.rag.retrieval.filters import build_retrieval_filters
 from agromech_api.core.config import Settings
 from agromech_worker.main import run_once
 from agromech_worker.main import process_ingest_task
@@ -53,7 +54,7 @@ def seed_searchable_document(engine, *, content: str = "Kubota M7040 hydraulic p
                 file_size_bytes=100,
                 mime_type="text/plain",
                 storage_uri="file:///tmp/manual.txt",
-                status=DocumentStatus.PROCESSING.value,
+                status=DocumentStatus.INDEXED.value,
                 created_by_role="admin",
             )
         )
@@ -235,6 +236,7 @@ def test_vector_search_returns_pgvector_refs(tmp_path) -> None:
     results = vector_search(
         engine,
         "dashboard hydraulic warning",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
         active_embedding_version="emb_test",
         embedding_provider=DeterministicEmbeddingProvider(),
     )
@@ -314,6 +316,7 @@ def test_vector_search_uses_pgvector_distance_operator_for_postgres() -> None:
     results = vector_search(
         FakeEngine(),
         "hydraulic",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
         active_embedding_version="emb_test",
         embedding_provider=FakeProvider(),
     )
@@ -415,6 +418,7 @@ def test_vector_search_filters_to_active_embedding_version(tmp_path) -> None:
     results = vector_search(
         engine,
         "dashboard hydraulic warning",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
         active_embedding_version="emb_active",
         embedding_provider=DeterministicEmbeddingProvider(),
     )

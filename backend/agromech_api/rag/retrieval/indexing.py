@@ -23,6 +23,11 @@ from agromech_api.db.models import (
 )
 from agromech_api.ingestion.runner import IngestFailure
 from agromech_api.integrations.embeddings.visual import DeterministicVisualEmbeddingProvider
+from agromech_api.rag.retrieval.filters import (
+    RetrievalFilters,
+    chunk_filter_conditions,
+    document_filter_conditions,
+)
 
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]+|[\u4e00-\u9fff]+")
@@ -246,10 +251,10 @@ def vector_search(
     engine: Engine,
     query: str,
     *,
+    filters: RetrievalFilters,
     limit: int = 10,
     active_embedding_version: str | None = None,
     embedding_provider=None,
-    viewer_user_id: str | None = None,
 ) -> list[dict[str, object]]:
     settings = get_settings()
     provider = embedding_provider or DeterministicEmbeddingProvider(dimension=settings.embedding_dimension)
@@ -260,8 +265,8 @@ def vector_search(
             engine,
             pgvector_storage_embedding(query_embedding),
             embedding_version=embedding_version,
+            filters=filters,
             limit=limit,
-            viewer_user_id=viewer_user_id,
         )
     statement = (
         select(
@@ -282,7 +287,8 @@ def vector_search(
         )
         .where(chunk_vector_embeddings.c.embedding_version == embedding_version)
         .where(chunk_vector_embeddings.c.status == "ready")
-        .where(visible_document_condition(viewer_user_id))
+        .where(*document_filter_conditions(filters))
+        .where(*chunk_filter_conditions(chunk_vector_embeddings.c.chunk_id, filters))
     )
     with engine.connect() as connection:
         rows = connection.execute(statement).mappings().all()
@@ -302,7 +308,10 @@ def vector_search(
                     "vector_ref": f"pgvector://chunk_vector_embeddings/{embedding_id}",
                 }
             )
-    return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
+    return sorted(
+        scored,
+        key=lambda item: (-float(item["score"]), str(item["chunk_id"])),
+    )[:limit]
 
 
 def visual_page_search(
@@ -401,8 +410,8 @@ def postgres_vector_search(
     query_embedding: list[float],
     *,
     embedding_version: str,
+    filters: RetrievalFilters,
     limit: int,
-    viewer_user_id: str | None,
 ) -> list[dict[str, object]]:
     distance = chunk_vector_embeddings.c.embedding.op("<=>")(
         bindparam("query_embedding", query_embedding, type_=Vector(PGVECTOR_DIMENSION))
@@ -427,8 +436,9 @@ def postgres_vector_search(
         )
         .where(chunk_vector_embeddings.c.embedding_version == embedding_version)
         .where(chunk_vector_embeddings.c.status == "ready")
-        .where(visible_document_condition(viewer_user_id))
-        .order_by(distance)
+        .where(*document_filter_conditions(filters))
+        .where(*chunk_filter_conditions(chunk_vector_embeddings.c.chunk_id, filters))
+        .order_by(distance, chunk_vector_embeddings.c.chunk_id)
         .limit(limit)
     )
     with engine.connect() as connection:

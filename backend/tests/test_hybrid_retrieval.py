@@ -4,18 +4,11 @@ from agromech_api.db.enums import ChunkType, DocumentStatus
 from agromech_api.db.models import document_chunks, documents, metadata, retrieval_logs
 from agromech_api.domain.entities import process_document_entities
 from agromech_api.rag.retrieval.hybrid import (
-    CHANNEL_WEIGHTS,
-    EvidenceMergeAgent,
-    KeywordRetrievalAgent,
-    RerankAgent,
-    StructuredRetrievalAgent,
-    VectorRetrievalAgent,
-    VisualRetrievalAgent,
-    add_candidate,
     hybrid_retrieve,
     hybrid_retrieve_with_trace,
 )
-from agromech_api.rag.retrieval.query_understanding import parse_query
+from agromech_api.rag.retrieval.filters import build_retrieval_filters
+from agromech_api.rag.retrieval.fusion import RankedHit
 from agromech_api.rag.retrieval.rerank import RerankError
 from agromech_api.rag.retrieval.indexing import SearchIndexer
 
@@ -75,7 +68,7 @@ def seed_retrieval_corpus(engine) -> None:
                     "mime_type": "image/png",
                     "storage_uri": "file:///tmp/warning.png",
                     "brand": "Kubota",
-                    "model": "M7040",
+                    "model": None,
                     "document_type": "visual_observation",
                     "language": "zh-CN",
                     "document_version": "2024",
@@ -119,79 +112,120 @@ def seed_retrieval_corpus(engine) -> None:
         SearchIndexer(engine).index_document(document_id)
 
 
-def test_hybrid_retrieval_merges_channels_and_deduplicates_candidates(tmp_path) -> None:
+class FixedBm25Retriever:
+    def search(self, _engine, _query, *, filters, limit):
+        _ = filters, limit
+        return [
+            RankedHit(chunk_id="chunk-m7040", rank=1, score=8.0),
+            RankedHit(chunk_id="chunk-l3901", rank=2, score=3.0),
+        ]
+
+
+def test_hybrid_retrieval_uses_dense_bm25_rrf_and_no_structured_channel(tmp_path) -> None:
     engine = create_test_engine(tmp_path)
     seed_retrieval_corpus(engine)
 
-    result = hybrid_retrieve(engine, "M7040 E01 hydraulic pump")
-
-    assert result["status"] == "ok"
-    m7040 = next(candidate for candidate in result["candidates"] if candidate["chunk_id"] == "chunk-m7040")
-    assert set(m7040["channels"]) >= {"keyword", "vector", "structured"}
-    assert "graph" not in m7040["channels"]
-    assert len([candidate for candidate in result["candidates"] if candidate["chunk_id"] == "chunk-m7040"]) == 1
-
-
-def test_candidate_merge_keeps_highest_score_per_channel_without_double_counting(tmp_path) -> None:
-    engine = create_test_engine(tmp_path)
-    seed_retrieval_corpus(engine)
-    candidates: dict[str, dict[str, object]] = {}
-
-    add_candidate(engine, candidates, "chunk-m7040", "keyword", 0.4)
-    add_candidate(engine, candidates, "chunk-m7040", "keyword", 0.9)
-
-    candidate = candidates["chunk-m7040"]
-    assert candidate["channels"] == ["keyword"]
-    assert candidate["score"] == 0.9 * CHANNEL_WEIGHTS["keyword"]
-
-
-def test_channel_retrieval_agents_return_independent_channel_results(tmp_path) -> None:
-    engine = create_test_engine(tmp_path)
-    seed_retrieval_corpus(engine)
-    parsed = parse_query("M7040 E01 hydraulic pump", engine=engine)
-
-    keyword = KeywordRetrievalAgent().run(engine, "M7040 E01 hydraulic pump", parsed, limit=5)
-    structured = StructuredRetrievalAgent().run(engine, "M7040 E01 hydraulic pump", parsed, limit=5)
-    vector = VectorRetrievalAgent().run(engine, "M7040 E01 hydraulic pump", parsed, limit=5)
-
-    assert keyword["channel"] == "keyword"
-    assert keyword["status"] == "ok"
-    assert any(result["chunk_id"] == "chunk-m7040" for result in keyword["results"])
-    assert structured["channel"] == "structured"
-    assert any(result["chunk_id"] == "chunk-m7040" for result in structured["results"])
-    assert vector["channel"] == "vector"
-    assert vector["status"] == "ok"
-
-
-def test_evidence_merge_and_visual_agents_combine_channel_results(tmp_path) -> None:
-    engine = create_test_engine(tmp_path)
-    seed_retrieval_corpus(engine)
-    parsed = parse_query("dashboard hydraulic warning image", engine=engine)
-    keyword = KeywordRetrievalAgent().run(engine, "dashboard hydraulic warning image", parsed, limit=5)
-
-    candidates = EvidenceMergeAgent().run(engine, [keyword], parsed)
-    with_visual = VisualRetrievalAgent().run(candidates)
-
-    image_candidate = next(candidate for candidate in with_visual if candidate["chunk_id"] == "chunk-image")
-    assert "keyword" in image_candidate["channels"]
-    assert "vision" in image_candidate["channels"]
-
-
-def test_rerank_agent_returns_ranked_candidates_and_trace(tmp_path) -> None:
-    engine = create_test_engine(tmp_path)
-    seed_retrieval_corpus(engine)
-    parsed = parse_query("M7040 E01 hydraulic pump", engine=engine)
-    candidates = EvidenceMergeAgent().run(
+    result = hybrid_retrieve_with_trace(
         engine,
-        [KeywordRetrievalAgent().run(engine, "M7040 E01 hydraulic pump", parsed, limit=5)],
-        parsed,
+        "M7040 E01 hydraulic pump",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
+        bm25_retriever=FixedBm25Retriever(),
+        trace_id="trace-rrf",
     )
 
-    ranked, trace = RerankAgent().run(candidates, parsed, limit=2, query="M7040 E01 hydraulic pump")
+    first = result["candidates"][0]
+    assert first["chunk_id"] == "chunk-m7040"
+    assert set(first["channels"]) == {"bm25", "dense"}
+    assert first["score"] == first["rrf_score"]
+    assert first["channel_ranks"] == {"bm25": 1, "dense": 1}
+    assert "structured" not in first["channels"]
 
-    assert ranked
-    assert trace["strategy"] == "deterministic_evidence_rerank"
-    assert trace["items"]
+
+def test_bm25_failure_degrades_to_dense_only(tmp_path) -> None:
+    class FailingBm25Retriever:
+        def search(self, *_args, **_kwargs):
+            raise RuntimeError("bm25 unavailable")
+
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    result = hybrid_retrieve_with_trace(
+        engine,
+        "dashboard hydraulic warning",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
+        bm25_retriever=FailingBm25Retriever(),
+        trace_id="trace-bm25-degraded",
+    )
+
+    assert result["status"] == "ok"
+    with engine.connect() as connection:
+        log = connection.execute(select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-bm25-degraded")).mappings().one()
+    assert {"channel": "bm25", "reason": "bm25_degraded"} in log["channels"]["degraded"]
+
+
+def test_dense_failure_degrades_to_bm25_only(tmp_path) -> None:
+    class FailingEmbeddingProvider:
+        provider = "test"
+        model = "failing"
+
+        def embed(self, _query):
+            raise RuntimeError("dense unavailable")
+
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    result = hybrid_retrieve_with_trace(
+        engine,
+        "M7040 E01 hydraulic pump",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
+        embedding_provider=FailingEmbeddingProvider(),
+        bm25_retriever=FixedBm25Retriever(),
+        trace_id="trace-dense-degraded",
+    )
+
+    assert result["status"] == "ok"
+    assert result["candidates"][0]["channels"] == ["bm25"]
+    with engine.connect() as connection:
+        log = connection.execute(select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-dense-degraded")).mappings().one()
+    assert {"channel": "dense", "reason": "dense_degraded"} in log["channels"]["degraded"]
+
+
+def test_both_retrieval_channels_failing_returns_evidence_insufficient(tmp_path) -> None:
+    class FailingEmbeddingProvider:
+        def embed(self, _query):
+            raise RuntimeError("dense unavailable")
+
+    class FailingBm25Retriever:
+        def search(self, *_args, **_kwargs):
+            raise RuntimeError("bm25 unavailable")
+
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    result = hybrid_retrieve_with_trace(
+        engine,
+        "M7040 E01 hydraulic pump",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
+        embedding_provider=FailingEmbeddingProvider(),
+        bm25_retriever=FailingBm25Retriever(),
+        trace_id="trace-all-retrieval-degraded",
+    )
+
+    assert result["status"] == "evidence_insufficient"
+    assert result["final_evidence"] == []
+
+
+def test_dense_and_bm25_share_explicit_model_filter_before_top_k(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    filters = build_retrieval_filters(request_filters={"model": "M7040"}, viewer_user_id=None)
+
+    result = hybrid_retrieve_with_trace(
+        engine,
+        "E01 repair",
+        filters=filters,
+        bm25_retriever=FixedBm25Retriever(),
+        trace_id="trace-model-filter",
+    )
+
+    assert {candidate["document_id"] for candidate in result["candidates"]} == {"doc-m7040"}
 
 
 def test_hybrid_retrieval_marks_unrelated_model_candidates_not_applicable(tmp_path) -> None:
@@ -205,21 +239,8 @@ def test_hybrid_retrieval_marks_unrelated_model_candidates_not_applicable(tmp_pa
     assert first["chunk_id"] == "chunk-m7040"
     assert unrelated["not_applicable"] is True
     assert unrelated["applicability_reason"] == "model_mismatch"
-    assert unrelated["score"] < first["score"]
-
-
-def test_hybrid_retrieval_prioritizes_structured_document_metadata(tmp_path) -> None:
-    engine = create_test_engine(tmp_path)
-    seed_retrieval_corpus(engine)
-
-    result = hybrid_retrieve(engine, "Kubota M7040 repair_manual zh-CN 2024 E01 hydraulic")
-
-    first = result["candidates"][0]
-    unrelated = next(candidate for candidate in result["candidates"] if candidate["chunk_id"] == "chunk-l3901")
-    assert first["chunk_id"] == "chunk-m7040"
-    assert "structured" in first["channels"]
-    assert unrelated["not_applicable"] is True
-    assert unrelated["applicability_reason"] == "model_mismatch"
+    assert unrelated["score"] == unrelated["rrf_score"]
+    assert unrelated["rerank_score"] < first["rerank_score"]
 
 
 def test_hybrid_retrieval_can_use_pgvector_candidates(tmp_path) -> None:
@@ -232,7 +253,7 @@ def test_hybrid_retrieval_can_use_pgvector_candidates(tmp_path) -> None:
     )
 
     image_candidate = next(candidate for candidate in result["candidates"] if candidate["chunk_id"] == "chunk-image")
-    assert "vector" in image_candidate["channels"]
+    assert "dense" in image_candidate["channels"]
     assert image_candidate["vector_ref"].startswith("pgvector://chunk_vector_embeddings/")
 
 
@@ -283,17 +304,6 @@ def test_hybrid_retrieval_ignores_graph_candidates_without_source_chunk(tmp_path
     result = hybrid_retrieve(engine, "M7040 E01 hydraulic pump")
 
     assert all("graph" not in candidate["channels"] for candidate in result["candidates"])
-
-
-def test_hybrid_retrieval_includes_vision_channel_for_image_candidates(tmp_path) -> None:
-    engine = create_test_engine(tmp_path)
-    seed_retrieval_corpus(engine)
-
-    result = hybrid_retrieve(engine, "dashboard hydraulic warning image")
-
-    image_candidate = next(candidate for candidate in result["candidates"] if candidate["chunk_id"] == "chunk-image")
-    assert "vision" in image_candidate["channels"]
-    assert image_candidate["chunk_type"] == ChunkType.IMAGE.value
 
 
 class ReverseRerankProvider:
@@ -452,10 +462,18 @@ def test_deterministic_rerank_fallback_prioritizes_model_fault_code_source_and_t
 
 
 def test_hybrid_retrieval_returns_evidence_insufficient_when_no_candidates(tmp_path) -> None:
+    class EmptyEmbeddingProvider:
+        def embed(self, _query):
+            return [0.0] * 1024
+
     engine = create_test_engine(tmp_path)
     seed_retrieval_corpus(engine)
 
-    result = hybrid_retrieve(engine, "orchard sprayer calibration nozzle")
+    result = hybrid_retrieve(
+        engine,
+        "orchard sprayer calibration nozzle",
+        embedding_provider=EmptyEmbeddingProvider(),
+    )
 
     assert result == {
         "status": "evidence_insufficient",
@@ -510,8 +528,8 @@ def test_hybrid_retrieval_hides_private_document_from_anonymous_viewer(tmp_path)
     seed_retrieval_corpus(engine)
     seed_private_document(engine, owner_user_id="owner-1")
 
-    # 未登录访客（viewer_user_id 为 None）只能检索公用文档。
-    result = hybrid_retrieve_with_trace(engine, "M7040 E01 hydraulic pump", viewer_user_id=None)
+    filters = build_retrieval_filters(request_filters={}, viewer_user_id=None)
+    result = hybrid_retrieve_with_trace(engine, "M7040 E01 hydraulic pump", filters=filters)
 
     document_ids = candidate_document_ids(result)
     assert "doc-m7040" in document_ids
@@ -523,8 +541,8 @@ def test_hybrid_retrieval_hides_private_document_from_non_owner(tmp_path) -> Non
     seed_retrieval_corpus(engine)
     seed_private_document(engine, owner_user_id="owner-1")
 
-    # 其他登录用户不能检索到别人的私有文档。
-    result = hybrid_retrieve_with_trace(engine, "M7040 E01 hydraulic pump", viewer_user_id="intruder-2")
+    filters = build_retrieval_filters(request_filters={}, viewer_user_id="intruder-2")
+    result = hybrid_retrieve_with_trace(engine, "M7040 E01 hydraulic pump", filters=filters)
 
     document_ids = candidate_document_ids(result)
     assert "doc-m7040" in document_ids
@@ -536,8 +554,8 @@ def test_hybrid_retrieval_returns_private_document_to_its_owner(tmp_path) -> Non
     seed_retrieval_corpus(engine)
     seed_private_document(engine, owner_user_id="owner-1")
 
-    # 归属者本人可以检索到自己的私有文档，也能看到公用文档。
-    result = hybrid_retrieve_with_trace(engine, "M7040 E01 hydraulic pump", viewer_user_id="owner-1")
+    filters = build_retrieval_filters(request_filters={}, viewer_user_id="owner-1")
+    result = hybrid_retrieve_with_trace(engine, "M7040 E01 hydraulic pump", filters=filters)
 
     document_ids = candidate_document_ids(result)
     assert "doc-private" in document_ids

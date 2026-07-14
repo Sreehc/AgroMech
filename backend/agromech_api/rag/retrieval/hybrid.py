@@ -3,166 +3,69 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
-from sqlalchemy import Engine, or_, select
+from sqlalchemy import Engine, select
 
 from agromech_api.core.config import get_settings
 from agromech_api.db.enums import ChunkType
 from agromech_api.db.models import chunk_entity_links, document_chunks, documents, retrieval_logs
 from agromech_api.domain.entities import normalize
-from agromech_api.rag.retrieval.indexing import keyword_search, vector_search
-from agromech_api.rag.retrieval.query_understanding import ParsedQuery, parse_query, structured_filter_chunks
+from agromech_api.rag.retrieval.bm25 import Bm25Retriever, build_bm25_retriever
+from agromech_api.rag.retrieval.filters import (
+    RetrievalFilters,
+    build_retrieval_filters,
+    chunk_filter_conditions,
+    document_filter_conditions,
+)
+from agromech_api.rag.retrieval.fusion import FusedHit, RankedHit, rrf_fuse
+from agromech_api.rag.retrieval.indexing import vector_search
+from agromech_api.rag.retrieval.query_understanding import ParsedQuery, parse_query
 from agromech_api.rag.retrieval.rerank import RerankError
 
 
-CHANNEL_WEIGHTS = {
-    "structured": 4.0,
-    "keyword": 2.0,
-    "vector": 1.5,
-    "vision": 1.0,
-}
-MIN_CANDIDATE_SCORE = 0.25
-
-
-# 未登录访客（viewer_user_id 为 None）只能检索公用文档。这是一条 fail-closed
-# 安全线：任何未能证明可见的候选都会被剔除。
-def visible_document_ids(
-    engine: Engine,
-    document_ids: set[str],
-    *,
-    viewer_user_id: str | None,
-) -> set[str]:
-    """返回 document_ids 中对该访问者可见的子集。
-
-    可见性规则与文档 REST 层保持一致：公用文档对所有人可见；私有文档仅归属者
-    本人可见。登录用户传入其 user_id；匿名访客传 None，此时只返回公用文档。
-    """
-    if not document_ids:
-        return set()
-    conditions = [documents.c.visibility == "public"]
-    if viewer_user_id is not None:
-        conditions.append(documents.c.owner_user_id == viewer_user_id)
-    with engine.connect() as connection:
-        rows = connection.execute(
-            select(documents.c.id)
-            .where(
-                documents.c.id.in_(document_ids),
-                or_(*conditions),
-            )
-        ).scalars().all()
-    return set(rows)
-
-
-class KeywordRetrievalAgent:
-    channel = "keyword"
-
-    def run(self, engine: Engine, query: str, parsed: ParsedQuery, *, limit: int, **_kwargs) -> dict[str, object]:
-        _ = parsed
-        return {
-            "channel": self.channel,
-            "status": "ok",
-            "results": [
-                {
-                    "chunk_id": result["chunk_id"],
-                    "score": float(result["score"]),
-                }
-                for result in keyword_search(engine, query, limit=limit * 2)
-            ],
-        }
-
-
-class VectorRetrievalAgent:
-    channel = "vector"
+class DenseRetrievalAgent:
+    channel = "dense"
 
     def run(
         self,
         engine: Engine,
         query: str,
-        parsed: ParsedQuery,
         *,
+        filters: RetrievalFilters,
         limit: int,
         embedding_provider=None,
-        degraded_channels: dict[str, str] | None = None,
-        viewer_user_id: str | None = None,
-        **_kwargs,
-    ) -> dict[str, object]:
-        _ = parsed
-        try:
-            results = [
-                {
-                    "chunk_id": result["chunk_id"],
-                    "score": float(result["score"]),
-                    "vector_ref": result.get("vector_ref"),
-                    "embedding_id": result.get("embedding_id"),
-                }
-                for result in vector_search(
-                    engine,
-                    query,
-                    limit=limit * 2,
-                    embedding_provider=embedding_provider,
-                    viewer_user_id=viewer_user_id,
-                )
-            ]
-        except Exception:  # noqa: BLE001 - vector degradation must not fail retrieval.
-            if degraded_channels is not None:
-                degraded_channels[self.channel] = "vector_degraded"
-            return {"channel": self.channel, "status": "degraded", "results": []}
-        return {"channel": self.channel, "status": "ok", "results": results}
+    ) -> list[RankedHit]:
+        results = vector_search(
+            engine,
+            query,
+            filters=filters,
+            limit=limit,
+            embedding_provider=embedding_provider,
+        )
+        return [
+            RankedHit(
+                chunk_id=str(result["chunk_id"]),
+                rank=rank,
+                score=float(result["score"]),
+                vector_ref=str(result["vector_ref"]) if result.get("vector_ref") else None,
+                embedding_id=str(result["embedding_id"]) if result.get("embedding_id") else None,
+            )
+            for rank, result in enumerate(results, start=1)
+        ]
 
 
-class StructuredRetrievalAgent:
-    channel = "structured"
+class Bm25RetrievalAgent:
+    channel = "bm25"
 
-    def run(self, engine: Engine, query: str, parsed: ParsedQuery, *, limit: int, **_kwargs) -> dict[str, object]:
-        _ = query, limit
-        return {
-            "channel": self.channel,
-            "status": "ok",
-            "results": [
-                {
-                    "chunk_id": result["chunk_id"],
-                    "score": float(len(result["matched_filters"])),
-                }
-                for result in structured_filter_chunks(engine, parsed)
-            ],
-        }
-
-
-class EvidenceMergeAgent:
     def run(
         self,
         engine: Engine,
-        channel_results: list[dict[str, object]],
-        parsed: ParsedQuery,
-    ) -> list[dict[str, object]]:
-        candidates: dict[str, dict[str, object]] = {}
-        for channel_result in channel_results:
-            channel = str(channel_result["channel"])
-            for result in channel_result.get("results", []):
-                add_candidate(
-                    engine,
-                    candidates,
-                    str(result["chunk_id"]),
-                    channel,
-                    float(result["score"]),
-                    vector_ref=result.get("vector_ref") if isinstance(result, dict) else None,
-                    embedding_id=result.get("embedding_id") if isinstance(result, dict) else None,
-                )
-        for candidate in candidates.values():
-            apply_model_applicability(engine, candidate, parsed)
-        return list(candidates.values())
-
-
-class VisualRetrievalAgent:
-    channel = "vision"
-
-    def run(self, candidates: list[dict[str, object]]) -> list[dict[str, object]]:
-        updated: list[dict[str, object]] = []
-        for candidate in candidates:
-            candidate = dict(candidate)
-            if candidate["chunk_type"] == ChunkType.IMAGE.value:
-                add_channel(candidate, self.channel, CHANNEL_WEIGHTS[self.channel])
-            updated.append(candidate)
-        return updated
+        query: str,
+        *,
+        filters: RetrievalFilters,
+        limit: int,
+        retriever: Bm25Retriever,
+    ) -> list[RankedHit]:
+        return retriever.search(engine, query, filters=filters, limit=limit)
 
 
 class RerankAgent:
@@ -193,32 +96,30 @@ def hybrid_retrieve(
     query: str,
     *,
     limit: int = 10,
+    filters: RetrievalFilters | None = None,
+    query_rewrite: dict[str, object] | None = None,
+    degraded_channels: dict[str, str] | None = None,
     embedding_provider=None,
+    bm25_retriever: Bm25Retriever | None = None,
     rerank_provider=None,
     rerank_top_k: int | None = None,
+    settings=None,
 ) -> dict[str, object]:
-    parsed = parse_query(query, engine=engine)
-    degraded_channels: dict[str, str] = {}
-    candidate_limit = max(limit, rerank_top_k or limit)
-    ranked = rank_candidates(
-        collect_candidates(
-            engine,
-            query,
-            parsed,
-            limit=candidate_limit,
-            embedding_provider=embedding_provider,
-            degraded_channels=degraded_channels,
-        ),
-        limit=candidate_limit,
-    )
-    reranked, _trace = RerankAgent().run(
-        ranked,
-        parsed,
-        limit=limit,
-        query=query,
+    _ = query_rewrite
+    settings = settings or get_settings()
+    filters = filters or build_retrieval_filters(request_filters={}, viewer_user_id=None)
+    degraded_channels = dict(degraded_channels or {})
+    _, reranked, _, _ = retrieve_candidates(
+        engine,
+        query,
+        filters=filters,
+        final_limit=limit,
+        embedding_provider=embedding_provider,
+        bm25_retriever=bm25_retriever,
         rerank_provider=rerank_provider,
-        degraded_channels=degraded_channels,
         rerank_top_k=rerank_top_k,
+        degraded_channels=degraded_channels,
+        settings=settings,
     )
     if not reranked:
         return evidence_insufficient()
@@ -230,58 +131,53 @@ def hybrid_retrieve_with_trace(
     query: str,
     *,
     trace_id: str | None = None,
-    limit: int = 10,
+    limit: int | None = None,
     logged_query: str | None = None,
-    filters: dict[str, object] | None = None,
+    filters: RetrievalFilters | None = None,
+    query_rewrite: dict[str, object] | None = None,
     degraded_channels: dict[str, str] | None = None,
     embedding_provider=None,
+    bm25_retriever: Bm25Retriever | None = None,
     rerank_provider=None,
     rerank_top_k: int | None = None,
-    viewer_user_id: str | None = None,
     settings=None,
 ) -> dict[str, object]:
     settings = settings or get_settings()
-    parsed = parse_query(query, engine=engine)
+    filters = filters or build_retrieval_filters(request_filters={}, viewer_user_id=None)
+    query_rewrite = dict(query_rewrite or {})
+    final_limit = limit or settings.final_evidence_limit
     trace_id = trace_id or str(uuid4())
     degraded_channels = dict(degraded_channels or {})
-    candidate_limit = max(limit, rerank_top_k or limit)
-    ranked = rank_candidates(
-        collect_candidates(
-            engine,
-            query,
-            parsed,
-            limit=candidate_limit,
-            embedding_provider=embedding_provider,
-            degraded_channels=degraded_channels,
-            viewer_user_id=viewer_user_id,
-        ),
-        limit=candidate_limit,
-    )
-    reranked, rerank_trace = RerankAgent().run(
-        ranked,
-        parsed,
-        limit=limit,
-        query=query,
+    candidates, reranked, fusion_trace, rerank_trace = retrieve_candidates(
+        engine,
+        query,
+        filters=filters,
+        final_limit=final_limit,
+        embedding_provider=embedding_provider,
+        bm25_retriever=bm25_retriever,
         rerank_provider=rerank_provider,
-        degraded_channels=degraded_channels,
         rerank_top_k=rerank_top_k,
+        degraded_channels=degraded_channels,
+        settings=settings,
     )
     status = "ok" if reranked else "evidence_insufficient"
     final_evidence = evidence_payload(reranked)
-    channels = channel_trace(ranked, degraded_channels)
+    channels = channel_trace(candidates, degraded_channels, settings=settings)
     write_retrieval_log(
         engine,
         trace_id=trace_id,
         query=logged_query or query,
-        filters=dict(filters or parsed.filters),
+        filters=filters.as_trace(),
         channels=channels,
         model_config=trace_model_config(settings),
-        candidates=[trace_candidate(candidate) for candidate in ranked],
+        query_rewrite=query_rewrite,
+        fusion=fusion_trace,
+        candidates=[trace_candidate(candidate) for candidate in candidates],
         rerank=rerank_trace,
         final_evidence=final_evidence,
     )
     if not reranked:
-        return {**evidence_insufficient(), "trace_id": trace_id}
+        return {**evidence_insufficient(), "trace_id": trace_id, "final_evidence": []}
     return {
         "status": status,
         "trace_id": trace_id,
@@ -290,116 +186,178 @@ def hybrid_retrieve_with_trace(
     }
 
 
-def collect_candidates(
+def retrieve_candidates(
     engine: Engine,
     query: str,
-    parsed: ParsedQuery,
     *,
-    limit: int,
+    filters: RetrievalFilters,
+    final_limit: int,
     embedding_provider=None,
-    degraded_channels: dict[str, str] | None = None,
-    viewer_user_id: str | None = None,
-) -> list[dict[str, object]]:
-    channel_results = collect_channel_results(
+    bm25_retriever: Bm25Retriever | None = None,
+    rerank_provider=None,
+    rerank_top_k: int | None = None,
+    degraded_channels: dict[str, str],
+    settings=None,
+) -> tuple[
+    list[dict[str, object]],
+    list[dict[str, object]],
+    dict[str, object],
+    dict[str, object],
+]:
+    settings = settings or get_settings()
+    parsed = parse_query(query, engine=engine)
+    channel_hits, channel_status = collect_ranked_hits(
         engine,
         query,
-        parsed,
-        limit=limit,
+        filters=filters,
+        dense_top_k=settings.dense_top_k,
+        bm25_top_k=settings.bm25_top_k,
         embedding_provider=embedding_provider,
-        degraded_channels=degraded_channels,
-        viewer_user_id=viewer_user_id,
+        bm25_retriever=bm25_retriever or build_bm25_retriever(engine),
     )
-    candidates = EvidenceMergeAgent().run(engine, channel_results, parsed)
-    candidates = VisualRetrievalAgent().run(candidates)
-    candidates = enforce_visibility(engine, candidates, viewer_user_id=viewer_user_id)
-    return viable_candidates(candidates)
+    for channel, status in channel_status.items():
+        if status.endswith("_degraded"):
+            degraded_channels[channel] = status
+    fused, fusion_trace = rrf_fuse(
+        channel_hits,
+        rrf_k=settings.rrf_k,
+        weights={
+            "dense": settings.rrf_dense_weight,
+            "bm25": settings.rrf_bm25_weight,
+        },
+        limit=settings.fusion_top_k,
+    )
+    candidates = hydrate_fused_candidates(engine, fused)
+    candidates = enforce_retrieval_filters(engine, candidates, filters=filters)
+    for candidate in candidates:
+        apply_model_applicability(engine, candidate, parsed)
+    reranked, rerank_trace = RerankAgent().run(
+        candidates,
+        parsed,
+        limit=final_limit,
+        query=query,
+        rerank_provider=rerank_provider,
+        degraded_channels=degraded_channels,
+        rerank_top_k=rerank_top_k or settings.rerank_top_k,
+    )
+    return candidates, reranked, fusion_trace, rerank_trace
 
 
-def enforce_visibility(
+def collect_ranked_hits(
+    engine: Engine,
+    query: str,
+    *,
+    filters: RetrievalFilters,
+    dense_top_k: int,
+    bm25_top_k: int,
+    embedding_provider=None,
+    bm25_retriever: Bm25Retriever,
+) -> tuple[dict[str, list[RankedHit]], dict[str, str]]:
+    jobs = {
+        "dense": (
+            DenseRetrievalAgent().run,
+            {
+                "engine": engine,
+                "query": query,
+                "filters": filters,
+                "limit": dense_top_k,
+                "embedding_provider": embedding_provider,
+            },
+        ),
+        "bm25": (
+            Bm25RetrievalAgent().run,
+            {
+                "engine": engine,
+                "query": query,
+                "filters": filters,
+                "limit": bm25_top_k,
+                "retriever": bm25_retriever,
+            },
+        ),
+    }
+    channel_hits: dict[str, list[RankedHit]] = {"dense": [], "bm25": []}
+    channel_status: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
+        futures = {
+            channel: executor.submit(run, **kwargs)
+            for channel, (run, kwargs) in jobs.items()
+        }
+        for channel, future in futures.items():
+            try:
+                channel_hits[channel] = future.result()
+                channel_status[channel] = "ok" if channel_hits[channel] else "empty"
+            except Exception:  # noqa: BLE001 - one channel must degrade independently.
+                channel_status[channel] = f"{channel}_degraded"
+    return channel_hits, channel_status
+
+
+def hydrate_fused_candidates(
+    engine: Engine,
+    fused: list[FusedHit],
+) -> list[dict[str, object]]:
+    if not fused:
+        return []
+    chunk_ids = [hit.chunk_id for hit in fused]
+    with engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                document_chunks.c.id,
+                document_chunks.c.document_id,
+                document_chunks.c.chunk_type,
+                document_chunks.c.content,
+                document_chunks.c.source_locator,
+            ).where(document_chunks.c.id.in_(chunk_ids))
+        ).mappings().all()
+    rows_by_id = {str(row["id"]): row for row in rows}
+    candidates = []
+    for hit in fused:
+        row = rows_by_id.get(hit.chunk_id)
+        if row is None:
+            continue
+        candidates.append(
+            {
+                "chunk_id": hit.chunk_id,
+                "document_id": row["document_id"],
+                "chunk_type": row["chunk_type"],
+                "content": row["content"],
+                "source_locator": row["source_locator"],
+                "channels": sorted(hit.channel_ranks),
+                "channel_ranks": dict(hit.channel_ranks),
+                "channel_scores": dict(hit.channel_scores),
+                "rrf_score": hit.rrf_score,
+                "score": hit.rrf_score,
+                "vector_ref": hit.vector_ref,
+                "embedding_id": hit.embedding_id,
+                "not_applicable": False,
+            }
+        )
+    return candidates
+
+
+def enforce_retrieval_filters(
     engine: Engine,
     candidates: list[dict[str, object]],
     *,
-    viewer_user_id: str | None,
+    filters: RetrievalFilters,
 ) -> list[dict[str, object]]:
-    """剔除访问者无权看到的候选（fail-closed 安全线）。
-
-    在候选合并后、排序前统一过滤：公用文档对所有人可见，私有文档仅归属者本人
-    可见，匿名访客只保留公用文档。任何 document_id 无法证明可见的候选都被丢弃。
-    """
-    document_ids = {
-        str(candidate["document_id"])
-        for candidate in candidates
-        if candidate.get("document_id")
-    }
-    allowed = visible_document_ids(engine, document_ids, viewer_user_id=viewer_user_id)
-    return [
-        candidate
-        for candidate in candidates
-        if candidate.get("document_id") and str(candidate["document_id"]) in allowed
-    ]
-
-
-def collect_channel_results(
-    engine: Engine,
-    query: str,
-    parsed: ParsedQuery,
-    *,
-    limit: int,
-    embedding_provider=None,
-    degraded_channels: dict[str, str] | None = None,
-    viewer_user_id: str | None = None,
-) -> list[dict[str, object]]:
-    agents = [
-        (
-            KeywordRetrievalAgent(),
-            {
-                "engine": engine,
-                "query": query,
-                "parsed": parsed,
-                "limit": limit,
-            },
-        ),
-        (
-            VectorRetrievalAgent(),
-            {
-                "engine": engine,
-                "query": query,
-                "parsed": parsed,
-                "limit": limit,
-                "embedding_provider": embedding_provider,
-                "degraded_channels": degraded_channels,
-                "viewer_user_id": viewer_user_id,
-            },
-        ),
-        (
-            StructuredRetrievalAgent(),
-            {
-                "engine": engine,
-                "query": query,
-                "parsed": parsed,
-                "limit": limit,
-            },
-        ),
-    ]
-    with ThreadPoolExecutor(max_workers=len(agents)) as executor:
-        futures = [
-            executor.submit(agent.run, **kwargs)
-            for agent, kwargs in agents
-        ]
-        return [future.result() for future in futures]
-
-
-def viable_candidates(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
-    return [
-        candidate
-        for candidate in candidates
-        if candidate["score"] >= MIN_CANDIDATE_SCORE
-        or any(channel in candidate["channels"] for channel in ["keyword", "structured"])
-    ]
-
-
-def rank_candidates(candidates: list[dict[str, object]], *, limit: int) -> list[dict[str, object]]:
-    return sorted(candidates, key=lambda item: item["score"], reverse=True)[:limit]
+    chunk_ids = [str(candidate["chunk_id"]) for candidate in candidates]
+    if not chunk_ids:
+        return []
+    statement = (
+        select(document_chunks.c.id)
+        .select_from(
+            document_chunks.join(
+                documents,
+                document_chunks.c.document_id == documents.c.id,
+            )
+        )
+        .where(document_chunks.c.id.in_(chunk_ids))
+        .where(*document_filter_conditions(filters))
+        .where(*chunk_filter_conditions(document_chunks.c.id, filters))
+    )
+    with engine.connect() as connection:
+        allowed = set(connection.execute(statement).scalars().all())
+    return [candidate for candidate in candidates if candidate["chunk_id"] in allowed]
 
 
 def rerank_candidates(
@@ -432,7 +390,10 @@ def rerank_candidates(
         reranked["rerank_factors"] = rerank_factors(candidate, parsed)
         scored.append(reranked)
 
-    ranked = sorted(scored, key=lambda item: item["rerank_score"], reverse=True)[:limit]
+    ranked = sorted(
+        scored,
+        key=lambda item: (-float(item["rerank_score"]), str(item["chunk_id"])),
+    )[:limit]
     after_positions = {str(candidate["chunk_id"]): index for index, candidate in enumerate(ranked, start=1)}
     trace_items = []
     for candidate in ranked:
@@ -474,7 +435,10 @@ def model_rerank_candidates(
         reranked["rerank_score"] = float(rerank_score_value)
         reranked_items.append(reranked)
 
-    ranked = sorted(reranked_items, key=lambda item: item["rerank_score"], reverse=True)[:limit]
+    ranked = sorted(
+        reranked_items,
+        key=lambda item: (-float(item["rerank_score"]), str(item["chunk_id"])),
+    )[:limit]
     before_positions = {str(candidate["chunk_id"]): index for index, candidate in enumerate(candidates, start=1)}
     after_positions = {str(candidate["chunk_id"]): index for index, candidate in enumerate(ranked, start=1)}
     trace_items = []
@@ -510,9 +474,6 @@ def rerank_factors(candidate: dict[str, object], parsed: ParsedQuery) -> dict[st
         "source_credibility": source_credibility_score(candidate),
         "text_relevance": text_relevance_score(content, parsed),
         "channel_diversity": 0.15 * len(channels),
-        "structured_bonus": 1.0 if "structured" in channels else 0.0,
-        "graph_bonus": 0.5 if "graph" in channels else 0.0,
-        "vision_bonus": 0.25 if "vision" in channels else 0.0,
         "scope_uncertainty_penalty": -0.2 if parsed.scope_uncertain else 0.0,
         "applicability_penalty": -(score * 0.9) if candidate.get("not_applicable") else 0.0,
     }
@@ -576,7 +537,12 @@ def evidence_insufficient() -> dict[str, object]:
     }
 
 
-def channel_trace(candidates: list[dict[str, object]], degraded_channels: dict[str, str]) -> dict[str, object]:
+def channel_trace(
+    candidates: list[dict[str, object]],
+    degraded_channels: dict[str, str],
+    *,
+    settings,
+) -> dict[str, object]:
     used = sorted({channel for candidate in candidates for channel in candidate["channels"]})
     degraded = [
         {"channel": channel, "reason": reason}
@@ -585,7 +551,7 @@ def channel_trace(candidates: list[dict[str, object]], degraded_channels: dict[s
     return {
         "used": used,
         "degraded": degraded,
-        "embedding_version": get_settings().embedding_version,
+        "embedding_version": settings.embedding_version,
     }
 
 
@@ -616,6 +582,9 @@ def trace_candidate(candidate: dict[str, object]) -> dict[str, object]:
         "content": candidate["content"],
         "source_locator": candidate["source_locator"],
         "channels": list(candidate["channels"]),
+        "channel_ranks": dict(candidate["channel_ranks"]),
+        "channel_scores": dict(candidate["channel_scores"]),
+        "rrf_score": candidate["rrf_score"],
         "score": round(float(candidate["score"]), 6),
         "rerank_score": round(float(candidate.get("rerank_score", candidate["score"])), 6),
         "not_applicable": bool(candidate.get("not_applicable", False)),
@@ -634,6 +603,9 @@ def evidence_payload(candidates: list[dict[str, object]]) -> list[dict[str, obje
             "content": candidate["content"],
             "source_locator": candidate["source_locator"],
             "channels": list(candidate["channels"]),
+            "channel_ranks": dict(candidate["channel_ranks"]),
+            "channel_scores": dict(candidate["channel_scores"]),
+            "rrf_score": candidate["rrf_score"],
             "score": round(float(candidate.get("rerank_score", candidate["score"])), 6),
             "not_applicable": bool(candidate.get("not_applicable", False)),
             "applicability_reason": candidate.get("applicability_reason"),
@@ -652,6 +624,8 @@ def write_retrieval_log(
     filters: dict[str, object],
     channels: dict[str, object],
     model_config: dict[str, object],
+    query_rewrite: dict[str, object],
+    fusion: dict[str, object],
     candidates: list[dict[str, object]],
     rerank: dict[str, object],
     final_evidence: list[dict[str, object]],
@@ -665,6 +639,8 @@ def write_retrieval_log(
                 filters=filters,
                 channels=channels,
                 model_config=model_config,
+                query_rewrite=query_rewrite,
+                fusion=fusion,
                 candidates=candidates,
                 rerank=rerank,
                 final_evidence=final_evidence,
@@ -682,57 +658,6 @@ def graph_candidates(
     return []
 
 
-def add_candidate(
-    engine: Engine,
-    candidates: dict[str, dict[str, object]],
-    chunk_id: str,
-    channel: str,
-    score: float,
-    vector_ref: object | None = None,
-    embedding_id: object | None = None,
-) -> None:
-    candidate = candidates.get(chunk_id)
-    if candidate is None:
-        candidate = chunk_payload(engine, chunk_id)
-        candidates[chunk_id] = candidate
-    add_channel(candidate, channel, score * CHANNEL_WEIGHTS[channel])
-    if vector_ref:
-        candidate["vector_ref"] = vector_ref
-    if embedding_id:
-        candidate["embedding_id"] = embedding_id
-
-
-def add_channel(candidate: dict[str, object], channel: str, weighted_score: float) -> None:
-    channel_scores = candidate.setdefault("channel_scores", {})
-    existing_score = float(channel_scores.get(channel, 0.0))
-    if weighted_score <= existing_score:
-        return
-    channel_scores[channel] = weighted_score
-    if channel not in candidate["channels"]:
-        candidate["channels"].append(channel)
-    candidate["score"] = sum(float(score) for score in channel_scores.values())
-
-
-def chunk_payload(engine: Engine, chunk_id: str) -> dict[str, object]:
-    with engine.connect() as connection:
-        chunk = connection.execute(
-            select(document_chunks).where(document_chunks.c.id == chunk_id)
-        ).mappings().one()
-    return {
-        "chunk_id": chunk["id"],
-        "document_id": chunk["document_id"],
-        "chunk_type": chunk["chunk_type"],
-        "content": chunk["content"],
-        "source_locator": chunk["source_locator"],
-        "channels": [],
-        "channel_scores": {},
-        "score": 0.0,
-        "not_applicable": False,
-        "vector_ref": None,
-        "embedding_id": None,
-    }
-
-
 def apply_model_applicability(engine: Engine, candidate: dict[str, object], parsed: ParsedQuery) -> None:
     explicit_model = parsed.filters.get("model")
     if not explicit_model:
@@ -744,7 +669,6 @@ def apply_model_applicability(engine: Engine, candidate: dict[str, object], pars
     if candidate_models and normalize(str(explicit_model)) not in candidate_models:
         candidate["not_applicable"] = True
         candidate["applicability_reason"] = "model_mismatch"
-        candidate["score"] *= 0.1
 
 
 def chunk_entity_values(engine: Engine, chunk_id: str, entity_type: str) -> set[str]:
