@@ -16,6 +16,8 @@ def build_text_retrieval_tool(retrieve_fn: Callable[..., dict[str, Any]]):
         retriever = AgroMechTextRetriever(
             engine=payload.get("engine"),
             retrieve_payload_fn=retrieve_fn,
+            original_question=str(payload.get("original_question") or payload.get("question") or ""),
+            query_rewrite=dict(payload.get("query_rewrite") or {}),
             filters=payload.get("filters") or {},
             trace_id=payload.get("trace_id"),
             route=payload.get("route") or {},

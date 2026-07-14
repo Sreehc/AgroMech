@@ -12,6 +12,7 @@ class AgentController:
         self,
         *,
         parse_query_fn: Callable[..., Any],
+        rewrite_fn: Callable[..., dict[str, object]],
         retrieve_fn: Callable[..., dict[str, Any]],
         planner_fn: Callable[..., dict[str, Any]] | None = None,
         visual_retrieve_fn: Callable[..., dict[str, Any]] | None = None,
@@ -20,6 +21,7 @@ class AgentController:
     ) -> None:
         self.graph = build_agent_graph(
             parse_query_fn=parse_query_fn,
+            rewrite_fn=rewrite_fn,
             retrieve_fn=retrieve_fn,
             planner_fn=planner_fn,
             visual_retrieve_fn=visual_retrieve_fn,

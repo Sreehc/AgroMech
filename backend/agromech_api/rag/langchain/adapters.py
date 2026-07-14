@@ -56,6 +56,8 @@ class AgroMechTextRetriever(BaseRetriever):
 
     engine: Any
     retrieve_payload_fn: Callable[..., dict[str, Any]]
+    original_question: str = ""
+    query_rewrite: dict[str, Any] = Field(default_factory=dict)
     filters: dict[str, str | None] = Field(default_factory=dict)
     trace_id: str | None = None
     route: dict[str, Any] = Field(default_factory=dict)
@@ -65,6 +67,8 @@ class AgroMechTextRetriever(BaseRetriever):
         return self.retrieve_payload_fn(
             engine=overrides.get("engine", self.engine),
             question=query,
+            original_question=overrides.get("original_question", self.original_question),
+            query_rewrite=overrides.get("query_rewrite", self.query_rewrite),
             filters=overrides.get("filters", self.filters),
             trace_id=overrides.get("trace_id", self.trace_id),
             route=overrides.get("route", self.route),

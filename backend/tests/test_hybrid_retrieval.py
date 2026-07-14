@@ -158,9 +158,59 @@ def test_bm25_failure_degrades_to_dense_only(tmp_path) -> None:
     )
 
     assert result["status"] == "ok"
+    assert result["candidates"][0]["channels"] == ["dense"]
+    assert result["candidates"][0]["channel_scores"]["dense"] > 0.25
     with engine.connect() as connection:
         log = connection.execute(select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-bm25-degraded")).mappings().one()
     assert {"channel": "bm25", "reason": "bm25_degraded"} in log["channels"]["degraded"]
+
+
+def test_low_similarity_dense_only_query_returns_evidence_insufficient(tmp_path) -> None:
+    class EmptyBm25Retriever:
+        def search(self, *_args, **_kwargs):
+            return []
+
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    result = hybrid_retrieve_with_trace(
+        engine,
+        "orchard sprayer calibration nozzle",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
+        bm25_retriever=EmptyBm25Retriever(),
+        trace_id="trace-low-similarity-dense-only",
+    )
+
+    assert result["status"] == "evidence_insufficient"
+    assert result["final_evidence"] == []
+
+
+def test_bm25_hit_survives_low_similarity_dense_filter(tmp_path, monkeypatch) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    monkeypatch.setattr(
+        "agromech_api.rag.retrieval.hybrid.vector_search",
+        lambda *_args, **_kwargs: [
+            {
+                "chunk_id": "chunk-m7040",
+                "score": 0.1,
+                "vector_ref": "pgvector://chunk_vector_embeddings/low-score",
+                "embedding_id": "low-score",
+            }
+        ],
+    )
+
+    result = hybrid_retrieve_with_trace(
+        engine,
+        "M7040 E01 hydraulic pump",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
+        bm25_retriever=FixedBm25Retriever(),
+        trace_id="trace-bm25-survives-dense-filter",
+    )
+
+    assert result["status"] == "ok"
+    assert result["candidates"][0]["chunk_id"] == "chunk-m7040"
+    assert result["candidates"][0]["channels"] == ["bm25"]
 
 
 def test_dense_failure_degrades_to_bm25_only(tmp_path) -> None:
@@ -452,6 +502,14 @@ def test_hybrid_retrieval_falls_back_when_model_rerank_fails(tmp_path) -> None:
 
 
 def test_deterministic_rerank_fallback_prioritizes_model_fault_code_source_and_text_relevance(tmp_path) -> None:
+    class TwoCandidateBm25Retriever:
+        def search(self, _engine, _query, *, filters, limit):
+            _ = filters, limit
+            return [
+                RankedHit(chunk_id="chunk-high", rank=1, score=8.0),
+                RankedHit(chunk_id="chunk-low", rank=2, score=3.0),
+            ]
+
     engine = create_test_engine(tmp_path)
     with engine.begin() as connection:
         connection.execute(
@@ -525,6 +583,7 @@ def test_deterministic_rerank_fallback_prioritizes_model_fault_code_source_and_t
         engine,
         "M7040 E01 hydraulic pump",
         trace_id="trace-deterministic-fallback",
+        bm25_retriever=TwoCandidateBm25Retriever(),
         rerank_provider=FailingRerankProvider(),
         rerank_top_k=5,
     )

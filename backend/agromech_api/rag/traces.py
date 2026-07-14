@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import Depends, status
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, update
 
 from agromech_api.security.auth import UserContext, require_roles
 from agromech_api.db.enums import UserRole
@@ -38,6 +38,31 @@ INTERNAL_PATH_MARKERS = (
     "/etc/",
     "C:\\",
 )
+
+
+def record_citation_trace(
+    engine: Engine,
+    trace_id: str,
+    citations: list[dict[str, object]],
+) -> None:
+    with engine.begin() as connection:
+        row = connection.execute(
+            select(retrieval_logs.c.channels).where(retrieval_logs.c.trace_id == trace_id)
+        ).mappings().one_or_none()
+        if row is None:
+            return
+        channels = dict(row["channels"] or {})
+        channels["citation"] = {
+            "status": "ok" if citations else "insufficient",
+            "count": len(citations),
+            "chunk_ids": [str(item["chunk_id"]) for item in citations if item.get("chunk_id")],
+            "asset_ids": [str(item["asset_id"]) for item in citations if item.get("asset_id")],
+        }
+        connection.execute(
+            update(retrieval_logs)
+            .where(retrieval_logs.c.trace_id == trace_id)
+            .values(channels=channels)
+        )
 
 
 def retrieval_trace_payload(row, user: UserContext) -> dict[str, object]:

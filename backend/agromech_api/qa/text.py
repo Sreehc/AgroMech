@@ -11,9 +11,15 @@ from agromech_api.rag.langchain.adapters import (
     build_answer_chain,
 )
 from agromech_api.rag.retrieval.evidence_check import check_evidence_sufficiency
+from agromech_api.rag.retrieval.filters import build_retrieval_filters
 from agromech_api.rag.retrieval.hybrid import hybrid_retrieve_with_trace
 from agromech_api.rag.retrieval.indexing import visual_page_search
+from agromech_api.rag.retrieval.query_rewrite import (
+    build_query_rewrite_provider,
+    rewrite_query,
+)
 from agromech_api.rag.retrieval.query_understanding import parse_query
+from agromech_api.rag.traces import record_citation_trace
 from agromech_api.integrations.embeddings.text import build_embedding_provider
 from agromech_api.integrations.embeddings.visual import build_visual_embedding_provider
 from agromech_api.sessions.history import append_text_session_exchange, ensure_session_belongs_to_user
@@ -108,6 +114,7 @@ def answer_text_question(
         filters=normalized_filters,
         image_context=image_context,
     )
+    record_citation_trace(engine, trace_id, list(payload.get("citations") or []))
     record_qa(engine, question=normalized_question, payload=payload)
     if session_id and username:
         append_text_session_exchange(
@@ -124,10 +131,13 @@ def answer_text_question(
 def build_text_agent_controller(
     settings: Settings, *, viewer_user_id: str | None = None
 ) -> AgentController:
+    rewrite_provider = build_query_rewrite_provider(settings)
     return AgentController(
-        parse_query_fn=lambda question, engine=None: parse_query(
-            query_with_filters(question, {}),
-            engine=engine,
+        parse_query_fn=lambda question, engine=None: parse_query(question, engine=engine),
+        rewrite_fn=lambda **kwargs: rewrite_for_text_agent(
+            settings=settings,
+            provider=rewrite_provider,
+            **kwargs,
         ),
         retrieve_fn=lambda **kwargs: retrieve_for_text_agent(
             settings=settings, viewer_user_id=viewer_user_id, **kwargs
@@ -141,18 +151,43 @@ def build_text_agent_controller(
     )
 
 
+def rewrite_for_text_agent(
+    *,
+    settings: Settings,
+    provider,
+    question: str,
+    parsed_query,
+    filters: dict[str, str | None],
+    supplemental: bool,
+    **_kwargs,
+) -> dict[str, object]:
+    _ = settings
+    result = rewrite_query(
+        question=question,
+        parsed=parsed_query,
+        request_filters=filters,
+        provider=provider,
+        supplemental=supplemental,
+    )
+    return {"query": result.query, "trace": result.to_trace()}
+
+
 def retrieve_for_text_agent(
     *,
     settings: Settings,
     engine: Engine,
     question: str,
+    original_question: str,
     filters: dict[str, str | None],
+    query_rewrite: dict[str, object],
     trace_id: str,
     viewer_user_id: str | None = None,
     **_kwargs,
 ) -> dict[str, object]:
-    search_query = query_with_filters(question, filters)
-    embedding_provider = build_embedding_provider(settings)
+    retrieval_filters = build_retrieval_filters(
+        request_filters=filters,
+        viewer_user_id=viewer_user_id,
+    )
     rerank_provider = None
     # Graph RAG is currently out of scope for the main QA path, even when
     # experimental graph settings are present.
@@ -162,14 +197,14 @@ def retrieve_for_text_agent(
         rerank_provider = build_rerank_provider(settings)
     retrieval = hybrid_retrieve_with_trace(
         engine,
-        search_query,
+        query_with_filters(question, filters),
         trace_id=trace_id,
-        logged_query=question,
-        filters={key: value for key, value in filters.items() if value is not None},
-        embedding_provider=embedding_provider,
+        logged_query=original_question,
+        filters=retrieval_filters,
+        query_rewrite=query_rewrite,
+        embedding_provider=build_embedding_provider(settings),
         rerank_provider=rerank_provider,
         rerank_top_k=settings.rerank_top_k,
-        viewer_user_id=viewer_user_id,
         settings=settings,
     )
     if retrieval.get("status") == "ok":
@@ -256,11 +291,38 @@ def answer_for_text_agent(
     if retrieval["status"] == "evidence_insufficient":
         return evidence_insufficient_answer(trace_id)
 
-    final_evidence = final_evidence[: settings.final_evidence_limit]
+    final_evidence = [
+        item for item in final_evidence if not item.get("not_applicable")
+    ][: settings.final_evidence_limit]
     retrieval["final_evidence"] = final_evidence
     trim_retrieval_final_evidence(engine, trace_id=trace_id, final_evidence=final_evidence)
-    citations = build_citations(engine, final_evidence)
-    if not citations:
+    if not final_evidence:
+        return evidence_insufficient_answer(trace_id)
+
+    text_citations = {
+        str(item["chunk_id"]): item
+        for item in build_citations(
+            engine,
+            [item for item in final_evidence if item.get("chunk_id")],
+        )
+    }
+    visual_citations = {
+        str(item["asset_id"]): item
+        for item in build_visual_citations(
+            engine,
+            [item for item in final_evidence if item.get("asset_id")],
+        )
+    }
+    citations = []
+    for evidence in final_evidence:
+        citation = (
+            text_citations.get(str(evidence["chunk_id"]))
+            if evidence.get("chunk_id")
+            else visual_citations.get(str(evidence.get("asset_id")))
+        )
+        if citation is not None:
+            citations.append(citation)
+    if not citations or len(citations) != len(final_evidence):
         return evidence_insufficient_answer(trace_id)
 
     search_query = query_with_filters(question, filters)

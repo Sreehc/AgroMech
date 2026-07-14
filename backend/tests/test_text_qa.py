@@ -10,6 +10,7 @@ from agromech_api.core.config import Settings
 from agromech_api.db.enums import ChunkType, DocumentStatus, UserRole
 from agromech_api.db.models import answer_citations, chat_sessions, document_chunks, documents, metadata, qa_messages, qa_records, retrieval_logs
 from agromech_api.main import create_app
+from agromech_api.rag.retrieval.hybrid import hybrid_retrieve_with_trace
 from agromech_api.rag.retrieval.indexing import SearchIndexer
 from test_hybrid_retrieval import seed_retrieval_corpus
 
@@ -87,6 +88,63 @@ def test_text_qa_returns_answer_sections_citations_trace_and_persists_records(tm
     assert qa_record["question"] == "M7040 E01 hydraulic pump repair"
     assert any(citation["chunk_id"] == "chunk-m7040" for citation in citations)
     assert retrieval_log["final_evidence"][0]["chunk_id"] == "chunk-m7040"
+
+
+def test_text_qa_citations_exactly_match_final_reranked_evidence(tmp_path: Path) -> None:
+    client, engine, token = qa_client(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    response = client.post(
+        "/qa/text",
+        headers=auth_header(token, "trace-final-citations"),
+        json={"question": "M7040 E01 hydraulic pump repair"},
+    )
+
+    payload = response.json()
+    with engine.connect() as connection:
+        log = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-final-citations")
+        ).mappings().one()
+    assert [citation["chunk_id"] for citation in payload["citations"]] == [
+        item["chunk_id"] for item in log["final_evidence"] if not item.get("not_applicable")
+    ]
+    assert log["channels"]["citation"] == {
+        "status": "ok",
+        "count": len(payload["citations"]),
+        "chunk_ids": [citation["chunk_id"] for citation in payload["citations"]],
+        "asset_ids": [],
+    }
+
+
+def test_retrieval_log_accumulates_two_rounds_in_one_trace_row(tmp_path: Path) -> None:
+    _client, engine, _token = qa_client(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    hybrid_retrieve_with_trace(
+        engine,
+        "orchard sprayer calibration nozzle",
+        trace_id="trace-two-rounds",
+        logged_query="液压泵异响",
+        query_rewrite={"query": "orchard sprayer calibration nozzle", "provider": "test", "fallback": False},
+    )
+    hybrid_retrieve_with_trace(
+        engine,
+        "液压泵异响 hydraulic pump abnormal noise",
+        trace_id="trace-two-rounds",
+        logged_query="液压泵异响",
+        query_rewrite={"query": "液压泵异响 hydraulic pump abnormal noise", "provider": "rule", "fallback": True},
+    )
+
+    with engine.connect() as connection:
+        logs = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-two-rounds")
+        ).mappings().all()
+    assert len(logs) == 1
+    assert len(logs[0]["query_rewrite"]["attempts"]) == 2
+    assert logs[0]["query_rewrite"]["final"]["provider"] == "rule"
+    assert len(logs[0]["fusion"]["attempts"]) == 2
+    assert logs[0]["fusion"]["final"] == logs[0]["fusion"]["attempts"][-1]
+    assert logs[0]["fusion"]["retrieval_duration_ms"] >= 0
 
 
 def test_text_qa_returns_evidence_insufficient_without_citations(tmp_path: Path) -> None:
@@ -223,13 +281,13 @@ def test_text_qa_uses_pgvector_vector_search(tmp_path: Path) -> None:
         retrieval_log = connection.execute(
             select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-pgvector-vector")
         ).mappings().one()
-    vector_candidates = [
-        candidate for candidate in retrieval_log["candidates"] if "vector" in candidate["channels"]
+    dense_candidates = [
+        candidate for candidate in retrieval_log["candidates"] if "dense" in candidate["channels"]
     ]
-    assert vector_candidates
+    assert dense_candidates
     assert all(
         candidate["vector_ref"].startswith("pgvector://chunk_vector_embeddings/")
-        for candidate in vector_candidates
+        for candidate in dense_candidates
     )
 
 

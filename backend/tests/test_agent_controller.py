@@ -1,10 +1,114 @@
 from agromech_api.rag.agent.controller import AgentController
+from agromech_api.rag.retrieval.query_understanding import parse_query
+
+
+def passthrough_rewrite(**kwargs):
+    return {
+        "query": kwargs["question"],
+        "trace": {"provider": "test", "fallback": kwargs["supplemental"]},
+    }
+
+
+def test_agent_controller_rewrites_before_first_retrieval() -> None:
+    calls: list[str] = []
+    controller = AgentController(
+        parse_query_fn=lambda question, engine=None: calls.append("parse") or parse_query(question),
+        rewrite_fn=lambda **kwargs: calls.append("rewrite")
+        or {
+            "query": "M7040 E01 hydraulic pump",
+            "trace": {"provider": "test", "fallback": False},
+        },
+        retrieve_fn=lambda **kwargs: calls.append(f"retrieve:{kwargs['question']}")
+        or {
+            "status": "ok",
+            "final_evidence": [{"chunk_id": "chunk-1", "document_id": "doc-1"}],
+            "citations": [{"chunk_id": "chunk-1", "document_id": "doc-1"}],
+        },
+        answer_fn=lambda **kwargs: calls.append("answer")
+        or {"answer": "ok", "citations": [], "trace_id": kwargs["trace_id"]},
+    )
+
+    controller.answer_text(engine=None, question="M7040 E01 怎么修？", trace_id="trace-1", filters={})
+
+    assert calls[:3] == ["parse", "rewrite", "retrieve:M7040 E01 hydraulic pump"]
+
+
+def test_agent_controller_uses_llm_once_then_rule_supplemental_rewrite() -> None:
+    rewrite_modes: list[bool] = []
+    retrieval_calls = 0
+
+    def rewrite_fn(**kwargs):
+        rewrite_modes.append(kwargs["supplemental"])
+        return {
+            "query": "first" if not kwargs["supplemental"] else "fallback",
+            "trace": {"fallback": kwargs["supplemental"]},
+        }
+
+    def retrieve_fn(**_kwargs):
+        nonlocal retrieval_calls
+        retrieval_calls += 1
+        return {"status": "evidence_insufficient", "final_evidence": [], "citations": []}
+
+    controller = AgentController(
+        parse_query_fn=lambda question, engine=None: parse_query(question),
+        rewrite_fn=rewrite_fn,
+        retrieve_fn=retrieve_fn,
+        answer_fn=lambda **_kwargs: {"answer": "must not run"},
+    )
+    payload = controller.answer_text(engine=None, question="液压泵异响", trace_id="trace-2", filters={})
+
+    assert rewrite_modes == [False, True]
+    assert retrieval_calls == 2
+    assert payload["citations"] == []
+
+
+def test_agent_controller_uses_rewritten_query_only_for_retrieval() -> None:
+    seen: dict[str, str] = {}
+
+    controller = AgentController(
+        parse_query_fn=lambda question, engine=None: parse_query(question),
+        rewrite_fn=lambda **_kwargs: {
+            "query": "M7040 E01 hydraulic pump",
+            "trace": {"provider": "test", "fallback": False},
+        },
+        retrieve_fn=lambda **kwargs: seen.setdefault("retrieve", kwargs["question"])
+        and {
+            "status": "ok",
+            "final_evidence": [{"chunk_id": "chunk-1", "document_id": "doc-1"}],
+            "citations": [{"chunk_id": "chunk-1", "document_id": "doc-1"}],
+        },
+        planner_fn=lambda **kwargs: seen.setdefault("planner", kwargs["question"])
+        and {
+            "evidence_sufficient": True,
+            "need_visual": False,
+            "need_query_rewrite": False,
+            "next_action": "ANSWER",
+            "missing_slots": [],
+            "reason": "enough evidence",
+        },
+        answer_fn=lambda **kwargs: seen.setdefault("answer", kwargs["question"])
+        and {"answer": "ok", "citations": [], "trace_id": kwargs["trace_id"]},
+    )
+
+    controller.answer_text(
+        engine=None,
+        question="M7040 的 E01 怎么修？",
+        trace_id="trace-original-question",
+        filters={},
+    )
+
+    assert seen == {
+        "retrieve": "M7040 E01 hydraulic pump",
+        "planner": "M7040 的 E01 怎么修？",
+        "answer": "M7040 的 E01 怎么修？",
+    }
 
 
 def test_agent_controller_runs_text_only_minimum_loop() -> None:
     calls: list[str] = []
     controller = AgentController(
         parse_query_fn=lambda question, engine=None: calls.append("parse") or object(),
+        rewrite_fn=lambda **kwargs: calls.append("rewrite") or passthrough_rewrite(**kwargs),
         retrieve_fn=lambda **kwargs: calls.append("retrieve")
         or {
             "status": "ok",
@@ -23,7 +127,7 @@ def test_agent_controller_runs_text_only_minimum_loop() -> None:
     )
 
     assert payload["answer"] == "ok"
-    assert calls == ["parse", "retrieve", "answer"]
+    assert calls == ["parse", "rewrite", "retrieve", "answer"]
     assert payload["agent_trace"][0]["step"] == "route"
     trace_agents = [entry.get("agent") for entry in payload["agent_trace"]]
     assert "QueryAnalystAgent" in trace_agents
@@ -40,6 +144,7 @@ def test_agent_controller_passes_domain_context_to_answer_function() -> None:
     seen_domain_contexts: list[dict[str, object]] = []
     controller = AgentController(
         parse_query_fn=lambda question, engine=None: object(),
+        rewrite_fn=passthrough_rewrite,
         retrieve_fn=lambda **_kwargs: {
             "status": "ok",
             "final_evidence": [{"chunk_id": "chunk-1", "document_id": "doc-1"}],
@@ -80,6 +185,10 @@ def test_agent_controller_rewrites_and_retries_when_evidence_is_insufficient() -
 
     controller = AgentController(
         parse_query_fn=lambda question, engine=None: object(),
+        rewrite_fn=lambda **kwargs: {
+            "query": f"{kwargs['question']} hydraulic pump",
+            "trace": {"provider": "test", "fallback": kwargs["supplemental"]},
+        },
         retrieve_fn=retrieve_fn,
         answer_fn=lambda **kwargs: {
             "answer": "ok",
@@ -116,6 +225,7 @@ def test_agent_controller_calls_visual_retrieval_when_planner_requests_visual_ev
 
     controller = AgentController(
         parse_query_fn=lambda question, engine=None: object(),
+        rewrite_fn=passthrough_rewrite,
         retrieve_fn=lambda **_kwargs: {
             "status": "ok",
             "final_evidence": [{"chunk_id": "chunk-1", "document_id": "doc-1", "evidence_type": "text"}],
@@ -167,6 +277,7 @@ def test_agent_controller_uses_multimodal_answer_when_visual_evidence_is_present
 
     controller = AgentController(
         parse_query_fn=lambda question, engine=None: object(),
+        rewrite_fn=passthrough_rewrite,
         retrieve_fn=lambda **_kwargs: {
             "status": "ok",
             "final_evidence": [{"chunk_id": "chunk-1", "document_id": "doc-1", "evidence_type": "text"}],
@@ -205,6 +316,7 @@ def test_agent_controller_generation_guard_skips_answer_when_evidence_remains_in
     calls: list[str] = []
     controller = AgentController(
         parse_query_fn=lambda question, engine=None: object(),
+        rewrite_fn=passthrough_rewrite,
         retrieve_fn=lambda **kwargs: {
             "status": "ok",
             "final_evidence": [{"chunk_id": "chunk-1", "document_id": "doc-1"}],

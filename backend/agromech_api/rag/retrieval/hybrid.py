@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, update
 
 from agromech_api.core.config import get_settings
 from agromech_api.db.enums import ChunkType
@@ -20,6 +21,10 @@ from agromech_api.rag.retrieval.fusion import FusedHit, RankedHit, rrf_fuse
 from agromech_api.rag.retrieval.indexing import vector_search
 from agromech_api.rag.retrieval.query_understanding import ParsedQuery, parse_query
 from agromech_api.rag.retrieval.rerank import RerankError
+
+
+# Preserve the pre-RRF viability cutoff on raw cosine similarity.
+MIN_DENSE_COSINE_SIMILARITY = 0.25
 
 
 class DenseRetrievalAgent:
@@ -41,6 +46,11 @@ class DenseRetrievalAgent:
             limit=limit,
             embedding_provider=embedding_provider,
         )
+        eligible_results = [
+            result
+            for result in results
+            if float(result["score"]) >= MIN_DENSE_COSINE_SIMILARITY
+        ]
         return [
             RankedHit(
                 chunk_id=str(result["chunk_id"]),
@@ -49,7 +59,7 @@ class DenseRetrievalAgent:
                 vector_ref=str(result["vector_ref"]) if result.get("vector_ref") else None,
                 embedding_id=str(result["embedding_id"]) if result.get("embedding_id") else None,
             )
-            for rank, result in enumerate(results, start=1)
+            for rank, result in enumerate(eligible_results, start=1)
         ]
 
 
@@ -142,6 +152,7 @@ def hybrid_retrieve_with_trace(
     rerank_top_k: int | None = None,
     settings=None,
 ) -> dict[str, object]:
+    started = time.perf_counter()
     settings = settings or get_settings()
     filters = filters or build_retrieval_filters(request_filters={}, viewer_user_id=None)
     query_rewrite = dict(query_rewrite or {})
@@ -163,6 +174,7 @@ def hybrid_retrieve_with_trace(
     status = "ok" if reranked else "evidence_insufficient"
     final_evidence = evidence_payload(reranked)
     channels = channel_trace(candidates, degraded_channels, settings=settings)
+    fusion_trace["retrieval_duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
     write_retrieval_log(
         engine,
         trace_id=trace_id,
@@ -565,6 +577,14 @@ def trace_model_config(settings) -> dict[str, object]:
         "chunk_profile": settings.chunk_profile,
         "vector_backend": "pgvector",
         "vector_collection": None,
+        "bm25_backend": "pg_search",
+        "bm25_top_k": settings.bm25_top_k,
+        "dense_top_k": settings.dense_top_k,
+        "rrf_k": settings.rrf_k,
+        "rrf_dense_weight": settings.rrf_dense_weight,
+        "rrf_bm25_weight": settings.rrf_bm25_weight,
+        "fusion_top_k": settings.fusion_top_k,
+        "query_rewrite_model": settings.query_rewrite_model if settings.query_rewrite_enabled else None,
         "graph_backend": settings.graph_backend,
         "rerank_enabled": settings.rerank_enabled,
         "rerank_model": settings.rerank_model if settings.rerank_enabled else None,
@@ -630,21 +650,59 @@ def write_retrieval_log(
     final_evidence: list[dict[str, object]],
 ) -> None:
     with engine.begin() as connection:
-        connection.execute(
-            retrieval_logs.insert().values(
-                id=str(uuid4()),
-                trace_id=trace_id,
-                query=query,
-                filters=filters,
-                channels=channels,
-                model_config=model_config,
-                query_rewrite=query_rewrite,
-                fusion=fusion,
-                candidates=candidates,
-                rerank=rerank,
-                final_evidence=final_evidence,
-            )
+        existing = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == trace_id)
+        ).mappings().one_or_none()
+        rewrite_payload = append_trace_attempt(
+            existing["query_rewrite"] if existing else None,
+            query_rewrite,
         )
+        fusion_payload = append_trace_attempt(
+            existing["fusion"] if existing else None,
+            fusion,
+        )
+        fusion_payload["retrieval_duration_ms"] = round(
+            sum(
+                float(item.get("retrieval_duration_ms", 0.0))
+                for item in fusion_payload["attempts"]
+            ),
+            3,
+        )
+        values = {
+            "channels": channels,
+            "model_config": model_config,
+            "query_rewrite": rewrite_payload,
+            "fusion": fusion_payload,
+            "candidates": candidates,
+            "rerank": rerank,
+            "final_evidence": final_evidence,
+        }
+        if existing is None:
+            connection.execute(
+                retrieval_logs.insert().values(
+                    id=str(uuid4()),
+                    trace_id=trace_id,
+                    query=query,
+                    filters=filters,
+                    **values,
+                )
+            )
+        else:
+            connection.execute(
+                update(retrieval_logs)
+                .where(retrieval_logs.c.id == existing["id"])
+                .values(**values)
+            )
+
+
+def append_trace_attempt(
+    existing: dict[str, object] | None,
+    current: dict[str, object],
+) -> dict[str, object]:
+    previous = dict(existing or {})
+    attempts = list(previous.get("attempts") or [])
+    attempts.append(dict(current))
+    return {"attempts": attempts, "final": dict(current)}
 
 
 def graph_candidates(

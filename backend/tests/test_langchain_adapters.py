@@ -87,6 +87,26 @@ def test_text_retriever_returns_langchain_documents_and_original_payload() -> No
     assert payload["status"] == "ok"
 
 
+def test_text_retriever_forwards_original_question_and_rewrite_trace() -> None:
+    captured = {}
+
+    def retrieve_payload(**kwargs):
+        captured.update(kwargs)
+        return {"status": "ok", "final_evidence": []}
+
+    retriever = AgroMechTextRetriever(
+        engine=None,
+        retrieve_payload_fn=retrieve_payload,
+        original_question="M7040 的 E01 怎么修？",
+        query_rewrite={"provider": "bailian", "fallback": False},
+    )
+    retriever.retrieve_payload("M7040 E01 hydraulic pump")
+
+    assert captured["question"] == "M7040 E01 hydraulic pump"
+    assert captured["original_question"] == "M7040 的 E01 怎么修？"
+    assert captured["query_rewrite"] == {"provider": "bailian", "fallback": False}
+
+
 def test_visual_retriever_returns_visual_page_documents_and_original_payload() -> None:
     engine = create_engine("sqlite:///:memory:")
 
