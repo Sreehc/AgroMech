@@ -1,4 +1,3 @@
-from contextlib import nullcontext
 import os
 from types import SimpleNamespace
 
@@ -196,6 +195,18 @@ def test_dependency_targets_skip_neo4j_when_graph_backend_is_local() -> None:
     assert set(targets) == {"postgres"}
 
 
+def test_dependency_targets_skip_postgres_when_database_is_sqlite() -> None:
+    settings = local_settings(
+        database_url="sqlite:///:memory:",
+        postgres_host="127.0.0.1",
+        postgres_port=9,
+    )
+
+    targets = dependency_targets(settings)
+
+    assert "postgres" not in targets
+
+
 def test_local_storage_health_check_reports_ok(tmp_path) -> None:
     from agromech_api.core.infrastructure import check_file_storage
 
@@ -256,12 +267,20 @@ def test_local_infrastructure_list_marks_postgres_extensions_and_bailian_not_app
 ) -> None:
     from agromech_api.core.infrastructure import check_infrastructure
 
+    tcp_attempts = []
+
+    def refuse_tcp_connection(address, *_args, **_kwargs):
+        tcp_attempts.append(address)
+        raise ConnectionRefusedError("no PostgreSQL TCP service")
+
     monkeypatch.setattr(
         "agromech_api.core.infrastructure.socket.create_connection",
-        lambda *_args, **_kwargs: nullcontext(),
+        refuse_tcp_connection,
     )
     settings = local_settings(
         database_url="sqlite:///:memory:",
+        postgres_host="127.0.0.1",
+        postgres_port=9,
         local_file_storage_path=str(tmp_path / "files"),
     )
     engine = create_engine(settings.database_url)
@@ -272,12 +291,13 @@ def test_local_infrastructure_list_marks_postgres_extensions_and_bailian_not_app
         engine.dispose()
 
     assert [(check.name, check.status) for check in checks] == [
-        ("postgres", "ok"),
+        ("postgres", "not_applicable"),
         ("file_storage", "ok"),
         ("pgvector", "not_applicable"),
         ("pg_search", "not_applicable"),
         ("bailian", "not_applicable"),
     ]
+    assert tcp_attempts == []
 
 
 @pytest.mark.skipif(

@@ -42,16 +42,15 @@ class DependencyCheck:
 
 def dependency_targets(settings: Settings) -> dict[str, DependencyTarget]:
     database_url = urlsplit(settings.database_url)
+    database_backend = database_url.scheme.partition("+")[0]
 
-    postgres_host = database_url.hostname or settings.postgres_host
-    postgres_port = database_url.port or settings.postgres_port
-
-    if not postgres_host:
-        raise ValueError("DATABASE_URL must include a host")
-
-    targets = {
-        "postgres": DependencyTarget("postgres", postgres_host, postgres_port),
-    }
+    targets = {}
+    if database_backend == "postgresql":
+        postgres_host = database_url.hostname or settings.postgres_host
+        postgres_port = database_url.port or settings.postgres_port
+        if not postgres_host:
+            raise ValueError("DATABASE_URL must include a host")
+        targets["postgres"] = DependencyTarget("postgres", postgres_host, postgres_port)
     if settings.graph_backend == "neo4j":
         neo4j_url = urlsplit(settings.neo4j_uri)
         if not neo4j_url.hostname:
@@ -221,10 +220,20 @@ def check_bailian_config(settings: Settings) -> DependencyCheck:
 
 
 def check_infrastructure(settings: Settings, engine=None) -> list[DependencyCheck]:
-    checks = [
+    targets = dependency_targets(settings)
+    postgres_target = targets.get("postgres")
+    if postgres_target is None:
+        database_backend = urlsplit(settings.database_url).scheme.partition("+")[0]
+        checks = [DependencyCheck("postgres", "not_applicable", f"{database_backend}:database")]
+    else:
+        checks = [
+            check_tcp_dependency(postgres_target, settings.dependency_connect_timeout_seconds)
+        ]
+    checks.extend(
         check_tcp_dependency(target, settings.dependency_connect_timeout_seconds)
-        for target in dependency_targets(settings).values()
-    ]
+        for name, target in targets.items()
+        if name != "postgres"
+    )
     checks.append(check_file_storage(settings))
     checks.append(check_pgvector_extension(engine))
     checks.append(check_pg_search_extension(engine))

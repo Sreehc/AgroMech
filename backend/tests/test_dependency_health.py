@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
 
 from agromech_api.core.config import Settings
 from agromech_api.core.infrastructure import DependencyCheck
@@ -138,3 +139,48 @@ def test_readiness_treats_not_applicable_dependencies_as_healthy() -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_sqlite_local_readiness_does_not_require_postgres_tcp(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    tcp_attempts = []
+
+    def refuse_tcp_connection(address, *_args, **_kwargs):
+        tcp_attempts.append(address)
+        raise ConnectionRefusedError("no PostgreSQL TCP service")
+
+    monkeypatch.setattr(
+        "agromech_api.core.infrastructure.socket.create_connection",
+        refuse_tcp_connection,
+    )
+    settings = Settings(
+        _env_file=None,
+        database_url="sqlite:///:memory:",
+        postgres_host="127.0.0.1",
+        postgres_port=9,
+        file_storage_backend="local",
+        local_file_storage_path=str(tmp_path / "files"),
+        graph_backend="local",
+        model_provider="local",
+        embedding_provider="local",
+        visual_embedding_provider="local",
+    )
+    engine = create_engine(settings.database_url)
+
+    try:
+        client = TestClient(create_app(settings=settings, database_engine=engine))
+        response = client.get("/health/ready")
+    finally:
+        engine.dispose()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    dependencies = {check["name"]: check for check in response.json()["dependencies"]}
+    assert dependencies["postgres"] == {
+        "name": "postgres",
+        "status": "not_applicable",
+        "target": "sqlite:database",
+    }
+    assert tcp_attempts == []
