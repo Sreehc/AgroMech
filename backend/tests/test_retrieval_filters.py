@@ -1,13 +1,16 @@
 from datetime import UTC, datetime
+from dataclasses import FrozenInstanceError
 
 import pytest
 from sqlalchemy import create_engine, insert, select
 
 from agromech_api.core.config import Settings
-from agromech_api.db.enums import DocumentStatus
-from agromech_api.db.models import documents, metadata
+from agromech_api.db.enums import ChunkType, DocumentStatus
+from agromech_api.db.models import chunk_entity_links, document_chunks, documents, metadata, users
 from agromech_api.rag.retrieval.filters import (
+    RetrievalFilters,
     build_retrieval_filters,
+    chunk_filter_conditions,
     document_filter_conditions,
 )
 
@@ -36,6 +39,137 @@ def test_retrieval_settings_defaults_and_ordering() -> None:
 
     with pytest.raises(ValueError, match="RRF weights must not both be zero"):
         Settings(_env_file=None, rrf_dense_weight=0, rrf_bm25_weight=0)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_query_rewrite_timeout_must_be_finite(value: float) -> None:
+    with pytest.raises(ValueError, match="QUERY_REWRITE_TIMEOUT_SECONDS must be finite"):
+        Settings(_env_file=None, query_rewrite_timeout_seconds=value)
+
+
+@pytest.mark.parametrize("field_name", ["rrf_dense_weight", "rrf_bm25_weight"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_rrf_weights_must_be_finite(field_name: str, value: float) -> None:
+    with pytest.raises(ValueError, match="RRF weights must be finite"):
+        Settings(_env_file=None, **{field_name: value})
+
+
+def test_retrieval_filters_are_frozen() -> None:
+    filters = RetrievalFilters(viewer_user_id=None)
+
+    with pytest.raises(FrozenInstanceError):
+        setattr(filters, "brand", "Kubota")
+
+
+def test_document_filters_enforce_owner_visibility_and_indexed_status(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'visibility.db'}")
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(users),
+            [
+                {
+                    "id": "owner-1",
+                    "username": "owner-1",
+                    "password_hash": "hash",
+                    "role": "user",
+                },
+                {
+                    "id": "owner-2",
+                    "username": "owner-2",
+                    "password_hash": "hash",
+                    "role": "user",
+                },
+            ],
+        )
+        connection.execute(
+            insert(documents),
+            [
+                _document_row("public-indexed"),
+                _document_row("private-owned", visibility="private", owner_user_id="owner-1"),
+                _document_row("private-other", visibility="private", owner_user_id="owner-2"),
+                _document_row("public-queued", status=DocumentStatus.QUEUED.value),
+            ],
+        )
+
+    def visible_document_ids(viewer_user_id: str | None) -> set[str]:
+        filters = build_retrieval_filters(request_filters={}, viewer_user_id=viewer_user_id)
+        with engine.connect() as connection:
+            return set(
+                connection.execute(
+                    select(documents.c.id).where(*document_filter_conditions(filters))
+                ).scalars()
+            )
+
+    assert visible_document_ids(None) == {"public-indexed"}
+    assert visible_document_ids("other-user") == {"public-indexed"}
+    assert visible_document_ids("owner-1") == {"public-indexed", "private-owned"}
+
+
+def test_chunk_filters_match_only_requested_subsystem(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'subsystem.db'}")
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(insert(documents), [_document_row("subsystem-document")])
+        connection.execute(
+            insert(document_chunks),
+            [
+                {
+                    "id": "hydraulic-chunk",
+                    "document_id": "subsystem-document",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "content": "Hydraulic system troubleshooting",
+                    "source_locator": {"type": "text"},
+                },
+                {
+                    "id": "component-chunk",
+                    "document_id": "subsystem-document",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "content": "Hydraulic component troubleshooting",
+                    "source_locator": {"type": "text"},
+                },
+            ],
+        )
+        connection.execute(
+            insert(chunk_entity_links),
+            [
+                {
+                    "id": "hydraulic-system-link",
+                    "chunk_id": "hydraulic-chunk",
+                    "document_id": "subsystem-document",
+                    "entity_type": "system",
+                    "entity_value": "Hydraulic",
+                    "normalized_value": "hydraulic",
+                    "confidence": 1.0,
+                    "source": "rule",
+                },
+                {
+                    "id": "hydraulic-component-link",
+                    "chunk_id": "component-chunk",
+                    "document_id": "subsystem-document",
+                    "entity_type": "component",
+                    "entity_value": "Hydraulic",
+                    "normalized_value": "hydraulic",
+                    "confidence": 1.0,
+                    "source": "rule",
+                },
+            ],
+        )
+
+    def matching_chunk_ids(subsystem: str) -> list[str]:
+        filters = build_retrieval_filters(
+            request_filters={"subsystem": subsystem},
+            viewer_user_id=None,
+        )
+        with engine.connect() as connection:
+            return connection.execute(
+                select(document_chunks.c.id).where(
+                    *chunk_filter_conditions(document_chunks.c.id, filters)
+                )
+            ).scalars().all()
+
+    assert matching_chunk_ids(" Hydraulic ") == ["hydraulic-chunk"]
+    assert matching_chunk_ids("transmission") == []
 
 
 def test_explicit_filters_are_applied_before_retrieval(tmp_path) -> None:
@@ -109,3 +243,26 @@ def test_explicit_filters_are_applied_before_retrieval(tmp_path) -> None:
         ).scalars().all()
 
     assert ids == ["public-m7040"]
+
+
+def _document_row(
+    document_id: str,
+    *,
+    status: str = DocumentStatus.INDEXED.value,
+    visibility: str = "public",
+    owner_user_id: str | None = None,
+) -> dict[str, object]:
+    return {
+        "id": document_id,
+        "title": document_id,
+        "original_file_name": f"{document_id}.txt",
+        "file_hash": f"hash-{document_id}",
+        "file_size_bytes": 1,
+        "mime_type": "text/plain",
+        "storage_uri": f"file:///{document_id}.txt",
+        "status": status,
+        "visibility": visibility,
+        "owner_user_id": owner_user_id,
+        "created_by_role": "user",
+        "deleted_at": None,
+    }

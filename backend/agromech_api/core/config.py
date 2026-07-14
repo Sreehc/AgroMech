@@ -1,4 +1,5 @@
 from functools import lru_cache
+import math
 import os
 
 from pydantic import field_validator, model_validator
@@ -229,8 +230,12 @@ class Settings(BaseSettings):
         for name, value in positive_values.items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
+        if not math.isfinite(self.query_rewrite_timeout_seconds):
+            raise ValueError("QUERY_REWRITE_TIMEOUT_SECONDS must be finite")
         if self.query_rewrite_timeout_seconds <= 0:
             raise ValueError("QUERY_REWRITE_TIMEOUT_SECONDS must be positive")
+        if not math.isfinite(self.rrf_dense_weight) or not math.isfinite(self.rrf_bm25_weight):
+            raise ValueError("RRF weights must be finite")
         if self.rrf_dense_weight < 0 or self.rrf_bm25_weight < 0:
             raise ValueError("RRF weights must be non-negative")
         if self.rrf_dense_weight == 0 and self.rrf_bm25_weight == 0:
