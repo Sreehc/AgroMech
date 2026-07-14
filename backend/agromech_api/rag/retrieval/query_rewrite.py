@@ -24,6 +24,10 @@ LANGUAGE_TAG_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Za-z]{2,3}-[A-Za-z]{2}(?:-[A-Za-z0-9]{1,8})*)(?![A-Za-z0-9-])",
     re.IGNORECASE,
 )
+DOCUMENT_VERSION_TAG_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])v\d+(?:\.\d+)+(?:[-_][A-Za-z0-9]+)*(?![A-Za-z0-9_.-])",
+    re.IGNORECASE,
+)
 IDENTIFIER_CATEGORIES = (
     "model",
     "fault_code",
@@ -162,14 +166,7 @@ def _source_identifier_groups(
     parsed: ParsedQuery,
     request_filters: dict[str, str | None],
 ) -> dict[str, list[str]]:
-    groups = {
-        "model": _parsed_models(parsed),
-        "fault_code": [str(value).strip() for value in parsed.entities.get("fault_code", [])],
-        "part_number": [str(value).strip() for value in parsed.entities.get("part_number", [])],
-        "document_version": [],
-        "language": [],
-        "document_type": [],
-    }
+    groups = _extract_identifier_groups(parsed.original_query, parsed=parsed)
     request_model = str(request_filters.get("model") or "").strip()
     if request_model:
         groups["model"].append(request_model)
@@ -178,7 +175,7 @@ def _source_identifier_groups(
             normalized = str(value).strip() if value is not None else ""
             if normalized:
                 groups[category].append(normalized)
-    return {category: list(dict.fromkeys(values)) for category, values in groups.items()}
+    return _dedupe_identifier_groups(groups)
 
 
 def _parsed_models(parsed: ParsedQuery) -> list[str]:
@@ -200,8 +197,16 @@ def _parsed_models(parsed: ParsedQuery) -> list[str]:
         match.group(0).rsplit("-", 1)[-1]
         for match in LANGUAGE_TAG_RE.finditer(parsed.original_query)
     ]
-    versions = [match.group(0) for match in YEAR_RE.finditer(parsed.original_query)]
+    year_versions = [match.group(0) for match in YEAR_RE.finditer(parsed.original_query)]
+    tagged_versions = [
+        match.group(0) for match in DOCUMENT_VERSION_TAG_RE.finditer(parsed.original_query)
+    ]
+    versions = [*year_versions, *tagged_versions]
     excluded.update(_normalize_identifier("model", version) for version in versions)
+    excluded.update(
+        _normalize_identifier("model", version.split(".", 1)[0])
+        for version in tagged_versions
+    )
     excluded.update(
         _normalize_identifier("model", f"{region}{version}")
         for region in language_regions
@@ -215,25 +220,47 @@ def _parsed_models(parsed: ParsedQuery) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
-def _extract_identifier_groups(query: str) -> dict[str, list[str]]:
-    parsed = parse_query(query)
+def _extract_identifier_groups(
+    query: str,
+    *,
+    parsed: ParsedQuery | None = None,
+) -> dict[str, list[str]]:
+    parsed = parsed or parse_query(query)
     part_numbers = [str(value).strip() for value in parsed.entities.get("part_number", [])]
     part_numbers.extend(match.group(0) for match in PART_NUMBER_RE.finditer(query))
-    document_types = []
+    document_type_matches: list[tuple[int, str]] = []
     for value in DOCUMENT_TYPE_TERMS:
         pattern = re.compile(
             rf"(?<![A-Za-z0-9_]){re.escape(value)}(?![A-Za-z0-9_])",
             re.IGNORECASE,
         )
-        document_types.extend(match.group(0) for match in pattern.finditer(query))
-    return {
+        document_type_matches.extend((match.start(), match.group(0)) for match in pattern.finditer(query))
+    document_versions = [match.group(0) for match in YEAR_RE.finditer(query)]
+    document_versions.extend(match.group(0) for match in DOCUMENT_VERSION_TAG_RE.finditer(query))
+    groups = {
         "model": _parsed_models(parsed),
         "fault_code": [str(value).strip() for value in parsed.entities.get("fault_code", [])],
-        "part_number": list(dict.fromkeys(part_numbers)),
-        "document_version": [match.group(0) for match in YEAR_RE.finditer(query)],
+        "part_number": part_numbers,
+        "document_version": document_versions,
         "language": [match.group(0) for match in LANGUAGE_TAG_RE.finditer(query)],
-        "document_type": list(dict.fromkeys(document_types)),
+        "document_type": [value for _position, value in sorted(document_type_matches)],
     }
+    return _dedupe_identifier_groups(groups)
+
+
+def _dedupe_identifier_groups(groups: dict[str, list[str]]) -> dict[str, list[str]]:
+    deduped: dict[str, list[str]] = {}
+    for category in IDENTIFIER_CATEGORIES:
+        values: list[str] = []
+        seen: set[str] = set()
+        for raw_value in groups[category]:
+            value = str(raw_value).strip()
+            normalized = _normalize_identifier(category, value)
+            if value and normalized not in seen:
+                seen.add(normalized)
+                values.append(value)
+        deduped[category] = values
+    return deduped
 
 
 def _normalize_identifier(category: str, value: str) -> str:
@@ -242,7 +269,17 @@ def _normalize_identifier(category: str, value: str) -> str:
         return re.sub(r"[-\s]+", "", normalized).upper()
     if category in {"fault_code", "part_number"}:
         return re.sub(r"\s+", "", normalized).upper()
-    return normalized.lower()
+    return re.sub(r"\s+", " ", normalized).casefold()
+
+
+def _contains_complete_identifier(query: str, value: str) -> bool:
+    tokens = re.split(r"\s+", value.strip())
+    escaped = r"\s+".join(re.escape(token) for token in tokens)
+    pattern = re.compile(
+        rf"(?<![\w.-]){escaped}(?![\w.-])",
+        re.IGNORECASE,
+    )
+    return pattern.search(query) is not None
 
 
 def _validate_rewrite_identifiers(
@@ -256,7 +293,11 @@ def _validate_rewrite_identifiers(
     }
     for category in IDENTIFIER_CATEGORIES:
         for value in expected[category]:
-            if _normalize_identifier(category, value) not in normalized_actual[category]:
+            normalized = _normalize_identifier(category, value)
+            if normalized not in normalized_actual[category] and not _contains_complete_identifier(
+                rewritten,
+                value,
+            ):
                 raise _IdentifierValidationError(f"protected_identifier_missing:{value}")
 
     for category in IDENTIFIER_CATEGORIES:

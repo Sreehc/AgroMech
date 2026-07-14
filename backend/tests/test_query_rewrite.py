@@ -161,6 +161,154 @@ def test_blank_request_metadata_does_not_replace_query_identifiers() -> None:
     assert set(result.protected_identifiers) == {"2024", "zh-CN", "repair_manual"}
 
 
+def test_rewrite_preserves_lowercase_part_number_and_language_case_insensitively() -> None:
+    provider = BailianQueryRewriteProvider(
+        rewrite_settings(),
+        transport=lambda _request, _timeout: {
+            "choices": [{"message": {"content": '{"query":"RE-12345 ZH-CN 查询"}'}}]
+        },
+    )
+    question = "re-12345 zh-cn 查询"
+
+    result = rewrite_query(
+        question=question,
+        parsed=parse_query(question),
+        request_filters={},
+        provider=provider,
+        supplemental=False,
+    )
+
+    assert result.fallback is False
+    assert result.protected_identifiers == ["re-12345", "zh-cn"]
+
+
+@pytest.mark.parametrize(
+    ("rewritten", "missing"),
+    [
+        ("zh-cn 查询", "re-12345"),
+        ("re-123456 zh-cn 查询", "re-12345"),
+        ("re-12345 查询", "zh-cn"),
+        ("re-12345 zh-cn-x 查询", "zh-cn"),
+    ],
+)
+def test_rewrite_rejects_lost_or_deformed_lowercase_identifiers(
+    rewritten: str,
+    missing: str,
+) -> None:
+    provider = BailianQueryRewriteProvider(
+        rewrite_settings(),
+        transport=lambda _request, _timeout: {
+            "choices": [{"message": {"content": f'{{"query":"{rewritten}"}}'}}]
+        },
+    )
+    question = "re-12345 zh-cn 查询"
+
+    result = rewrite_query(
+        question=question,
+        parsed=parse_query(question),
+        request_filters={},
+        provider=provider,
+        supplemental=False,
+    )
+
+    assert result.fallback is True
+    assert result.reason == f"protected_identifier_missing:{missing}"
+
+
+def test_rewrite_preserves_arbitrary_explicit_metadata_values() -> None:
+    provider = BailianQueryRewriteProvider(
+        rewrite_settings(),
+        transport=lambda _request, _timeout: {
+            "choices": [{"message": {"content": '{"query":"V2.1 ZH 说明书 查询"}'}}]
+        },
+    )
+
+    result = rewrite_query(
+        question="液压泵查询",
+        parsed=parse_query("液压泵查询"),
+        request_filters={
+            "document_version": "v2.1",
+            "language": "zh",
+            "document_type": "说明书",
+        },
+        provider=provider,
+        supplemental=False,
+    )
+
+    assert result.fallback is False
+    assert result.protected_identifiers == ["v2.1", "zh", "说明书"]
+
+
+@pytest.mark.parametrize(
+    ("rewritten", "missing"),
+    [
+        ("zh 说明书 查询", "v2.1"),
+        ("v2.10 zh 说明书 查询", "v2.1"),
+        ("v2.1 zh-cn 说明书 查询", "zh"),
+        ("v2.1 zh 说明书附录 查询", "说明书"),
+    ],
+)
+def test_rewrite_requires_complete_explicit_metadata_boundaries(
+    rewritten: str,
+    missing: str,
+) -> None:
+    provider = BailianQueryRewriteProvider(
+        rewrite_settings(),
+        transport=lambda _request, _timeout: {
+            "choices": [{"message": {"content": f'{{"query":"{rewritten}"}}'}}]
+        },
+    )
+
+    result = rewrite_query(
+        question="液压泵查询",
+        parsed=parse_query("液压泵查询"),
+        request_filters={
+            "document_version": "v2.1",
+            "language": "zh",
+            "document_type": "说明书",
+        },
+        provider=provider,
+        supplemental=False,
+    )
+
+    assert result.fallback is True
+    assert result.reason == f"protected_identifier_missing:{missing}"
+
+
+@pytest.mark.parametrize(
+    ("rewritten", "fallback", "reason"),
+    [
+        ("V2.1 hydraulic pump 查询", False, "model_rewrite"),
+        ("hydraulic pump 查询", True, "protected_identifier_missing:v2.1"),
+        ("v2.10 hydraulic pump 查询", True, "protected_identifier_missing:v2.1"),
+    ],
+)
+def test_rewrite_protects_explicit_version_in_question(
+    rewritten: str,
+    fallback: bool,
+    reason: str,
+) -> None:
+    provider = BailianQueryRewriteProvider(
+        rewrite_settings(),
+        transport=lambda _request, _timeout: {
+            "choices": [{"message": {"content": f'{{"query":"{rewritten}"}}'}}]
+        },
+    )
+    question = "v2.1 液压泵查询"
+
+    result = rewrite_query(
+        question=question,
+        parsed=parse_query(question),
+        request_filters={},
+        provider=provider,
+        supplemental=False,
+    )
+
+    assert result.fallback is fallback
+    assert result.reason == reason
+    assert result.protected_identifiers == ["v2.1"]
+
+
 def test_rewrite_protects_query_and_explicit_filter_models() -> None:
     provider = BailianQueryRewriteProvider(
         rewrite_settings(),
