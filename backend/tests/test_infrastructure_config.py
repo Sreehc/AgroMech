@@ -42,6 +42,11 @@ def test_all_env_example_keys_load_into_settings() -> None:
         "neo4j_uri",
         "graph_max_hops",
         "bailian_api_key",
+        "bm25_top_k",
+        "dense_top_k",
+        "rrf_k",
+        "fusion_top_k",
+        "query_rewrite_model",
         "rerank_top_k",
         "evaluation_target_top5_source_hit_rate",
     ):

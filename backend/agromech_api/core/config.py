@@ -140,6 +140,17 @@ class Settings(BaseSettings):
     visual_answer_model: str = "qwen3-vl-flash"
     rerank_model: str = "qwen3-rerank"
 
+    # Hybrid retrieval
+    bm25_top_k: int = 50
+    dense_top_k: int = 50
+    rrf_k: int = 60
+    rrf_dense_weight: float = 1.0
+    rrf_bm25_weight: float = 1.0
+    fusion_top_k: int = 30
+    query_rewrite_enabled: bool = True
+    query_rewrite_model: str = "qwen3.6-flash"
+    query_rewrite_timeout_seconds: float = 10.0
+
     # Rerank
     rerank_enabled: bool = True
     rerank_top_k: int = 30
@@ -148,7 +159,7 @@ class Settings(BaseSettings):
 
     # Retrieval degradation policy
     retrieval_degrade_on_optional_channel_failure: bool = True
-    optional_retrieval_channels: str = "vision,rerank"
+    optional_retrieval_channels: str = "dense,bm25,vision,rerank"
 
     # Evaluation
     evaluation_runner_mode: str = "cli"
@@ -207,8 +218,31 @@ class Settings(BaseSettings):
             require_settings(self, ["neo4j_uri", "neo4j_user", "neo4j_password"], mode="GRAPH_BACKEND=neo4j")
         if "bailian" in {self.model_provider, self.embedding_provider, self.visual_embedding_provider}:
             require_settings(self, ["bailian_api_key", "bailian_base_url"], mode="provider=bailian")
+        positive_values = {
+            "BM25_TOP_K": self.bm25_top_k,
+            "DENSE_TOP_K": self.dense_top_k,
+            "RRF_K": self.rrf_k,
+            "FUSION_TOP_K": self.fusion_top_k,
+            "RERANK_TOP_K": self.rerank_top_k,
+            "FINAL_EVIDENCE_LIMIT": self.final_evidence_limit,
+        }
+        for name, value in positive_values.items():
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        if self.query_rewrite_timeout_seconds <= 0:
+            raise ValueError("QUERY_REWRITE_TIMEOUT_SECONDS must be positive")
+        if self.rrf_dense_weight < 0 or self.rrf_bm25_weight < 0:
+            raise ValueError("RRF weights must be non-negative")
+        if self.rrf_dense_weight == 0 and self.rrf_bm25_weight == 0:
+            raise ValueError("RRF weights must not both be zero")
+        if self.final_evidence_limit > self.fusion_top_k:
+            raise ValueError("FINAL_EVIDENCE_LIMIT must be <= FUSION_TOP_K")
         if self.final_evidence_limit > self.rerank_top_k:
             raise ValueError("FINAL_EVIDENCE_LIMIT must be <= RERANK_TOP_K")
+        if self.rerank_top_k > self.fusion_top_k:
+            raise ValueError("RERANK_TOP_K must be <= FUSION_TOP_K")
+        if self.fusion_top_k > self.bm25_top_k + self.dense_top_k:
+            raise ValueError("FUSION_TOP_K must be <= BM25_TOP_K + DENSE_TOP_K")
         ensure_probability(self.graph_review_min_confidence, "GRAPH_REVIEW_MIN_CONFIDENCE")
         ensure_probability(
             self.graph_auto_accept_llm_confidence,
