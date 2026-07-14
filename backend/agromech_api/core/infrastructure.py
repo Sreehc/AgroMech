@@ -154,6 +154,37 @@ def check_pgvector_extension(engine=None) -> DependencyCheck:
         return DependencyCheck("pgvector", "unavailable", target, sanitize_database_error(exc))
 
 
+def check_pg_search_extension(engine=None) -> DependencyCheck:
+    active_engine = engine or get_engine()
+    target = "postgres:extension/pg_search"
+    try:
+        with active_engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    """
+                    SELECT
+                        EXISTS (
+                            SELECT 1 FROM pg_extension WHERE extname = 'pg_search'
+                        ) AS extension,
+                        EXISTS (
+                            SELECT 1 FROM pg_indexes
+                            WHERE indexname = 'ix_chunk_search_index_bm25'
+                        ) AS index
+                    """
+                )
+            ).mappings().one()
+        if row["extension"] and row["index"]:
+            return DependencyCheck("pg_search", "ok", target)
+        return DependencyCheck(
+            "pg_search",
+            "unavailable",
+            target,
+            "pg_search extension or BM25 index is missing",
+        )
+    except Exception as exc:  # noqa: BLE001 - report dependency status instead of raising
+        return DependencyCheck("pg_search", "unavailable", target, sanitize_database_error(exc))
+
+
 def check_bailian_config(settings: Settings) -> DependencyCheck:
     target = settings.bailian_base_url or "unconfigured"
     bailian_enabled = "bailian" in {settings.model_provider, settings.embedding_provider}
@@ -171,5 +202,6 @@ def check_infrastructure(settings: Settings, engine=None) -> list[DependencyChec
     ]
     checks.append(check_file_storage(settings))
     checks.append(check_pgvector_extension(engine))
+    checks.append(check_pg_search_extension(engine))
     checks.append(check_bailian_config(settings))
     return checks

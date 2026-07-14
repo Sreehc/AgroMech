@@ -7,7 +7,7 @@ from dataclasses import asdict
 from typing import Protocol
 
 import jieba
-from sqlalchemy import Engine, and_, or_, select, text
+from sqlalchemy import Engine, String, and_, bindparam, or_, select, text
 
 from agromech_api.db.models import chunk_search_index, documents
 from agromech_api.rag.retrieval.filters import (
@@ -195,6 +195,19 @@ class PostgresBm25Retriever:
             ORDER BY pdb.score(csi.id) DESC, csi.id ASC
             LIMIT :limit
             """
+        ).bindparams(
+            *(
+                bindparam(name, type_=String())
+                for name in (
+                    "viewer_user_id",
+                    "brand",
+                    "model",
+                    "document_type",
+                    "language",
+                    "document_version",
+                    "subsystem",
+                )
+            )
         )
         params = {**asdict(filters), "query": query, "limit": limit}
         with engine.connect() as connection:

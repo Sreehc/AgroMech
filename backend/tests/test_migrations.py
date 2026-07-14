@@ -57,6 +57,29 @@ def test_initial_migration_enables_pgvector_before_creating_metadata() -> None:
     assert extension_position < create_all_position
 
 
+def test_alembic_database_url_environment_overrides_configured_url(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    configured_database = tmp_path / "configured.db"
+    environment_database = tmp_path / "environment.db"
+    config = Config("alembic.ini")
+    config.set_main_option("script_location", "backend/alembic")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{configured_database}")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{environment_database}")
+
+    command.upgrade(config, "head")
+
+    environment_tables = inspect(
+        create_engine(f"sqlite:///{environment_database}")
+    ).get_table_names()
+    configured_tables = inspect(
+        create_engine(f"sqlite:///{configured_database}")
+    ).get_table_names()
+    assert "alembic_version" in environment_tables
+    assert "alembic_version" not in configured_tables
+
+
 def test_alembic_migration_can_run_repeatedly(tmp_path: Path) -> None:
     database_path = tmp_path / "agromech.db"
     config = Config("alembic.ini")
@@ -93,6 +116,11 @@ def test_alembic_migration_can_run_repeatedly(tmp_path: Path) -> None:
     assert {"schema_version", "is_active", "valid_to"}.issubset(graph_edge_columns)
     assert "document_version" in document_columns
     assert "model_config" in retrieval_log_columns
+    assert {"query_rewrite", "fusion"}.issubset(retrieval_log_columns)
+
+    document_indexes = {index["name"] for index in inspector.get_indexes("documents")}
+    assert "ix_documents_retrieval_state" in document_indexes
+    assert "ix_documents_retrieval_metadata" in document_indexes
 
     chat_session_indexes = {index["name"] for index in inspector.get_indexes("chat_sessions")}
     assert "ix_chat_sessions_username_updated_at" in chat_session_indexes

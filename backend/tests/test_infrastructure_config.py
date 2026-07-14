@@ -235,7 +235,13 @@ def test_infrastructure_health_does_not_require_legacy_vector_settings() -> None
 
     checks = check_infrastructure(Settings(_env_file=None))
 
-    assert {check.name for check in checks} >= {"postgres", "file_storage", "pgvector", "bailian"}
+    assert {check.name for check in checks} >= {
+        "postgres",
+        "file_storage",
+        "pgvector",
+        "pg_search",
+        "bailian",
+    }
     assert "z" + "vec" not in {check.name for check in checks}
 
 
@@ -327,6 +333,38 @@ def test_pgvector_extension_health_check_sanitizes_database_errors() -> None:
     assert "secret" not in check.error
     assert "user:secret" not in check.error
     assert "postgresql+psycopg://" not in check.error
+
+
+def test_pg_search_extension_health_check_reports_bm25_index() -> None:
+    from agromech_api.core.infrastructure import check_pg_search_extension
+
+    class FakeResult:
+        def mappings(self):
+            return self
+
+        def one(self):
+            return {"extension": True, "index": True}
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, statement):
+            assert "pg_search" in str(statement)
+            assert "ix_chunk_search_index_bm25" in str(statement)
+            return FakeResult()
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    check = check_pg_search_extension(FakeEngine())
+
+    assert check.status == "ok"
+    assert check.name == "pg_search"
 
 
 def test_bailian_health_check_reports_unavailable_when_required_config_is_missing() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -18,6 +19,9 @@ target_metadata = metadata
 
 
 def database_url() -> str:
+    environment_url = os.getenv("DATABASE_URL")
+    if environment_url:
+        return environment_url
     configured_url = config.get_main_option("sqlalchemy.url")
     if configured_url and not configured_url.startswith("${"):
         return configured_url

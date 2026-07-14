@@ -65,3 +65,25 @@ def test_dependency_health_endpoint_uses_app_database_engine(monkeypatch) -> Non
 
     assert response.status_code == 200
     assert captured == {"settings": settings, "engine": database_engine}
+
+
+def test_readiness_returns_503_when_required_search_dependency_is_missing() -> None:
+    client = TestClient(
+        create_app(
+            dependency_checker=lambda: [
+                DependencyCheck("postgres", "ok", "localhost:5432"),
+                DependencyCheck("pgvector", "ok", "postgres:extension/vector"),
+                DependencyCheck(
+                    "pg_search",
+                    "unavailable",
+                    "postgres:extension/pg_search",
+                    "missing",
+                ),
+            ]
+        )
+    )
+
+    response = client.get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "unavailable"

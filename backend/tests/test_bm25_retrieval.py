@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sqlalchemy import Engine, create_engine, insert
+from sqlalchemy import Engine, create_engine, delete, insert
 
 from agromech_api.db.enums import ChunkType, DocumentStatus
 from agromech_api.db.models import chunk_search_index, document_chunks, documents, metadata
@@ -457,6 +458,45 @@ def test_postgres_bm25_selects_latest_index_version_before_limit() -> None:
         in sql
     )
     assert sql.index("NOT EXISTS") < sql.index("ORDER BY") < sql.index("LIMIT :limit")
+
+
+@pytest.mark.skipif(
+    not os.getenv("AGROMECH_TEST_POSTGRES_URL"),
+    reason="PostgreSQL BM25 URL not configured",
+)
+def test_postgres_bm25_uses_pg_search_jieba_and_filters_before_limit() -> None:
+    engine = create_engine(os.environ["AGROMECH_TEST_POSTGRES_URL"])
+    chunk_ids = ["chunk-m", "chunk-l"]
+    document_ids = [f"doc-{chunk_id}" for chunk_id in chunk_ids]
+    with engine.begin() as connection:
+        connection.execute(
+            delete(chunk_search_index).where(chunk_search_index.c.chunk_id.in_(chunk_ids))
+        )
+        connection.execute(delete(document_chunks).where(document_chunks.c.id.in_(chunk_ids)))
+        connection.execute(delete(documents).where(documents.c.id.in_(document_ids)))
+    _seed_search_rows(
+        engine,
+        [
+            ("chunk-m", "M7040 E01 液压泵 hydraulic pump 检查", "M7040"),
+            ("chunk-l", "L3901 电气传感器 electrical sensor 检查 检查", "L3901"),
+        ],
+    )
+
+    chinese_hits = PostgresBm25Retriever().search(
+        engine,
+        "液压泵",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
+        limit=10,
+    )
+    filtered_hits = PostgresBm25Retriever().search(
+        engine,
+        "检查",
+        filters=build_retrieval_filters(request_filters={"model": "M7040"}, viewer_user_id=None),
+        limit=1,
+    )
+
+    assert [hit.chunk_id for hit in chinese_hits] == ["chunk-m"]
+    assert [hit.chunk_id for hit in filtered_hits] == ["chunk-m"]
 
 
 def test_build_bm25_retriever_selects_backend_from_dialect(tmp_path) -> None:
