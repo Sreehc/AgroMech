@@ -91,6 +91,8 @@ def retrieval_trace_payload(row, user: UserContext) -> dict[str, object]:
     if user.role in FULL_TRACE_ROLES:
         payload.update(
             {
+                "query_rewrite": row["query_rewrite"] or {},
+                "fusion": row["fusion"] or {},
                 "candidates": row["candidates"] or [],
                 "rerank": row["rerank"] or {"items": []},
                 "final_evidence": row["final_evidence"] or [],
@@ -103,6 +105,18 @@ def retrieval_trace_payload(row, user: UserContext) -> dict[str, object]:
         for evidence in row["final_evidence"] or []
         if evidence.get("chunk_id")
     ]
+    rewrite = (row["query_rewrite"] or {}).get("final", {})
+    fusion = (row["fusion"] or {}).get("final", {})
+    payload["query_rewrite"] = {
+        key: rewrite[key]
+        for key in ("provider", "fallback")
+        if key in rewrite
+    }
+    payload["fusion"] = {
+        key: fusion[key]
+        for key in ("rrf_k", "channel_counts")
+        if key in fusion
+    }
     return sanitize_trace_payload(payload)
 
 
