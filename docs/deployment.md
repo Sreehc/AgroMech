@@ -49,27 +49,28 @@ cp deploy/env.prod.example /opt/agromech/.env
 cp deploy/docker-compose.prod.yml /opt/agromech/docker-compose.yml
 ```
 
-编辑 `/opt/agromech/.env` 后，先记录当前检索评估基线并完成数据库备份。升级前必须确认所用 PostgreSQL 具备 `vector` 与 `pg_search`：
+编辑 `/opt/agromech/.env` 后，先记录当前检索评估基线并完成数据库备份。
+
+### 升级前数据库检查
+
+迁移前只检查 PostgreSQL 是否提供所需扩展。首次升级时 `ix_chunk_search_index_bm25` 尚不存在，因此不能在此阶段用索引检查阻断发布：
 
 ```sql
 SELECT extname
 FROM pg_extension
 WHERE extname IN ('vector', 'pg_search')
 ORDER BY extname;
-
-SELECT indexname
-FROM pg_indexes
-WHERE indexname = 'ix_chunk_search_index_bm25';
 ```
 
-启动与迁移：
+### 启动与迁移
 
 ```bash
 cd /opt/agromech
 docker compose pull
 docker compose run --rm api python -m alembic upgrade head
-docker compose up -d api worker
 ```
+
+### 迁移完成后重建并验证
 
 迁移完成后，重建既有文档的 BM25 搜索行和 Dense 向量：
 
@@ -77,7 +78,20 @@ docker compose up -d api worker
 docker compose run --rm api python scripts/rebuild-vector-index.py
 ```
 
-该命令会使用当前 `.env` 中配置的文本 embedding provider 重建 `chunk_search_index` 与 `chunk_vector_embeddings`，并在 PostgreSQL 上确认 `ix_chunk_search_index_bm25` 存在；不会迁移旧向量文件。
+重建命令会使用当前 `.env` 中配置的文本 embedding provider 重建 `chunk_search_index` 与 `chunk_vector_embeddings`，并在 PostgreSQL 上确认 BM25 索引存在；不会迁移旧向量文件。也可额外执行：
+
+```sql
+SELECT indexname
+FROM pg_indexes
+WHERE indexname = 'ix_chunk_search_index_bm25';
+```
+
+只有完成以上验证后，才启动新版本服务：
+
+```bash
+cd /opt/agromech
+docker compose up -d api worker
+```
 
 发布顺序必须为：
 
@@ -123,12 +137,11 @@ workflow 会在部署期间让服务器登录 GHCR。默认使用本次 Actions 
 
 1. Python/前端测试和构建。
 2. 构建后端镜像并推送到 GHCR。
-3. 同步 `frontend/out/` 到服务器静态目录。
-4. 上传 compose 文件。
-5. 在服务器执行 `docker login ghcr.io`。
-6. 执行 Alembic 迁移、重建检索索引，并完成 Dense/BM25/RRF 冒烟检查。
-7. 重启 `api` 和 `worker`，确认 `/health/ready` 为 `200`。
-8. 完成 QA/Citation 冒烟检查后 reload 宿主 Nginx，并持续监控。
+3. 上传 compose 文件。
+4. 在服务器执行 `docker login ghcr.io`。
+5. 执行 Alembic 迁移和重建检索索引，再用生产评测题实际运行 Dense/BM25/RRF 与 QA/Citation 冒烟；任一项失败即停止，不同步前端、不 reload Nginx。
+6. 重启 `api` 和 `worker`，确认 `/health/ready` 为 `200`，并以同一评测题调用 `/qa/text`；响应必须带 Citation，trace 必须记录 Dense、BM25、RRF 与 Citation 成功状态。
+7. 以上门禁通过后才同步 `frontend/out/` 到服务器静态目录并 reload 宿主 Nginx，随后持续监控。
 
 ## 5. 静态前端约束
 

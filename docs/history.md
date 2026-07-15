@@ -6,6 +6,8 @@
 
 在切换检索实现前的合成开发基线（3 个问题）为 `Recall@20=0.6666666667`、`nDCG@10=0.6666666667`、`P95=4.3432500679ms`。未提供真实生产 `curated-mvp` 数据库，因此不能把该基线表述为生产验收结果。
 
+本分支最近一次验证：后端与 Worker `501 passed, 3 skipped, 6 warnings`；真实 PostgreSQL 集成 `166 passed, 1 warning`，BM25 jieba/filter 用例未跳过；前端构建通过。前端 Vitest 为 `92 passed, 1 failed`，唯一既有失败是 `src/lib/agromech-chat.test.ts > rejects direct chat requests without a token`，它要求拒绝匿名文本问答，和当前产品配置冲突。
+
 ## 2. 已确认技术决策
 
 - 后端使用 FastAPI + SQLAlchemy Core + Alembic。

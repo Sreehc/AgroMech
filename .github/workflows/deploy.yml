@@ -90,12 +90,6 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Upload frontend static files
-        run: |
-          rsync -az --delete -e "ssh -i ~/.ssh/deploy_key" \
-            frontend/out/ \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_FRONTEND_PATH }}/"
-
       - name: Upload deployment files
         run: |
           ssh -i ~/.ssh/deploy_key "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
@@ -104,7 +98,7 @@ jobs:
             deploy/docker-compose.prod.yml \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_APP_PATH }}/docker-compose.yml"
 
-      - name: Restart backend services
+      - name: Run retrieval release gates and restart backend
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME || github.actor }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
@@ -121,7 +115,78 @@ jobs:
           export AGROMECH_BACKEND_IMAGE="${{ steps.image.outputs.name }}:${{ github.sha }}"
           docker compose pull
           docker compose run --rm api python -m alembic upgrade head
+          docker compose run --rm api python scripts/rebuild-vector-index.py
+          docker compose run --rm api python scripts/evaluate-retrieval.py
           docker compose up -d api worker
-          sudo nginx -t
-          sudo systemctl reload nginx
+          curl --fail --retry 12 --retry-delay 2 --retry-connrefused \
+            http://127.0.0.1:8000/health/ready
+          qa_smoke_request="$({
+            docker compose exec -T api python -c '
+          import json
+          from sqlalchemy import select
+          from agromech_api.core.config import get_settings
+          from agromech_api.core.database import get_engine
+          from agromech_api.db.models import evaluation_questions
+
+          settings = get_settings()
+          with get_engine().connect() as connection:
+              question = connection.execute(
+                  select(evaluation_questions.c.question)
+                  .where(evaluation_questions.c.dataset_version == settings.evaluation_default_dataset)
+                  .order_by(evaluation_questions.c.created_at.asc(), evaluation_questions.c.question_id.asc())
+                  .limit(1)
+              ).scalar_one_or_none()
+          if not question:
+              raise SystemExit("QA smoke requires an evaluation question")
+          print(json.dumps({"question": question}))
+          '
+          })"
+          qa_smoke_response="$(curl --fail --retry 3 --retry-delay 2 \
+            -H 'Content-Type: application/json' \
+            --data "$qa_smoke_request" \
+            http://127.0.0.1:8000/qa/text)"
+          trace_id="$(printf '%s' "$qa_smoke_response" | docker compose exec -T api python -c '
+          import json
+          import sys
+
+          payload = json.load(sys.stdin)
+          if not payload.get("citations"):
+              raise SystemExit("QA smoke returned no Citation")
+          trace_id = payload.get("trace_id")
+          if not trace_id:
+              raise SystemExit("QA smoke returned no retrieval trace")
+          print(trace_id)
+          ')"
+          docker compose exec -T -e TRACE_ID="$trace_id" api python -c '
+          import os
+          from sqlalchemy import select
+          from agromech_api.core.database import get_engine
+          from agromech_api.db.models import retrieval_logs
+
+          with get_engine().connect() as connection:
+              trace = connection.execute(
+                  select(retrieval_logs.c.channels, retrieval_logs.c.fusion, retrieval_logs.c.citation_status)
+                  .where(retrieval_logs.c.trace_id == os.environ["TRACE_ID"])
+              ).mappings().one()
+          channels = dict(trace["channels"] or {})
+          used = set(channels.get("used") or [])
+          if not {"dense", "bm25"}.issubset(used):
+              raise SystemExit(f"retrieval smoke missing Dense or BM25: {sorted(used)}")
+          fusion = dict(trace["fusion"] or {})
+          if not dict(fusion.get("final") or {}).get("rrf_k"):
+              raise SystemExit("retrieval smoke missing RRF trace")
+          if trace["citation_status"] != "completed" or channels.get("citation", {}).get("status") != "ok":
+              raise SystemExit("retrieval smoke Citation trace is not ready")
+          '
           EOF
+
+      - name: Upload frontend static files
+        run: |
+          rsync -az --delete -e "ssh -i ~/.ssh/deploy_key" \
+            frontend/out/ \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_FRONTEND_PATH }}/"
+
+      - name: Reload Nginx after release gates
+        run: |
+          ssh -i ~/.ssh/deploy_key "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "sudo nginx -t && sudo systemctl reload nginx"

@@ -127,6 +127,8 @@ npm run build --prefix frontend
 
 未提供真实生产 `curated-mvp` 数据库时，评估结果只能代表随仓库提供的合成开发数据，不能代替生产验收。
 
+当前验证记录：后端与 Worker 为 `501 passed, 3 skipped, 6 warnings`；真实 PostgreSQL 集成（ParadeDB/`pg_search`）为 `166 passed, 1 warning`，BM25 用例未跳过；前端构建通过。前端 Vitest 为 `92 passed, 1 failed`，既有失败是 `src/lib/agromech-chat.test.ts > rejects direct chat requests without a token`，其预期与当前允许匿名文本问答的产品配置冲突。
+
 ## 文档
 
 - [docs/README.md](docs/README.md)：文档索引与当前系统状态

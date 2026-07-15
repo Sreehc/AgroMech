@@ -79,3 +79,32 @@ def test_docs_describe_dense_bm25_rrf_pipeline_and_pg_search() -> None:
     assert "Dense + BM25" in prd
     assert "pg_search" in api
     assert "/health/ready" in api
+
+
+def test_deployment_release_gate_rebuilds_and_smoke_tests_before_static_cutover() -> None:
+    root = Path(__file__).parents[2]
+    workflow = (root / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+
+    assert "scripts/rebuild-vector-index.py" in workflow
+    assert "scripts/evaluate-retrieval.py" in workflow
+    assert "curl --fail --retry" in workflow
+    assert "/health/ready" in workflow
+    assert "/qa/text" in workflow
+    assert 'payload.get("citations")' in workflow
+    assert 'docker compose exec -T -e TRACE_ID="$trace_id" api' in workflow
+    assert workflow.index("scripts/rebuild-vector-index.py") < workflow.index("Upload frontend static files")
+    assert workflow.index("scripts/evaluate-retrieval.py") < workflow.index("Upload frontend static files")
+    assert workflow.index("/health/ready") < workflow.index("sudo systemctl reload nginx")
+
+
+def test_first_deployment_checks_extensions_before_migration_and_bm25_after_rebuild() -> None:
+    deployment = Path("docs/deployment.md").read_text(encoding="utf-8")
+
+    preflight_start = deployment.index("升级前数据库检查")
+    migration_start = deployment.index("启动与迁移")
+    rebuild_start = deployment.index("迁移完成后")
+    preflight = deployment[preflight_start:migration_start]
+
+    assert "pg_extension" in preflight
+    assert "FROM pg_indexes" not in preflight
+    assert deployment.index("ix_chunk_search_index_bm25", rebuild_start) > rebuild_start
