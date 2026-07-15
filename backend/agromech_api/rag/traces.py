@@ -7,6 +7,7 @@ from agromech_api.security.auth import UserContext, require_roles
 from agromech_api.db.enums import UserRole
 from agromech_api.db.models import retrieval_logs
 from agromech_api.core.errors import AppError, ErrorCode
+from agromech_api.rag.retrieval.hybrid import RetrievalTraceConflictError
 
 
 FULL_TRACE_ROLES = {UserRole.ADMIN, UserRole.EVALUATOR}
@@ -54,22 +55,28 @@ def record_citation_trace(
                 retrieval_logs.c.citation_status,
             ).where(retrieval_logs.c.trace_id == trace_id)
         ).mappings().one_or_none()
-        if row is None or row["citation_status"] != "pending":
+        channels = dict(row["channels"] or {}) if row is not None else {}
+        if (
+            row is None
+            or row["citation_status"] != "pending"
+            or "citation" in channels
+        ):
             return
-        channels = dict(row["channels"] or {})
         channels["citation"] = {
             "status": "ok" if citations else "insufficient",
             "count": len(citations),
             "chunk_ids": [str(item["chunk_id"]) for item in citations if item.get("chunk_id")],
             "asset_ids": [str(item["asset_id"]) for item in citations if item.get("asset_id")],
         }
-        connection.execute(
+        result = connection.execute(
             update(retrieval_logs)
             .where(retrieval_logs.c.id == row["id"])
             .where(retrieval_logs.c.retrieval_round == row["retrieval_round"])
             .where(retrieval_logs.c.citation_status == "pending")
             .values(channels=channels, citation_status="completed")
         )
+        if result.rowcount != 1:
+            raise RetrievalTraceConflictError("citation trace update lost its round guard")
 
 
 def retrieval_trace_payload(row, user: UserContext) -> dict[str, object]:

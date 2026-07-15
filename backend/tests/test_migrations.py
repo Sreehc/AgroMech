@@ -4,7 +4,7 @@ import re
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from agromech_api.db.models import ingest_tasks
 
@@ -126,3 +126,41 @@ def test_alembic_migration_can_run_repeatedly(tmp_path: Path) -> None:
 
     chat_session_indexes = {index["name"] for index in inspector.get_indexes("chat_sessions")}
     assert "ix_chat_sessions_username_updated_at" in chat_session_indexes
+
+
+def test_trace_cas_migration_completes_historical_citation_rows(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "historical-citation.db"
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    config = Config("alembic.ini")
+    config.set_main_option("script_location", "backend/alembic")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
+
+    command.upgrade(config, "0013_pg_search_bm25")
+    engine = create_engine(f"sqlite:///{database_path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO retrieval_logs (
+                    id, trace_id, query, filters, channels, model_config,
+                    query_rewrite, fusion, candidates, rerank, final_evidence
+                ) VALUES (
+                    'historical-citation-log', 'historical-citation-trace', 'M7040 E01',
+                    '{}', '{"used": ["dense"], "citation": {"status": "ok", "count": 1}}',
+                    '{}', '{}', '{}', '[]', '{}', '[]'
+                )
+                """
+            )
+        )
+
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        citation_status = connection.execute(
+            text(
+                "SELECT citation_status FROM retrieval_logs "
+                "WHERE trace_id = 'historical-citation-trace'"
+            )
+        ).scalar_one()
+
+    assert citation_status == "completed"

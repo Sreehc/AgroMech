@@ -121,13 +121,13 @@ def answer_text_question(
             filters=normalized_filters,
             image_context=image_context,
         )
+        record_citation_trace(engine, trace_id, list(payload.get("citations") or []))
     except RetrievalTraceConflictError as exc:
         raise AppError(
             ErrorCode.TRACE_ID_CONFLICT,
             "Trace ID is already in use",
             status_code=status.HTTP_409_CONFLICT,
         ) from exc
-    record_citation_trace(engine, trace_id, list(payload.get("citations") or []))
     record_qa(engine, question=normalized_question, payload=payload)
     if session_id and username:
         append_text_session_exchange(

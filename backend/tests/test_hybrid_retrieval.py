@@ -376,6 +376,105 @@ def test_supplemental_round_does_not_overwrite_citation_written_before_cas_updat
     }
 
 
+def test_record_citation_trace_leaves_historical_citation_channel_untouched(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    trace_id = "trace-historical-citation-channel"
+    hybrid_retrieve_with_trace(
+        engine,
+        "M7040 E01 hydraulic pump",
+        trace_id=trace_id,
+        logged_query="original question",
+        retrieval_round=1,
+    )
+    with engine.begin() as connection:
+        row = connection.execute(
+            select(retrieval_logs.c.channels).where(retrieval_logs.c.trace_id == trace_id)
+        ).mappings().one()
+        channels = {
+            **dict(row["channels"]),
+            "citation": {
+                "status": "ok",
+                "count": 1,
+                "chunk_ids": ["chunk-m7040"],
+                "asset_ids": [],
+            },
+        }
+        connection.execute(
+            update(retrieval_logs)
+            .where(retrieval_logs.c.trace_id == trace_id)
+            .values(channels=channels, citation_status="pending")
+        )
+    before = retrieval_log_snapshot(engine, trace_id)
+
+    record_citation_trace(engine, trace_id, [])
+
+    assert retrieval_log_snapshot(engine, trace_id) == before
+    with engine.connect() as connection:
+        assert connection.execute(
+            select(retrieval_logs.c.citation_status).where(retrieval_logs.c.trace_id == trace_id)
+        ).scalar_one() == "pending"
+
+
+def test_record_citation_trace_raises_conflict_when_round_two_wins_cas(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    trace_id = "trace-citation-loses-to-round-two"
+    hybrid_retrieve_with_trace(
+        engine,
+        "orchard sprayer calibration nozzle",
+        trace_id=trace_id,
+        logged_query="original question",
+        retrieval_round=1,
+    )
+    round_two_snapshot: dict[str, object] | None = None
+    round_two_completed = False
+
+    def complete_round_two_before_citation_update(
+        _conn,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        nonlocal round_two_completed, round_two_snapshot
+        if round_two_completed or not statement.lstrip().upper().startswith("UPDATE RETRIEVAL_LOGS"):
+            return
+        round_two_completed = True
+        hybrid_retrieve_with_trace(
+            engine,
+            "M7040 E01 hydraulic pump repair",
+            trace_id=trace_id,
+            logged_query="original question",
+            retrieval_round=2,
+        )
+        round_two_snapshot = retrieval_log_snapshot(engine, trace_id)
+
+    event.listen(engine, "before_cursor_execute", complete_round_two_before_citation_update)
+    try:
+        with pytest.raises(RetrievalTraceConflictError):
+            record_citation_trace(
+                engine,
+                trace_id,
+                [{"chunk_id": "chunk-m7040", "document_id": "doc-m7040"}],
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", complete_round_two_before_citation_update)
+
+    assert round_two_completed is True
+    assert round_two_snapshot is not None
+    assert retrieval_log_snapshot(engine, trace_id) == round_two_snapshot
+    with engine.connect() as connection:
+        row = connection.execute(
+            select(retrieval_logs.c.retrieval_round, retrieval_logs.c.citation_status, retrieval_logs.c.channels)
+            .where(retrieval_logs.c.trace_id == trace_id)
+        ).mappings().one()
+    assert row["retrieval_round"] == 2
+    assert row["citation_status"] == "pending"
+    assert "citation" not in row["channels"]
+
+
 def test_supplemental_round_rejects_a_second_round_two_and_preserves_final_audit(
     tmp_path,
 ) -> None:
