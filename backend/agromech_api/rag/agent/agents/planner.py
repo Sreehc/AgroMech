@@ -17,7 +17,7 @@ class PlanningAgent:
     def run(self, state: AgentState) -> AgentResult:
         if self.planner_fn is None:
             check = check_evidence_sufficiency(
-                question=state.get("rewritten_query") or state["question"],
+                question=state["question"],
                 final_evidence=state.get("final_evidence") or [],
                 citations=state.get("citations") or [],
             )
@@ -32,7 +32,7 @@ class PlanningAgent:
         else:
             planner = self.planner_fn(
                 engine=state.get("engine"),
-                question=state.get("rewritten_query") or state["question"],
+                question=state["question"],
                 filters=state.get("filters") or {},
                 route=state.get("route") or {},
                 retrieval=state.get("retrieval") or {},

@@ -4,7 +4,7 @@ import re
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from agromech_api.db.models import ingest_tasks
 
@@ -57,6 +57,29 @@ def test_initial_migration_enables_pgvector_before_creating_metadata() -> None:
     assert extension_position < create_all_position
 
 
+def test_alembic_database_url_environment_overrides_configured_url(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    configured_database = tmp_path / "configured.db"
+    environment_database = tmp_path / "environment.db"
+    config = Config("alembic.ini")
+    config.set_main_option("script_location", "backend/alembic")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{configured_database}")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{environment_database}")
+
+    command.upgrade(config, "head")
+
+    environment_tables = inspect(
+        create_engine(f"sqlite:///{environment_database}")
+    ).get_table_names()
+    configured_tables = inspect(
+        create_engine(f"sqlite:///{configured_database}")
+    ).get_table_names()
+    assert "alembic_version" in environment_tables
+    assert "alembic_version" not in configured_tables
+
+
 def test_alembic_migration_can_run_repeatedly(tmp_path: Path) -> None:
     database_path = tmp_path / "agromech.db"
     config = Config("alembic.ini")
@@ -93,6 +116,51 @@ def test_alembic_migration_can_run_repeatedly(tmp_path: Path) -> None:
     assert {"schema_version", "is_active", "valid_to"}.issubset(graph_edge_columns)
     assert "document_version" in document_columns
     assert "model_config" in retrieval_log_columns
+    assert {"query_rewrite", "fusion", "retrieval_round", "citation_status"}.issubset(
+        retrieval_log_columns
+    )
+
+    document_indexes = {index["name"] for index in inspector.get_indexes("documents")}
+    assert "ix_documents_retrieval_state" in document_indexes
+    assert "ix_documents_retrieval_metadata" in document_indexes
 
     chat_session_indexes = {index["name"] for index in inspector.get_indexes("chat_sessions")}
     assert "ix_chat_sessions_username_updated_at" in chat_session_indexes
+
+
+def test_trace_cas_migration_completes_historical_citation_rows(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "historical-citation.db"
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    config = Config("alembic.ini")
+    config.set_main_option("script_location", "backend/alembic")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
+
+    command.upgrade(config, "0013_pg_search_bm25")
+    engine = create_engine(f"sqlite:///{database_path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO retrieval_logs (
+                    id, trace_id, query, filters, channels, model_config,
+                    query_rewrite, fusion, candidates, rerank, final_evidence
+                ) VALUES (
+                    'historical-citation-log', 'historical-citation-trace', 'M7040 E01',
+                    '{}', '{"used": ["dense"], "citation": {"status": "ok", "count": 1}}',
+                    '{}', '{}', '{}', '[]', '{}', '[]'
+                )
+                """
+            )
+        )
+
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        citation_status = connection.execute(
+            text(
+                "SELECT citation_status FROM retrieval_logs "
+                "WHERE trace_id = 'historical-citation-trace'"
+            )
+        ).scalar_one()
+
+    assert citation_status == "completed"

@@ -42,16 +42,15 @@ class DependencyCheck:
 
 def dependency_targets(settings: Settings) -> dict[str, DependencyTarget]:
     database_url = urlsplit(settings.database_url)
+    database_backend = database_url.scheme.partition("+")[0]
 
-    postgres_host = database_url.hostname or settings.postgres_host
-    postgres_port = database_url.port or settings.postgres_port
-
-    if not postgres_host:
-        raise ValueError("DATABASE_URL must include a host")
-
-    targets = {
-        "postgres": DependencyTarget("postgres", postgres_host, postgres_port),
-    }
+    targets = {}
+    if database_backend == "postgresql":
+        postgres_host = database_url.hostname or settings.postgres_host
+        postgres_port = database_url.port or settings.postgres_port
+        if not postgres_host:
+            raise ValueError("DATABASE_URL must include a host")
+        targets["postgres"] = DependencyTarget("postgres", postgres_host, postgres_port)
     if settings.graph_backend == "neo4j":
         neo4j_url = urlsplit(settings.neo4j_uri)
         if not neo4j_url.hostname:
@@ -142,6 +141,8 @@ def sanitize_database_error(exc: Exception) -> str:
 def check_pgvector_extension(engine=None) -> DependencyCheck:
     active_engine = engine or get_engine()
     target = "postgres:extension/vector"
+    if active_engine.dialect.name != "postgresql":
+        return DependencyCheck("pgvector", "not_applicable", target)
     try:
         with active_engine.connect() as connection:
             extension = connection.execute(
@@ -154,22 +155,87 @@ def check_pgvector_extension(engine=None) -> DependencyCheck:
         return DependencyCheck("pgvector", "unavailable", target, sanitize_database_error(exc))
 
 
+def check_pg_search_extension(engine=None) -> DependencyCheck:
+    active_engine = engine or get_engine()
+    target = "postgres:extension/pg_search"
+    if active_engine.dialect.name != "postgresql":
+        return DependencyCheck("pg_search", "not_applicable", target)
+    try:
+        with active_engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    """
+                    SELECT
+                        EXISTS (
+                            SELECT 1
+                            FROM pg_catalog.pg_extension
+                            WHERE extname = 'pg_search'
+                        ) AS extension,
+                        EXISTS (
+                            SELECT 1
+                            FROM pg_catalog.pg_class AS index_relation
+                            JOIN pg_catalog.pg_namespace AS index_namespace
+                                ON index_namespace.oid = index_relation.relnamespace
+                            JOIN pg_catalog.pg_index AS index_definition
+                                ON index_definition.indexrelid = index_relation.oid
+                            JOIN pg_catalog.pg_class AS table_relation
+                                ON table_relation.oid = index_definition.indrelid
+                            JOIN pg_catalog.pg_namespace AS table_namespace
+                                ON table_namespace.oid = table_relation.relnamespace
+                            JOIN pg_catalog.pg_am AS access_method
+                                ON access_method.oid = index_relation.relam
+                            WHERE index_namespace.nspname = current_schema()
+                                AND table_namespace.nspname = current_schema()
+                                AND table_relation.relname = 'chunk_search_index'
+                                AND index_relation.relname = 'ix_chunk_search_index_bm25'
+                                AND access_method.amname = 'bm25'
+                        ) AS index
+                    """
+                )
+            ).mappings().one()
+        if row["extension"] and row["index"]:
+            return DependencyCheck("pg_search", "ok", target)
+        return DependencyCheck(
+            "pg_search",
+            "unavailable",
+            target,
+            "pg_search extension or BM25 index is missing",
+        )
+    except Exception as exc:  # noqa: BLE001 - report dependency status instead of raising
+        return DependencyCheck("pg_search", "unavailable", target, sanitize_database_error(exc))
+
+
 def check_bailian_config(settings: Settings) -> DependencyCheck:
     target = settings.bailian_base_url or "unconfigured"
-    bailian_enabled = "bailian" in {settings.model_provider, settings.embedding_provider}
+    bailian_enabled = "bailian" in {
+        settings.model_provider,
+        settings.embedding_provider,
+        settings.visual_embedding_provider,
+    }
     if not bailian_enabled:
-        return DependencyCheck("bailian", "unavailable", target, "bailian configuration missing")
+        return DependencyCheck("bailian", "not_applicable", target)
     if not settings.bailian_api_key or not settings.bailian_base_url:
         return DependencyCheck("bailian", "unavailable", target, "bailian configuration missing")
     return DependencyCheck("bailian", "ok", settings.bailian_base_url)
 
 
 def check_infrastructure(settings: Settings, engine=None) -> list[DependencyCheck]:
-    checks = [
+    targets = dependency_targets(settings)
+    postgres_target = targets.get("postgres")
+    if postgres_target is None:
+        database_backend = urlsplit(settings.database_url).scheme.partition("+")[0]
+        checks = [DependencyCheck("postgres", "not_applicable", f"{database_backend}:database")]
+    else:
+        checks = [
+            check_tcp_dependency(postgres_target, settings.dependency_connect_timeout_seconds)
+        ]
+    checks.extend(
         check_tcp_dependency(target, settings.dependency_connect_timeout_seconds)
-        for target in dependency_targets(settings).values()
-    ]
+        for name, target in targets.items()
+        if name != "postgres"
+    )
     checks.append(check_file_storage(settings))
     checks.append(check_pgvector_extension(engine))
+    checks.append(check_pg_search_extension(engine))
     checks.append(check_bailian_config(settings))
     return checks

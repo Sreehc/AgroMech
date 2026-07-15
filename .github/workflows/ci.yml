@@ -9,6 +9,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: paradedb/paradedb:0.24.2
+        env:
+          POSTGRES_USER: agromech
+          POSTGRES_PASSWORD: agromech
+          POSTGRES_DB: agromech_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agromech -d agromech_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AGROMECH_TEST_POSTGRES_URL: postgresql+psycopg://agromech:agromech@localhost:5432/agromech_test
 
     steps:
       - name: Check out repository
@@ -28,6 +44,11 @@ jobs:
 
       - name: Install Python dependencies
         run: python -m pip install -e ".[dev]"
+
+      - name: Prepare PostgreSQL search database
+        env:
+          DATABASE_URL: ${{ env.AGROMECH_TEST_POSTGRES_URL }}
+        run: python -m alembic upgrade head
 
       - name: Install frontend dependencies
         run: npm ci --prefix frontend

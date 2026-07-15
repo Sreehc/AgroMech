@@ -36,59 +36,42 @@ def auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_retrieve_with_trace_logs_query_filters_channels_rerank_and_final_evidence(tmp_path: Path) -> None:
+def test_retrieve_trace_records_rewrite_and_rrf_fusion(tmp_path: Path) -> None:
     engine = create_test_engine(tmp_path)
     seed_retrieval_corpus(engine)
-    settings = Settings(
-        _env_file=None,
-        bailian_api_key="test-key",
-        bailian_base_url="https://bailian.example",
-        graph_backend="neo4j",
-        model_provider="bailian",
-        embedding_provider="bailian",
-    )
 
     result = hybrid_retrieve_with_trace(
         engine,
-        "M7040 E01 hydraulic repair",
-        trace_id="trace-rerank",
-        degraded_channels={"graph": "neo4j timeout"},
-        settings=settings,
+        "M7040 E01 hydraulic pump",
+        trace_id="trace-fusion",
+        query_rewrite={
+            "original_query": "M7040 的 E01 怎么修？",
+            "query": "M7040 E01 hydraulic pump",
+            "provider": "bailian",
+            "model": "qwen3.6-flash",
+            "fallback": False,
+            "reason": "model_rewrite",
+        },
     )
 
-    assert result["trace_id"] == "trace-rerank"
+    assert result["trace_id"] == "trace-fusion"
     assert result["status"] == "ok"
     assert result["candidates"][0]["chunk_id"] == "chunk-m7040"
 
     with engine.connect() as connection:
         log = connection.execute(select(retrieval_logs)).mappings().one()
 
-    assert log["trace_id"] == "trace-rerank"
-    assert log["query"] == "M7040 E01 hydraulic repair"
-    assert log["filters"]["model"] == "M7040"
-    assert set(log["channels"]["used"]) >= {"keyword", "vector", "structured"}
-    assert log["channels"]["degraded"] == [{"channel": "graph", "reason": "neo4j timeout"}]
-    assert log["channels"]["embedding_version"]
-    assert log["model_config"]["embedding_provider"] == "bailian"
-    assert log["model_config"]["embedding_model"] == "text-embedding-v4"
-    assert log["model_config"]["embedding_version"]
-    assert log["model_config"]["vector_backend"] == "pgvector"
-    assert log["model_config"]["vector_collection"] is None
-    assert log["model_config"]["graph_backend"] == "neo4j"
-    assert log["model_config"]["rerank_enabled"] is True
-    assert log["model_config"]["rerank_model"] == "qwen3-rerank"
-    assert log["model_config"]["llm_model"] == "qwen3.7-plus"
-    assert log["candidates"][0]["chunk_id"]
-    assert log["final_evidence"][0]["chunk_id"] == "chunk-m7040"
-    assert log["rerank"]["strategy"] == "deterministic_evidence_rerank"
-    assert {
-        "chunk_id",
-        "before_rank",
-        "after_rank",
-        "before_score",
-        "after_score",
-        "channels",
-    }.issubset(log["rerank"]["items"][0])
+    assert log["trace_id"] == "trace-fusion"
+    assert log["query_rewrite"]["final"]["provider"] == "bailian"
+    assert log["query_rewrite"]["final"]["original_query"] == "M7040 的 E01 怎么修？"
+    assert log["query_rewrite"]["final"]["query"] == "M7040 E01 hydraulic pump"
+    assert len(log["query_rewrite"]["attempts"]) == 1
+    assert log["fusion"]["final"]["rrf_k"] == 60
+    assert log["fusion"]["retrieval_duration_ms"] >= 0
+    assert set(log["channels"]["used"]).issubset({"dense", "bm25"})
+    assert "channel_ranks" in log["fusion"]["final"]["items"][0]
+    assert log["model_config"]["bm25_backend"] == "pg_search"
+    assert log["model_config"]["query_rewrite_model"] == "qwen3.6-flash"
 
 
 class TraceFailingRerankProvider:
@@ -175,6 +158,15 @@ def test_trace_api_returns_full_trace_to_evaluator(tmp_path: Path) -> None:
                     "degraded": [{"channel": "rerank", "reason": "service timeout"}],
                 },
                 model_config={"embedding_version": "emb-v1", "rerank_model": "qwen3-rerank"},
+                query_rewrite={
+                    "attempts": [{"query": "M7040 E01 hydraulic pump", "provider": "bailian", "fallback": False}],
+                    "final": {"query": "M7040 E01 hydraulic pump", "provider": "bailian", "fallback": False},
+                },
+                fusion={
+                    "attempts": [{"rrf_k": 60, "channel_counts": {"dense": 50, "bm25": 50}, "items": [{"chunk_id": "chunk-a"}]}],
+                    "final": {"rrf_k": 60, "channel_counts": {"dense": 50, "bm25": 50}, "items": [{"chunk_id": "chunk-a"}]},
+                    "retrieval_duration_ms": 12.0,
+                },
                 candidates=[{"chunk_id": "chunk-a", "content": "full evidence", "score": 4.2}],
                 rerank={
                     "strategy": "deterministic_evidence_rerank",
@@ -194,6 +186,8 @@ def test_trace_api_returns_full_trace_to_evaluator(tmp_path: Path) -> None:
     assert payload["model_config"] == {"embedding_version": "emb-v1", "rerank_model": "qwen3-rerank"}
     assert payload["candidates"][0]["content"] == "full evidence"
     assert payload["rerank"]["items"][0]["before_rank"] == 2
+    assert payload["query_rewrite"]["final"]["query"] == "M7040 E01 hydraulic pump"
+    assert payload["fusion"]["final"]["items"] == [{"chunk_id": "chunk-a"}]
 
 
 def test_trace_api_hides_full_candidates_from_standard_user(tmp_path: Path) -> None:
@@ -235,6 +229,15 @@ def test_trace_api_returns_summary_to_maintainer_without_debug_details(tmp_path:
                 filters={"model": "M7040"},
                 channels={"used": ["keyword"], "degraded": []},
                 model_config={"embedding_version": "emb-v1"},
+                query_rewrite={
+                    "attempts": [{"query": "secret internal rewrite", "provider": "bailian", "fallback": False}],
+                    "final": {"query": "secret internal rewrite", "provider": "bailian", "fallback": False},
+                },
+                fusion={
+                    "attempts": [{"rrf_k": 60, "channel_counts": {"dense": 50, "bm25": 50}, "items": [{"chunk_id": "chunk-a"}]}],
+                    "final": {"rrf_k": 60, "channel_counts": {"dense": 50, "bm25": 50}, "items": [{"chunk_id": "chunk-a"}]},
+                    "retrieval_duration_ms": 12.0,
+                },
                 candidates=[{"chunk_id": "chunk-a", "content": "full evidence", "score": 4.2}],
                 rerank={"items": [{"chunk_id": "chunk-a", "before_rank": 1, "after_rank": 1}]},
                 final_evidence=[{"chunk_id": "chunk-a", "content": "full evidence"}],
@@ -250,6 +253,42 @@ def test_trace_api_returns_summary_to_maintainer_without_debug_details(tmp_path:
     assert "candidates" not in payload
     assert "rerank" not in payload
     assert payload["final_evidence"] == [{"chunk_id": "chunk-a"}]
+    assert payload["query_rewrite"] == {"provider": "bailian", "fallback": False}
+    assert payload["fusion"] == {"rrf_k": 60, "channel_counts": {"dense": 50, "bm25": 50}}
+    assert "items" not in payload["fusion"]
+
+
+def test_standard_user_trace_hides_rewritten_query_and_fused_items(tmp_path: Path) -> None:
+    client, engine, token = trace_client(tmp_path, role=UserRole.USER)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(retrieval_logs).values(
+                id="log-rrf",
+                trace_id="trace-rrf-summary",
+                query="M7040 E01",
+                filters={"model": "M7040"},
+                channels={"used": ["dense", "bm25"], "degraded": []},
+                model_config={},
+                query_rewrite={
+                    "attempts": [{"query": "secret internal rewrite", "provider": "bailian", "fallback": False}],
+                    "final": {"query": "secret internal rewrite", "provider": "bailian", "fallback": False},
+                },
+                fusion={
+                    "attempts": [{"rrf_k": 60, "channel_counts": {"dense": 50, "bm25": 50}, "items": [{"chunk_id": "chunk-a"}]}],
+                    "final": {"rrf_k": 60, "channel_counts": {"dense": 50, "bm25": 50}, "items": [{"chunk_id": "chunk-a"}]},
+                    "retrieval_duration_ms": 12.0,
+                },
+                candidates=[],
+                rerank={},
+                final_evidence=[],
+            )
+        )
+
+    payload = client.get("/retrieval-traces/trace-rrf-summary", headers=auth_header(token)).json()
+
+    assert payload["query_rewrite"] == {"provider": "bailian", "fallback": False}
+    assert payload["fusion"] == {"rrf_k": 60, "channel_counts": {"dense": 50, "bm25": 50}}
+    assert "items" not in payload["fusion"]
 
 
 def test_trace_api_redacts_sensitive_details_from_full_trace_roles(tmp_path: Path) -> None:

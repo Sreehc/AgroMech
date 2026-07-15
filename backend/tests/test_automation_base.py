@@ -1,5 +1,7 @@
 import json
+import os
 import stat
+import subprocess
 from pathlib import Path
 
 
@@ -30,6 +32,33 @@ def test_unified_test_command_runs_lint_unit_integration_and_e2e() -> None:
     assert "scripts/test-integration.sh" in test_all
     assert "scripts/e2e-smoke.sh" in test_all
     assert "npm run build --prefix frontend" in test_all
+
+
+def test_integration_script_requires_postgres_url_before_starting_python(tmp_path) -> None:
+    fake_python = tmp_path / "python"
+    marker = tmp_path / "python-started"
+    fake_python.write_text(
+        '#!/usr/bin/env bash\n: > "$FAKE_PYTHON_MARKER"\nexit 99\n',
+        encoding="utf-8",
+    )
+    fake_python.chmod(fake_python.stat().st_mode | stat.S_IXUSR)
+    env = os.environ.copy()
+    env.pop("AGROMECH_TEST_POSTGRES_URL", None)
+    env["PYTHON_BIN"] = str(fake_python)
+    env["FAKE_PYTHON_MARKER"] = str(marker)
+
+    completed = subprocess.run(
+        [str(REPO_ROOT / "scripts/test-integration.sh")],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "AGROMECH_TEST_POSTGRES_URL is required" in completed.stderr
+    assert not marker.exists()
 
 
 def test_ci_uses_the_unified_test_command() -> None:

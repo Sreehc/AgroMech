@@ -91,7 +91,7 @@ POST /documents
 
 - `backfill_document_metadata()` 使用 LLM 回填空的品牌、型号、类型、语言和来源字段。
 - `process_document_entities()`。
-- `SearchIndexer.index_document()` 写全文索引和 `chunk_vector_embeddings` pgvector 向量。
+- `SearchIndexer.index_document()` 为每个可检索 chunk 写入 `chunk_search_index` 和 `chunk_vector_embeddings`；PostgreSQL 上由 `pg_search` 的 BM25 索引提供词法召回。
 
 Graph RAG / Neo4j sync 当前不在主导入链路启用，相关模块暂存为后续增强。
 
@@ -99,20 +99,22 @@ Graph RAG / Neo4j sync 当前不在主导入链路启用，相关模块暂存为
 
 ## 5. RAG 检索设计
 
-混合检索由 `hybrid_retrieve_with_trace()` 组织：
+当前主路径为 `Query Rewrite -> Dense + BM25 -> RRF -> Rerank -> Citation`，由 `hybrid_retrieve_with_trace()` 组织：
 
-- query understanding：解析意图、型号、品牌、系统、部件、故障码、配件号和安全敏感性。
-- keyword：精确匹配型号、故障码、配件号、标题、表格字段。
-- structured：按文档元数据和实体链接过滤/加权。
-- vector：使用百炼 embedding 生成查询向量，在 pgvector 表中召回文本 chunk。
-- vision：图片 OCR、视觉描述和实体线索进入文本检索链路。
-- rerank：百炼 rerank，失败时 deterministic fallback，并写入 trace。
+- Query Rewrite：在首轮检索前执行；保留型号、故障码、零件号等受保护标识符，失败时使用规则回退并记录 provider、model、耗时和回退原因。
+- Dense：使用 embedding 生成查询向量，在 pgvector 表中召回文本 chunk。
+- BM25：使用 `pg_search` 的 `ix_chunk_search_index_bm25` 召回词法候选；文档元数据 filters 同时限制 Dense 与 BM25 的查询范围。
+- RRF：对 Dense 和 BM25 的名次做 Reciprocal Rank Fusion，不比较两条通道原始分数；`RRF_K` 和两条通道权重可配置。
+- Rerank：对融合候选重排；服务异常时使用确定性回退并写入 trace。
+- Citation：只允许最终 evidence 中可访问、通过证据准入的 chunk 生成引用；证据不足时不伪造引用。
+
+图片 OCR、视觉描述和实体线索会补充查询与过滤条件，但 Vision RAG 不参与这条文本证据主检索通道。Graph RAG 明确禁用，不能作为当前召回或回答依据。
 
 最终证据：
 
 - 按 `FINAL_EVIDENCE_LIMIT` 裁剪。
-- citation 保留 `document_id`、`document_title`、`chunk_id`、`source_locator`、`evidence_snippet`、`evidence_type`、`accessible`。
-- trace 写入 query、filters、channels、model_config、candidates、rerank、final_evidence。
+- Citation 保留 `document_id`、`document_title`、`chunk_id`、`source_locator`、`evidence_snippet`、`evidence_type`、`accessible`。
+- trace 按检索轮次写入 query、filters、Query Rewrite、Dense/BM25 通道、RRF fusion、candidates、Rerank 和 final_evidence；普通角色只能获取脱敏摘要。
 
 ## 6. Agentic QA 设计
 
@@ -147,10 +149,10 @@ class BaseAgent(Protocol):
 | `QueryAnalystAgent` | 解析意图、型号、品牌、故障码、部件、安全敏感性 |
 | `RouterAgent` | 判断 Text-only / Text+Visual 路径 |
 | `RetrievalAgent` | 调用混合检索工具，返回 evidence 和 citation |
-| `PlanningAgent` | 判断是否需要补检索、query rewrite 或视觉检索 |
+| `PlanningAgent` | 判断是否需要补检索、Query Rewrite 或视觉检索 |
 | `EvidenceReviewerAgent` | 生成前证据准入：是否为空、是否可访问、是否匹配问题、型号/故障码是否混淆 |
 | `DomainSpecialistAgent` | 按问题类型（保养、故障、配件、视觉）稳定回答结构和领域约束 |
-| `QueryRewriteAgent` | 基于缺失证据做确定性领域同义词扩展重写 |
+| `QueryRewriteAgent` | 在每一轮检索前做受保护标识符安全的 Query Rewrite |
 | `AnswerWriterAgent` | 基于最终证据生成回答，支持文本与多模态 |
 | `SafetyReviewerAgent` | 生成后安全审查：高风险主题安全提醒、无来源结论拦截、prompt 注入处理 |
 
@@ -161,7 +163,8 @@ class BaseAgent(Protocol):
 ```text
 parse (QueryAnalyst)
   -> route (Router)
-  -> retrieve (Retrieval)
+  -> rewrite (Query Rewrite)
+  -> retrieve (Dense + BM25 -> RRF -> Rerank)
   -> planner (Planning，可按需内联视觉检索)
   -> [need_query_rewrite 且未达轮次上限] rewrite -> retrieve
   -> evidence_check (EvidenceReviewer)
@@ -182,11 +185,11 @@ parse (QueryAnalyst)
 - `backend/agromech_api/rag/agent/graph.py`：LangGraph `StateGraph`。
 - `backend/agromech_api/rag/agent/tools.py`：用 `langchain-core` tool 包装检索调用。
 - `backend/agromech_api/rag/retrieval/evidence_check.py`：规则证据充足性检查底座。
-- `backend/agromech_api/rag/retrieval/query_rewrite.py`：确定性领域同义词扩展底座。
+- `backend/agromech_api/rag/retrieval/query_rewrite.py`：Query Rewrite provider、受保护标识符校验与规则回退。
 
-### 6.4 并行检索 Agent
+### 6.4 检索执行与降级
 
-混合检索的通道已拆成可并行的检索 Agent，位于 `backend/agromech_api/rag/retrieval/hybrid.py`，作为 `hybrid_retrieve_with_trace()` 的底层编排单元：`KeywordRetrievalAgent`、`VectorRetrievalAgent`、`StructuredRetrievalAgent`、`VisualRetrievalAgent` 通过 `ThreadPoolExecutor` 并行召回，`EvidenceMergeAgent` 按 chunk 去重合并命中通道，`RerankAgent` 做重排。任一通道失败不拖垮整体问答，通道状态、耗时和降级原因写入 trace。通道加权见 `CHANNEL_WEIGHTS`（structured 4.0、keyword 2.0、vector 1.5、vision 1.0）。
+`backend/agromech_api/rag/retrieval/hybrid.py` 在同一轮并行执行 Dense 与 BM25，随后以 RRF 合并、按 chunk 去重并交给 Rerank。Dense 或 BM25 的可选通道失败不会阻断已有的另一通道，但 trace 会记录状态、耗时与降级原因；两条通道均不可用时不生成无依据 Citation。当前没有关键词加权、结构化召回通道或通道原始分数加权。
 
 ### 6.5 当前实现边界
 
@@ -236,12 +239,14 @@ npm run dev --prefix frontend
 - `RABBITMQ_PUBLISH_ENABLED=false|true`
 - `RABBITMQ_URL`
 - `OCR_TEXT_MODE=legacy|cloud_text`
-- Postgres 容器需安装 pgvector，目标数据库通过迁移执行 `CREATE EXTENSION IF NOT EXISTS vector`
-- 迁移后既有 indexed 文档可运行 `.venv/bin/python scripts/rebuild-vector-index.py` 重建文本和视觉向量
+- Postgres 容器需安装 `vector` 和 `pg_search`；迁移会创建两项扩展及 `ix_chunk_search_index_bm25`
+- 迁移后既有 indexed 文档可运行 `.venv/bin/python scripts/rebuild-vector-index.py` 重建 `chunk_search_index`、`chunk_vector_embeddings` 并校验 BM25 索引
 - `GRAPH_BACKEND=local`，当前默认不启用 Graph RAG
 - `MODEL_PROVIDER=bailian`
 - `EMBEDDING_PROVIDER=bailian`
 - `RERANK_ENABLED=true`
+- `BM25_TOP_K`、`DENSE_TOP_K`、`RRF_K`、`RRF_DENSE_WEIGHT`、`RRF_BM25_WEIGHT`、`FUSION_TOP_K`
+- `QUERY_REWRITE_ENABLED`、`QUERY_REWRITE_MODEL`、`QUERY_REWRITE_TIMEOUT_SECONDS`
 - `FINAL_EVIDENCE_LIMIT=5`
 - `MAX_IMAGES_PER_QUESTION=1`
 
@@ -254,6 +259,7 @@ npm run dev --prefix frontend
 ```bash
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/health/dependencies
+curl -i http://127.0.0.1:8000/health/ready
 ```
 
 常见排障：
@@ -261,7 +267,7 @@ curl http://127.0.0.1:8000/health/dependencies
 - 文档导入失败：看 task `stage/error_code/error_message`，确认文件类型、OCR、metadata、embedding、index 阶段。
 - RabbitMQ 不消费：确认 `infra-rabbitmq`、`RABBITMQ_URL`、`RABBITMQ_PUBLISH_ENABLED` 和 `consume_forever()`。
 - 回答无引用：检查 retrieval trace 的 final_evidence、rerank 阈值和 citations。
-- pgvector 异常：确认 Postgres 镜像已安装 pgvector、Alembic 迁移已执行到 head，且目标库存在 `vector` extension。
+- 检索就绪失败：确认 Postgres 镜像已安装 `vector` 和 `pg_search`、Alembic 已执行到 head，且 `ix_chunk_search_index_bm25` 存在。
 - 向量召回为空：确认文档已完成索引；迁移后可运行 `.venv/bin/python scripts/rebuild-vector-index.py` 重建既有文档向量。
 - Bailian 失败：检查 API key、base URL、限流和 trace 中 degraded channel。
 

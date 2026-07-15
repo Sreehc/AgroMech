@@ -157,7 +157,7 @@ asset 类型：
 
 ### `chunk_search_index`
 
-全文检索索引引用。包含：
+Dense + BM25 检索的词法侧索引引用。包含：
 
 - `chunk_id`
 - `document_id`
@@ -167,7 +167,7 @@ asset 类型：
 - `chunk_profile`
 - `embedding_dimension`
 
-`chunk_id + embedding_version` 唯一。`embedding_version`、`chunk_profile` 和 `embedding_dimension` 与 `chunk_vector_embeddings` 对齐，用于检索 trace 和重建校验。
+`chunk_id + embedding_version` 唯一。PostgreSQL 使用 `pg_search` 的 `ix_chunk_search_index_bm25`（访问方法 `bm25`）在 `search_text` 上提供 BM25 召回；`embedding_version`、`chunk_profile` 和 `embedding_dimension` 与 `chunk_vector_embeddings` 对齐，用于检索 trace 和重建校验。
 
 ### `chunk_vector_embeddings`
 
@@ -208,11 +208,15 @@ PDF 页面渲染图、图片和 OCR 视觉资产的页面级向量表。embeddin
 - `trace_id`
 - `query`
 - `filters`
+- `query_rewrite`
+- `fusion`
 - `channels`
 - `model_config`
 - `candidates`
 - `rerank`
 - `final_evidence`
+
+`query_rewrite` 保存每轮 Query Rewrite 的原问题、重写问题、provider/model、回退状态和受保护标识符校验结果。`fusion` 保存 Dense + BM25 的 RRF 参数、通道数量和候选名次。`final_evidence` 是 Citation 唯一允许使用的证据集合。
 
 `trace_id` 唯一。
 

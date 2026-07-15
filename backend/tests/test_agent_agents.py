@@ -90,6 +90,9 @@ def test_retrieval_agent_wraps_existing_retrieval_tool_payload() -> None:
     result = agent.run(state)
 
     assert calls[0]["question"] == "M7040 E01"
+    assert calls[0]["original_question"] == "M7040 E01"
+    assert calls[0]["query_rewrite"] == {}
+    assert calls[0]["retrieval_round"] == 0
     assert result["output"]["final_evidence"] == [{"chunk_id": "chunk-1"}]
     assert result["output"]["citations"] == [{"chunk_id": "chunk-1"}]
     assert result["trace"]["agent"] == "RetrievalAgent"
@@ -122,11 +125,20 @@ def test_planning_agent_uses_custom_planner_when_provided() -> None:
 def test_query_rewrite_agent_rewrites_and_increments_round() -> None:
     state = initial_agent_state(question="液压泵异响怎么检查？", filters={"model": "M7040"})
     state["evidence_check"] = {"missing": ["citations"]}
+    calls: list[dict[str, object]] = []
 
-    result = QueryRewriteAgent().run(state)
+    result = QueryRewriteAgent(
+        lambda **kwargs: calls.append(kwargs)
+        or {
+            "query": "液压泵异响怎么检查？ hydraulic pump",
+            "trace": {"provider": "test", "fallback": False, "reason": "model_rewrite"},
+        }
+    ).run(state)
 
     assert "hydraulic pump" in result["output"]["rewritten_query"]
+    assert result["output"]["query_rewrite"]["provider"] == "test"
     assert result["output"]["retrieval_round"] == 1
+    assert calls[0]["supplemental"] is False
     assert result["trace"]["agent"] == "QueryRewriteAgent"
 
 

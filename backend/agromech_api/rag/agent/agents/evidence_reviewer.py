@@ -10,9 +10,10 @@ class EvidenceReviewerAgent:
 
     def run(self, state: AgentState) -> AgentResult:
         check = check_evidence_sufficiency(
-            question=state.get("rewritten_query") or state["question"],
+            question=state["question"],
             final_evidence=state.get("final_evidence") or [],
             citations=state.get("citations") or [],
+            require_visual=bool((state.get("planner") or {}).get("need_visual")),
         )
         return {
             "status": check["status"],

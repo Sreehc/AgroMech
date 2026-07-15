@@ -198,6 +198,8 @@ def test_retrieval_logs_declare_model_config_field() -> None:
 
     assert "model_config" in retrieval_logs.c.keys()
     assert retrieval_logs.c.model_config.nullable is False
+    assert retrieval_logs.c.retrieval_round.nullable is False
+    assert retrieval_logs.c.citation_status.nullable is False
 
 
 def test_documents_table_declares_document_version_field() -> None:

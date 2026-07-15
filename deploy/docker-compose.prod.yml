@@ -1,7 +1,6 @@
 services:
   api:
     image: ${AGROMECH_BACKEND_IMAGE}
-    container_name: agromech-api
     restart: unless-stopped
     env_file:
       - .env
@@ -25,7 +24,6 @@ services:
 
   worker:
     image: ${AGROMECH_BACKEND_IMAGE}
-    container_name: agromech-worker
     restart: unless-stopped
     env_file:
       - .env

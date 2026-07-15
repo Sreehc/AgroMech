@@ -24,6 +24,7 @@ class AgentState(TypedDict, total=False):
     planner: dict[str, Any]
     evidence_check: dict[str, Any]
     domain_context: dict[str, Any]
+    query_rewrite: dict[str, Any]
     rewritten_query: str
 
 

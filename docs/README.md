@@ -18,13 +18,19 @@ AgroMech 是面向农机资料的多模态 RAG 应用，当前已具备：
 
 - 登录和角色权限：用户存入 Postgres `users` 表，支持 `admin`、`maintainer`、`user`、`evaluator`，登录写入 `auth_audit_logs`。
 - 资料库：上传、筛选、详情、预览、重新处理、删除。
-- Worker 导入链路：文本、表格、PDF 页面、图片、OCR、视觉观察、LLM 元数据回填、实体、全文索引和 pgvector 向量索引。
+- Worker 导入链路：文本、表格、PDF 页面、图片、OCR、视觉观察、LLM 元数据回填、实体、`pg_search` BM25 索引和 pgvector 向量索引。
 - RabbitMQ 上传分发：API 创建 DB task 后可发布消息，worker 可常驻消费；DB `ingest_tasks` 仍是权威状态。
 - 文本和图片问答：`/qa/text`、`/qa/image` 均进入 Agent Controller，返回 citations、trace 和 agent_trace。
-- 检索链路：关键词、结构化、PostgreSQL + pgvector 向量、Vision RAG、rerank 和降级 trace；Graph RAG 暂不在主链路启用。
+- 检索链路：Query Rewrite 后并行 Dense + BM25，以 RRF 融合、Rerank 重排并以 Citation 输出最终证据；Graph RAG 明确不在主链路启用。
 - 前端：assistant-ui 问答工作台、资料库、上传队列、证据面板、文档预览、会话历史。
 
 ## 当前验证状态
+
+- 后端与 Worker：`501 passed, 3 skipped, 6 warnings`。
+- 真实 PostgreSQL 集成（ParadeDB/`pg_search`）：`166 passed, 1 warning`；BM25 jieba/filter 用例实际执行，未跳过。
+- 前端：`npm run build --prefix frontend` 通过；Vitest 为 `92 passed, 1 failed`。既有失败为 `src/lib/agromech-chat.test.ts > rejects direct chat requests without a token`，该测试与当前允许匿名文本问答的产品配置冲突，不属于本次检索改造。
+- 真实生产 `curated-mvp` 题库未提供，本地无法完成 Recall@20、nDCG@10、P95 与“至少一项提升”的生产验收比较；合成开发基线不能替代该结论。
+- 发布时，检索评测与 QA/Citation 冒烟统一使用 `EVALUATION_DEFAULT_DATASET`，避免两个门禁检查不同题集。
 
 后端和 worker 当前通过：
 
@@ -32,15 +38,7 @@ AgroMech 是面向农机资料的多模态 RAG 应用，当前已具备：
 .venv/bin/python -m pytest backend/tests worker/tests -q
 ```
 
-当前分支最近验证结果：`364 passed, 6 warnings`。
-
-`scripts/lint.sh` 当前无 error，但 frontend 有一个既有 warning：`anonymous-chat-store.test.ts` 中 `vi` 未使用。
-
-当前 frontend 基线仍有待修复项：
-
-- `npm run test --prefix frontend` 失败 6 个测试：`anonymous-chat-store.test.ts` 的 `window is not defined`，以及 `agromech-chat.test.ts` 的无 token 错误期望不匹配。
-- `npm run build --prefix frontend` 在 `/` 静态预渲染时失败：assistant-ui `ThreadHistoryAdapter` 缺少 `withFormat`。
-- 因此 `scripts/test-all.sh` 当前会在后端/worker 通过后停在 frontend 阶段。
+可复现验证命令见根目录 README；由于上述既有前端测试失败，`scripts/test-all.sh` 仍会在 frontend Vitest 阶段退出。不能以回退匿名文本问答权限的方式绕过该基线问题。
 
 ## 本地启动摘要
 
@@ -68,3 +66,5 @@ npm run dev --prefix frontend
 ```
 
 `.venv/bin/python -m agromech_worker.main` 是一次性 DB 队列调度入口；`consume_forever()` 是 RabbitMQ 常驻消费入口。
+
+重建命令会重新写入 `chunk_search_index` 与 `chunk_vector_embeddings`，并在 PostgreSQL 上校验 `ix_chunk_search_index_bm25`。上线前还应检查 `/health/ready`。

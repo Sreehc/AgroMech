@@ -4,14 +4,9 @@
 
 ## 1. 当前基线
 
-截至当前代码状态：
+在切换检索实现前的合成开发基线（3 个问题）为 `Recall@20=0.6666666667`、`nDCG@10=0.6666666667`、`P95=4.3432500679ms`。未提供真实生产 `curated-mvp` 数据库，因此不能把该基线表述为生产验收结果。
 
-- 后端/worker 测试：`364 passed, 6 warnings`。
-- `scripts/lint.sh`：0 error，1 个既有 frontend warning（`anonymous-chat-store.test.ts` 中 `vi` 未使用）。
-- 前端测试当前有既有失败：`npm run test --prefix frontend` 失败 6 个测试，集中在 `window is not defined` 和无 token 错误期望不匹配。
-- 前端构建当前有既有失败：`npm run build --prefix frontend` 在 `/` 静态预渲染时因 assistant-ui `ThreadHistoryAdapter.withFormat` 缺失失败。
-- `scripts/test-all.sh` 当前会在后端/worker 通过后停在 frontend Vitest 阶段。
-- 文档同步测试覆盖当前 docs 文件名、API 关键字段、RabbitMQ worker、Agent Controller 和旧向量存储引用。
+本分支最近一次验证：后端与 Worker `501 passed, 3 skipped, 6 warnings`；真实 PostgreSQL 集成 `166 passed, 1 warning`，BM25 jieba/filter 用例未跳过；前端构建通过。前端 Vitest 为 `92 passed, 1 failed`，唯一既有失败是 `src/lib/agromech-chat.test.ts > rejects direct chat requests without a token`，它要求拒绝匿名文本问答，和当前产品配置冲突。
 
 ## 2. 已确认技术决策
 
@@ -20,6 +15,9 @@
 - Postgres、RabbitMQ 复用同级目录 `../infrastructure`；Neo4j / Graph RAG 暂不在当前主链路启用。
 - PostgreSQL + pgvector 作为当前向量存储，文本和视觉向量与业务数据同库。
 - pgvector 检索在 PostgreSQL 上使用 `<=>` cosine distance 排序和 HNSW 索引；SQLite 测试环境保留 Python fallback。
+- 文本主检索固定为 Dense + BM25，以 RRF 依据名次融合后进入 Rerank；不再使用关键词、结构化或通道原始分数加权作为召回通道。
+- Query Rewrite 在首轮和补检索轮的召回前执行，受保护型号、故障码和零件号必须保持语义不变；Citation 只能引用最终 evidence。
+- PostgreSQL 检索依赖 `vector`、`pg_search` 与 `ix_chunk_search_index_bm25`；`/health/ready` 是部署切换前的就绪门禁。
 - 文件存储支持 local fallback 和阿里云 OSS。
 - LLM、embedding、vision、rerank 使用阿里云百炼。
 - 认证用户、角色、状态和 token version 存入 Postgres，不再依赖静态账号配置。
@@ -32,7 +30,7 @@
 
 ### 基础系统
 
-- 配置加载、条件校验和 `.env.example` 已覆盖 OSS、pgvector、Bailian、RabbitMQ、评估等配置；Neo4j 配置保留为后续实验。
+- 配置加载、条件校验和 `.env.example` 已覆盖 Dense、BM25、RRF、Rerank、Query Rewrite、Citation、OSS、pgvector、Bailian、RabbitMQ 与评估配置；Neo4j 配置保留为后续实验。
 - 旧外部向量库配置、遗留字段和可选 vector backend 配置已移除。
 - 认证读取 `users` 表，登录审计写入 `auth_audit_logs`，token 校验会检查用户状态和 `token_version`。
 - 统一错误响应、trace id 和敏感信息脱敏已接入。
@@ -41,8 +39,8 @@
 
 - 上传、重复文件识别、类型/大小校验已实现。
 - 文本、表格、PDF、图片处理链路已接入 worker。
-- PaddleOCR、视觉观察、LLM 元数据回填、实体抽取、pgvector 索引和全文索引已进入导入链路；Graph RAG 已从当前主链路停用。
-- 迁移后既有文档向量通过 `scripts/rebuild-vector-index.py` 从 Postgres chunks/assets 重建，不迁移旧向量文件。
+- PaddleOCR、视觉观察、LLM 元数据回填、实体抽取、pgvector 与 `pg_search` BM25 索引已进入导入链路；Graph RAG 已从当前主链路停用。
+- 迁移后既有文档通过 `scripts/rebuild-vector-index.py` 重建 `chunk_search_index` 与 `chunk_vector_embeddings`，并校验 BM25 索引，不迁移旧向量文件。
 - reprocess 失败不会破坏旧 indexed 文档。
 - delete 任务清理新检索可见性，并保留历史 citation 元数据。
 
@@ -55,8 +53,8 @@
 
 ### RAG 和 Agentic QA
 
-- 混合检索支持关键词、结构化、向量、视觉和 rerank；图谱检索暂不启用。并行检索通道已拆成 `KeywordRetrievalAgent`、`VectorRetrievalAgent`、`StructuredRetrievalAgent`、`VisualRetrievalAgent`、`EvidenceMergeAgent`、`RerankAgent`（`rag/retrieval/hybrid.py`）。
-- retrieval trace 记录 channels、model_config、candidates、rerank、final_evidence。
+- 检索实现为 Query Rewrite -> Dense + BM25 -> RRF -> Rerank -> Citation；图谱检索明确禁用。Dense/BM25 并行召回并通过 `rrf_fuse()` 合并（`rag/retrieval/hybrid.py`）。
+- retrieval trace 按轮次记录 Query Rewrite、channels、fusion、model_config、candidates、Rerank、final_evidence 与 Citation 审计状态。
 - `/qa/text` 和 `/qa/image` 进入 Agent Controller。
 - 受控多 Agent 已落地为 `rag/agent/agents/` 下的独立 Agent class：`QueryAnalystAgent`、`RouterAgent`、`RetrievalAgent`、`PlanningAgent`、`EvidenceReviewerAgent`、`DomainSpecialistAgent`、`QueryRewriteAgent`、`AnswerWriterAgent`、`SafetyReviewerAgent`，由 LangGraph `graph.py` 连接为固定流程。
 - 返回结果包含 `agent_trace`，可回溯每个 Agent 的步骤和决策。

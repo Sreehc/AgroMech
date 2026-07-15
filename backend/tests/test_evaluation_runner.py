@@ -1,16 +1,38 @@
-from sqlalchemy import create_engine, select
+import argparse
+import importlib.util
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import create_engine, insert, select
 
 from agromech_api.core.config import Settings
-from agromech_api.db.models import evaluation_questions, evaluation_runs, metadata
+from agromech_api.db.enums import ChunkType
+from agromech_api.db.models import document_chunks, evaluation_questions, evaluation_runs, metadata, retrieval_logs
 from agromech_api.evaluation.runner import (
     EvaluationQuestion,
     import_evaluation_questions,
     load_evaluation_questions,
     model_config_from_settings,
+    ndcg_at_k,
+    recall_at_k,
+    retrieve_evaluation_candidates,
     run_evaluation_dataset,
     run_evaluation,
 )
+from agromech_api.rag.retrieval.filters import build_retrieval_filters
+from agromech_api.rag.retrieval.fusion import RankedHit
+from agromech_api.rag.retrieval.hybrid import hybrid_retrieve_with_trace
 from test_hybrid_retrieval import seed_retrieval_corpus
+
+
+def evaluate_retrieval_script():
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "evaluate-retrieval.py"
+    spec = importlib.util.spec_from_file_location("evaluate_retrieval_script", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def create_test_engine(tmp_path):
@@ -29,6 +51,200 @@ def evaluation_settings(tmp_path) -> Settings:
         embedding_dimension=256,
         rerank_enabled=False,
     )
+
+
+def test_recall_at_k_uses_expected_chunk_or_document_ids() -> None:
+    retrieved = [
+        {"chunk_id": "chunk-x", "document_id": "doc-x"},
+        {"chunk_id": "chunk-a", "document_id": "doc-a"},
+    ]
+    expected = [{"chunk_id": "chunk-a", "document_id": "doc-a"}, {"document_id": "doc-b"}]
+
+    assert recall_at_k(retrieved, expected, k=20) == 0.5
+
+
+def test_ndcg_at_k_rewards_earlier_relevant_evidence() -> None:
+    expected = [{"document_id": "doc-a"}, {"document_id": "doc-b"}]
+    early = [{"document_id": "doc-a"}, {"document_id": "doc-x"}, {"document_id": "doc-b"}]
+    late = [{"document_id": "doc-x"}, {"document_id": "doc-a"}, {"document_id": "doc-b"}]
+
+    assert ndcg_at_k(early, expected, k=10) > ndcg_at_k(late, expected, k=10)
+
+
+def test_ndcg_at_k_does_not_count_the_same_expected_document_twice() -> None:
+    expected = [{"document_id": "doc-a"}]
+    retrieved = [
+        {"chunk_id": "a-1", "document_id": "doc-a"},
+        {"chunk_id": "a-2", "document_id": "doc-a"},
+    ]
+
+    assert ndcg_at_k(retrieved, expected, k=10) == 1.0
+
+
+def test_evaluation_reads_rank_six_when_normal_fusion_limit_is_five(tmp_path) -> None:
+    class TopTwentyBm25Retriever:
+        def search(self, _engine, _query, *, filters, limit):
+            _ = filters
+            return [
+                RankedHit(
+                    chunk_id=f"chunk-evaluation-{rank:02}",
+                    rank=rank,
+                    score=float(21 - rank),
+                )
+                for rank in range(1, min(limit, 20) + 1)
+            ]
+
+    class FailingEmbeddingProvider:
+        def embed(self, _query):
+            raise RuntimeError("dense unavailable")
+
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(document_chunks),
+            [
+                {
+                    "id": f"chunk-evaluation-{rank:02}",
+                    "document_id": "doc-m7040",
+                    "chunk_type": ChunkType.TEXT.value,
+                    "content": f"evaluation ranking evidence {rank}",
+                    "source_locator": {"type": "text", "line_start": rank, "line_end": rank},
+                }
+                for rank in range(1, 21)
+            ],
+        )
+    settings = Settings(
+        auth_token_secret="test-secret",
+        local_file_storage_path=str(tmp_path / "files"),
+        graph_backend="local",
+        model_provider="local",
+        embedding_provider="local",
+        embedding_dimension=256,
+        rerank_enabled=False,
+        bm25_top_k=20,
+        dense_top_k=20,
+        fusion_top_k=5,
+        rerank_top_k=5,
+        final_evidence_limit=5,
+    )
+
+    result = hybrid_retrieve_with_trace(
+        engine,
+        "evaluation ranking",
+        trace_id="trace-evaluation-top-twenty",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
+        embedding_provider=FailingEmbeddingProvider(),
+        bm25_retriever=TopTwentyBm25Retriever(),
+        settings=settings,
+    )
+
+    assert len(result["final_evidence"]) == settings.final_evidence_limit
+    with engine.connect() as connection:
+        retrieval_log = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-evaluation-top-twenty")
+        ).mappings().one()
+    retrieved = retrieve_evaluation_candidates(
+        engine,
+        query="evaluation ranking",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
+        settings=settings,
+        embedding_provider=FailingEmbeddingProvider(),
+        bm25_retriever=TopTwentyBm25Retriever(),
+    )
+
+    assert len(retrieval_log["rerank"]["items"]) == settings.fusion_top_k
+    assert len(retrieved) == 20
+    assert recall_at_k(retrieved, [{"chunk_id": "chunk-evaluation-06", "document_id": "doc-m7040"}], k=20) == 1.0
+    assert ndcg_at_k(retrieved, [{"chunk_id": "chunk-evaluation-06", "document_id": "doc-m7040"}], k=10) > 0.0
+
+
+def test_evaluate_retrieval_acceptance_allows_improved_metrics() -> None:
+    script = evaluate_retrieval_script()
+    baseline = {"recall_at_20": 0.6, "ndcg_at_10": 0.7, "retrieval_p95_ms": 10.0}
+    metrics = {
+        "protected_identifier_cases": 1,
+        "protected_identifier_preservation": 1.0,
+        "unauthorized_final_evidence": 0,
+        "explicit_model_confusion": 0,
+        "recall_at_20": 0.7,
+        "ndcg_at_10": 0.7,
+        "retrieval_p95_ms": 15.0,
+    }
+
+    script.assert_acceptance(metrics, baseline)
+
+
+def test_evaluate_retrieval_acceptance_rejects_unchanged_metrics() -> None:
+    script = evaluate_retrieval_script()
+    baseline = {"recall_at_20": 0.7, "ndcg_at_10": 0.7, "retrieval_p95_ms": 10.0}
+    metrics = {
+        "protected_identifier_cases": 1,
+        "protected_identifier_preservation": 1.0,
+        "unauthorized_final_evidence": 0,
+        "explicit_model_confusion": 0,
+        "recall_at_20": 0.7,
+        "ndcg_at_10": 0.7,
+        "retrieval_p95_ms": 10.0,
+    }
+
+    with pytest.raises(SystemExit, match="至少有一项"):
+        script.assert_acceptance(metrics, baseline)
+
+
+def test_evaluate_retrieval_defaults_to_configured_dataset(monkeypatch) -> None:
+    script = evaluate_retrieval_script()
+    settings = SimpleNamespace(evaluation_default_dataset="release-smoke")
+    captured = {}
+
+    monkeypatch.setattr(
+        script,
+        "parse_args",
+        lambda: argparse.Namespace(dataset=None, prompt_version="retrieval-v2", baseline=None),
+    )
+    monkeypatch.setattr(script, "get_settings", lambda: settings)
+    monkeypatch.setattr(script, "get_engine", lambda: "engine")
+    monkeypatch.setattr(
+        script,
+        "run_evaluation_dataset",
+        lambda engine, **kwargs: captured.update(engine=engine, **kwargs)
+        or SimpleNamespace(metrics_summary={}),
+    )
+
+    assert script.main() == 0
+    assert captured["engine"] == "engine"
+    assert captured["settings"] is settings
+    assert captured["dataset_version"] == "release-smoke"
+
+
+def test_evaluation_summary_includes_retrieval_metrics(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    result = run_evaluation(
+        engine,
+        [
+            EvaluationQuestion(
+                question_id="q1",
+                question="M7040 E01 hydraulic pump",
+                category="fault",
+                expected_sources=[{"document_id": "doc-m7040", "chunk_id": "chunk-m7040"}],
+                expected_model="M7040",
+            )
+        ],
+        dataset_version="curated-v2",
+        model_config={},
+        prompt_version="p1",
+        settings=evaluation_settings(tmp_path),
+    )
+
+    assert result.metrics_summary["recall_at_20"] == 1.0
+    assert result.metrics_summary["ndcg_at_10"] == 1.0
+    assert result.metrics_summary["protected_identifier_cases"] == 1
+    assert result.metrics_summary["protected_identifier_preservation"] == 1.0
+    assert result.metrics_summary["unauthorized_final_evidence"] == 0
+    assert result.metrics_summary["explicit_model_confusion"] == 0
+    assert result.metrics_summary["retrieval_p95_ms"] >= 0
 
 
 def test_evaluation_runner_records_run_metadata_metrics_and_failure_types(tmp_path) -> None:

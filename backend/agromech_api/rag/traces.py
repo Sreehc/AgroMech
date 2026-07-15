@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from fastapi import Depends, status
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, update
 
 from agromech_api.security.auth import UserContext, require_roles
 from agromech_api.db.enums import UserRole
 from agromech_api.db.models import retrieval_logs
 from agromech_api.core.errors import AppError, ErrorCode
+from agromech_api.rag.retrieval.hybrid import RetrievalTraceConflictError
 
 
 FULL_TRACE_ROLES = {UserRole.ADMIN, UserRole.EVALUATOR}
@@ -40,6 +41,44 @@ INTERNAL_PATH_MARKERS = (
 )
 
 
+def record_citation_trace(
+    engine: Engine,
+    trace_id: str,
+    citations: list[dict[str, object]],
+) -> None:
+    with engine.begin() as connection:
+        row = connection.execute(
+            select(
+                retrieval_logs.c.id,
+                retrieval_logs.c.channels,
+                retrieval_logs.c.retrieval_round,
+                retrieval_logs.c.citation_status,
+            ).where(retrieval_logs.c.trace_id == trace_id)
+        ).mappings().one_or_none()
+        channels = dict(row["channels"] or {}) if row is not None else {}
+        if (
+            row is None
+            or row["citation_status"] != "pending"
+            or "citation" in channels
+        ):
+            return
+        channels["citation"] = {
+            "status": "ok" if citations else "insufficient",
+            "count": len(citations),
+            "chunk_ids": [str(item["chunk_id"]) for item in citations if item.get("chunk_id")],
+            "asset_ids": [str(item["asset_id"]) for item in citations if item.get("asset_id")],
+        }
+        result = connection.execute(
+            update(retrieval_logs)
+            .where(retrieval_logs.c.id == row["id"])
+            .where(retrieval_logs.c.retrieval_round == row["retrieval_round"])
+            .where(retrieval_logs.c.citation_status == "pending")
+            .values(channels=channels, citation_status="completed")
+        )
+        if result.rowcount != 1:
+            raise RetrievalTraceConflictError("citation trace update lost its round guard")
+
+
 def retrieval_trace_payload(row, user: UserContext) -> dict[str, object]:
     payload = {
         "trace_id": row["trace_id"],
@@ -52,6 +91,8 @@ def retrieval_trace_payload(row, user: UserContext) -> dict[str, object]:
     if user.role in FULL_TRACE_ROLES:
         payload.update(
             {
+                "query_rewrite": row["query_rewrite"] or {},
+                "fusion": row["fusion"] or {},
                 "candidates": row["candidates"] or [],
                 "rerank": row["rerank"] or {"items": []},
                 "final_evidence": row["final_evidence"] or [],
@@ -64,6 +105,18 @@ def retrieval_trace_payload(row, user: UserContext) -> dict[str, object]:
         for evidence in row["final_evidence"] or []
         if evidence.get("chunk_id")
     ]
+    rewrite = (row["query_rewrite"] or {}).get("final", {})
+    fusion = (row["fusion"] or {}).get("final", {})
+    payload["query_rewrite"] = {
+        key: rewrite[key]
+        for key in ("provider", "fallback")
+        if key in rewrite
+    }
+    payload["fusion"] = {
+        key: fusion[key]
+        for key in ("rrf_k", "channel_counts")
+        if key in fusion
+    }
     return sanitize_trace_payload(payload)
 
 

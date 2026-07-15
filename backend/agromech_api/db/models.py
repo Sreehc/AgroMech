@@ -75,6 +75,19 @@ Index("ix_documents_status", documents.c.status)
 Index("ix_documents_brand_model", documents.c.brand, documents.c.model)
 Index("ix_documents_file_hash", documents.c.file_hash)
 Index("ix_documents_visibility_owner", documents.c.visibility, documents.c.owner_user_id)
+Index(
+    "ix_documents_retrieval_state",
+    documents.c.status,
+    documents.c.deleted_at,
+    documents.c.visibility,
+    documents.c.owner_user_id,
+)
+Index(
+    "ix_documents_retrieval_metadata",
+    documents.c.document_type,
+    documents.c.language,
+    documents.c.document_version,
+)
 
 users = Table(
     "users",
@@ -310,6 +323,16 @@ retrieval_logs = Table(
     Column("filters", JSON),
     Column("channels", JSON, nullable=False),
     Column("model_config", JSON, nullable=False, default=dict, server_default=text("'{}'")),
+    Column("query_rewrite", JSON, nullable=False, default=dict, server_default=text("'{}'")),
+    Column("fusion", JSON, nullable=False, default=dict, server_default=text("'{}'")),
+    Column("retrieval_round", Integer, nullable=False, default=1, server_default=text("1")),
+    Column(
+        "citation_status",
+        String(16),
+        nullable=False,
+        default="pending",
+        server_default=text("'pending'"),
+    ),
     Column("candidates", JSON),
     Column("rerank", JSON),
     Column("final_evidence", JSON),
