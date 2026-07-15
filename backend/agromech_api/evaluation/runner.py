@@ -201,21 +201,7 @@ def evaluate_question(
     protected = [str(value) for value in rewrite.get("protected_identifiers", [])]
     rewritten_query = str(rewrite.get("query") or question.question)
     protected_preserved = all(value.lower() in rewritten_query.lower() for value in protected)
-    candidates = list(retrieval_log["candidates"] or [])
-    candidates_by_chunk = {
-        str(item["chunk_id"]): item for item in candidates if item.get("chunk_id")
-    }
-    rerank_items = sorted(
-        (retrieval_log["rerank"] or {}).get("items", []),
-        key=lambda item: int(item.get("after_rank", 10**9)),
-    )
-    retrieved = [
-        candidates_by_chunk[str(item["chunk_id"])]
-        for item in rerank_items
-        if item.get("chunk_id") and str(item["chunk_id"]) in candidates_by_chunk
-    ]
-    if not retrieved:
-        retrieved = candidates
+    retrieved = retrieved_sources_from_retrieval_log(retrieval_log)
     final_document_ids = {
         str(item["document_id"])
         for item in retrieval_log["final_evidence"] or []
@@ -349,6 +335,23 @@ def source_key(source: dict[str, object]) -> tuple[str, str]:
     if source.get("chunk_id"):
         return "chunk", str(source["chunk_id"])
     return "document", str(source["document_id"])
+
+
+def retrieved_sources_from_retrieval_log(retrieval_log) -> list[dict[str, object]]:
+    candidates = list(retrieval_log["candidates"] or [])
+    candidates_by_chunk = {
+        str(item["chunk_id"]): item for item in candidates if item.get("chunk_id")
+    }
+    rerank_items = sorted(
+        (retrieval_log["rerank"] or {}).get("items", []),
+        key=lambda item: int(item.get("after_rank", 10**9)),
+    )
+    retrieved = [
+        candidates_by_chunk[str(item["chunk_id"])]
+        for item in rerank_items
+        if item.get("chunk_id") and str(item["chunk_id"]) in candidates_by_chunk
+    ]
+    return retrieved or candidates
 
 
 def source_is_relevant(candidate: dict[str, object], expected: dict[str, object]) -> bool:
