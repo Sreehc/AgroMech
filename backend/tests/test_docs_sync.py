@@ -128,6 +128,25 @@ def test_deployment_verifies_a_candidate_api_before_switching_nginx_upstream() -
     assert "不注册 RabbitMQ consumer" in deployment
 
 
+def test_deployment_fails_closed_when_worker_or_nginx_rollback_cannot_be_verified() -> None:
+    root = Path(__file__).parents[2]
+    workflow = (root / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    deployment = (root / "docs/deployment.md").read_text(encoding="utf-8")
+
+    assert "candidate_cleanup_safe" in workflow
+    assert "restore_active_worker()" in workflow
+    assert 'docker compose --project-name "$active_project" stop worker || true' not in workflow
+    assert "rollback_nginx || true" not in workflow
+    assert 'docker compose --project-name "$active_project" up -d worker || true' not in workflow
+    assert 'docker compose --project-name "$active_project" ps --status running --services | grep -Fx worker' in workflow
+    assert workflow.index('docker compose --project-name "$active_project" stop worker') < workflow.index(
+        '"${candidate_compose[@]}" up -d worker'
+    )
+    assert "Nginx rollback could not be verified; candidate slot is preserved for diagnosis" in workflow
+    assert "停止旧 Worker 失败" in deployment
+    assert "保留候选槽位" in deployment
+
+
 def test_production_baseline_is_required_and_documented() -> None:
     root = Path(__file__).parents[2]
     deployment = (root / "docs/deployment.md").read_text(encoding="utf-8")

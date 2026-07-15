@@ -151,9 +151,14 @@ jobs:
           esac
           candidate_compose=(docker compose --project-name "$candidate_project")
           candidate_promoted=false
+          candidate_cleanup_safe=true
           cleanup_release() {
             if [ "$candidate_promoted" != true ]; then
-              "${candidate_compose[@]}" down --remove-orphans || true
+              if [ "$candidate_cleanup_safe" = true ]; then
+                "${candidate_compose[@]}" down --remove-orphans || true
+              else
+                echo "Candidate slot is preserved for diagnosis; skip candidate cleanup" >&2
+              fi
             fi
             rm -f "${upstream_tmp:-}" "${site_backup:-}" "${upstream_backup:-}"
           }
@@ -245,27 +250,89 @@ jobs:
           cp "$nginx_upstream_path" "$upstream_backup"
           printf 'proxy_pass http://127.0.0.1:%s/;\n' "$candidate_port" > "$upstream_tmp"
           rollback_nginx() {
-            sudo install -m 644 "$site_backup" "$NGINX_SITE_PATH"
-            sudo install -m 644 "$upstream_backup" "$nginx_upstream_path"
-            sudo nginx -t && sudo systemctl reload nginx
+            local rollback_failed=false
+            if ! sudo install -m 644 "$site_backup" "$NGINX_SITE_PATH"; then
+              echo "Failed to restore Nginx site configuration" >&2
+              rollback_failed=true
+            fi
+            if ! sudo install -m 644 "$upstream_backup" "$nginx_upstream_path"; then
+              echo "Failed to restore Nginx upstream configuration" >&2
+              rollback_failed=true
+            fi
+            if ! sudo nginx -t; then
+              echo "Restored Nginx configuration did not pass nginx -t" >&2
+              rollback_failed=true
+            elif ! sudo systemctl reload nginx; then
+              echo "Failed to reload Nginx after restoring the previous upstream" >&2
+              rollback_failed=true
+            fi
+            [ "$rollback_failed" = false ]
+          }
+          restore_active_worker() {
+            if [ "$active_project" = "$candidate_project" ]; then
+              return 0
+            fi
+            if ! docker compose --project-name "$active_project" up -d worker; then
+              echo "Failed to restart the previous worker" >&2
+              return 1
+            fi
+            if ! docker compose --project-name "$active_project" ps --status running --services | grep -Fx worker; then
+              echo "Previous worker is not running after restart" >&2
+              return 1
+            fi
+            return 0
+          }
+          stop_active_worker() {
+            if [ "$active_project" = "$candidate_project" ]; then
+              return 0
+            fi
+            if ! docker compose --project-name "$active_project" stop worker; then
+              echo "Failed to stop the previous worker" >&2
+              return 1
+            fi
+            if docker compose --project-name "$active_project" ps --status running --services | grep -Fx worker; then
+              echo "Previous worker is still running after stop" >&2
+              return 1
+            fi
+            return 0
+          }
+          rollback_worker_transition() {
+            local rollback_failed=false
+            if ! rollback_nginx; then
+              rollback_failed=true
+            fi
+            if ! restore_active_worker; then
+              rollback_failed=true
+            fi
+            if [ "$rollback_failed" = true ]; then
+              candidate_cleanup_safe=false
+              echo "Worker transition rollback could not be verified; candidate slot is preserved for diagnosis" >&2
+              return 1
+            fi
+            return 0
           }
           if ! sudo install -m 644 nginx.agromech.conf "$NGINX_SITE_PATH" || \
              ! sudo install -m 644 "$upstream_tmp" "$nginx_upstream_path" || \
              ! sudo nginx -t || ! sudo systemctl reload nginx; then
-            rollback_nginx || true
-            echo "Nginx cutover failed; restored previous backend upstream" >&2
+            if rollback_nginx; then
+              echo "Nginx cutover failed; previous backend upstream was restored" >&2
+            else
+              candidate_cleanup_safe=false
+              echo "Nginx rollback could not be verified; candidate slot is preserved for diagnosis" >&2
+            fi
             exit 1
           fi
-          if [ "$active_project" != "$candidate_project" ]; then
-            docker compose --project-name "$active_project" stop worker || true
+          if ! stop_active_worker; then
+            if rollback_worker_transition; then
+              echo "Previous worker stop failed; previous backend upstream and worker were restored" >&2
+            fi
+            exit 1
           fi
           if ! "${candidate_compose[@]}" up -d worker || \
              ! "${candidate_compose[@]}" ps --status running --services | grep -Fx worker; then
-            rollback_nginx || true
-            if [ "$active_project" != "$candidate_project" ]; then
-              docker compose --project-name "$active_project" up -d worker || true
+            if rollback_worker_transition; then
+              echo "Candidate worker did not start; previous backend upstream and worker were restored" >&2
             fi
-            echo "Candidate worker did not start; restored previous backend upstream" >&2
             exit 1
           fi
           candidate_promoted=true
