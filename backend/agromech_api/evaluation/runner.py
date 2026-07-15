@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import math
 from uuid import uuid4
 
 from sqlalchemy import Engine, delete, insert, select
 
 from agromech_api.core.config import Settings
-from agromech_api.db.models import evaluation_questions, evaluation_runs
+from agromech_api.db.enums import DocumentStatus
+from agromech_api.db.models import documents, evaluation_questions, evaluation_runs, retrieval_logs
 from agromech_api.qa.text import answer_text_question
 
 
@@ -93,6 +95,17 @@ def model_config_from_settings(settings: Settings) -> dict[str, object]:
         "embedding_model": settings.embedding_model,
         "embedding_version": settings.embedding_version,
         "vector_backend": "pgvector",
+        "bm25_backend": "pg_search",
+        "bm25_top_k": settings.bm25_top_k,
+        "dense_top_k": settings.dense_top_k,
+        "dense_only_min_similarity": settings.dense_only_min_similarity,
+        "rrf_k": settings.rrf_k,
+        "rrf_dense_weight": settings.rrf_dense_weight,
+        "rrf_bm25_weight": settings.rrf_bm25_weight,
+        "fusion_top_k": settings.fusion_top_k,
+        "query_rewrite_enabled": settings.query_rewrite_enabled,
+        "query_rewrite_model": settings.query_rewrite_model if settings.query_rewrite_enabled else None,
+        "query_rewrite_timeout_seconds": settings.query_rewrite_timeout_seconds,
         "graph_backend": settings.graph_backend,
         "rerank_enabled": settings.rerank_enabled,
         "rerank_model": settings.rerank_model if settings.rerank_enabled else None,
@@ -156,6 +169,7 @@ def evaluate_question(
         engine,
         question=question.question,
         trace_id=f"eval-{run_id[:8]}-{question.question_id}",
+        filters={"model": question.expected_model} if question.expected_model else None,
         settings=settings,
     )
     cited_document_ids = [citation["document_id"] for citation in answer["citations"]]
@@ -173,14 +187,71 @@ def evaluate_question(
     safety_compliant = True
     if question.requires_safety_warning:
         safety_compliant = bool(answer["safety_warnings"])
-    model_confused = False
-    if question.expected_model:
-        evidence_text = " ".join(
-            str(value)
-            for citation in answer["citations"]
-            for value in [citation["document_title"], citation["evidence_snippet"]]
-        ).lower()
-        model_confused = question.expected_model.lower() not in evidence_text
+    with engine.connect() as connection:
+        retrieval_log = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == answer["trace_id"])
+        ).mappings().one()
+    rewrite_container = dict(retrieval_log["query_rewrite"] or {})
+    rewrite = dict(rewrite_container.get("final") or {})
+    rewrite_duration_ms = sum(
+        float(item.get("duration_ms", 0.0))
+        for item in rewrite_container.get("attempts", [])
+        if isinstance(item, dict)
+    )
+    protected = [str(value) for value in rewrite.get("protected_identifiers", [])]
+    rewritten_query = str(rewrite.get("query") or question.question)
+    protected_preserved = all(value.lower() in rewritten_query.lower() for value in protected)
+    candidates = list(retrieval_log["candidates"] or [])
+    candidates_by_chunk = {
+        str(item["chunk_id"]): item for item in candidates if item.get("chunk_id")
+    }
+    rerank_items = sorted(
+        (retrieval_log["rerank"] or {}).get("items", []),
+        key=lambda item: int(item.get("after_rank", 10**9)),
+    )
+    retrieved = [
+        candidates_by_chunk[str(item["chunk_id"])]
+        for item in rerank_items
+        if item.get("chunk_id") and str(item["chunk_id"]) in candidates_by_chunk
+    ]
+    if not retrieved:
+        retrieved = candidates
+    final_document_ids = {
+        str(item["document_id"])
+        for item in retrieval_log["final_evidence"] or []
+        if item.get("document_id")
+    }
+    with engine.connect() as connection:
+        final_documents = (
+            connection.execute(
+                select(
+                    documents.c.id,
+                    documents.c.visibility,
+                    documents.c.status,
+                    documents.c.deleted_at,
+                    documents.c.model,
+                ).where(documents.c.id.in_(final_document_ids))
+            )
+            .mappings()
+            .all()
+            if final_document_ids
+            else []
+        )
+    unauthorized = [
+        row
+        for row in final_documents
+        if row["visibility"] != "public"
+        or row["status"] != DocumentStatus.INDEXED.value
+        or row["deleted_at"] is not None
+    ]
+    unauthorized_count = len(final_document_ids) - len(final_documents) + len(unauthorized)
+    wrong_model = [
+        row
+        for row in final_documents
+        if question.expected_model
+        and str(row["model"] or "").lower() != question.expected_model.lower()
+    ]
+    model_confused = bool(wrong_model)
     failures = []
     if not answer["citations"]:
         failures.append("evidence_insufficient")
@@ -202,6 +273,16 @@ def evaluate_question(
         "safety_compliant": safety_compliant,
         "requires_safety_warning": question.requires_safety_warning,
         "counts_toward_source_metrics": counts_toward_source_metrics,
+        "retrieved_sources": retrieved,
+        "recall_at_20": recall_at_k(retrieved, question.expected_sources, k=20),
+        "ndcg_at_10": ndcg_at_k(retrieved, question.expected_sources, k=10),
+        "has_protected_identifiers": bool(protected),
+        "protected_identifiers_preserved": protected_preserved,
+        "unauthorized_final_evidence": unauthorized_count,
+        "wrong_model_final_evidence": len(wrong_model),
+        "retrieval_duration_ms": rewrite_duration_ms + float(
+            (retrieval_log["fusion"] or {}).get("retrieval_duration_ms", 0.0)
+        ),
         "failures": failures,
     }
 
@@ -214,9 +295,17 @@ def metrics_for(question_results: list[dict[str, object]]) -> dict[str, float]:
             "citation_correctness_rate": 0.0,
             "model_confusion_rate": 0.0,
             "safety_compliance_rate": 0.0,
+            "recall_at_20": 0.0,
+            "ndcg_at_10": 0.0,
+            "protected_identifier_cases": 0,
+            "protected_identifier_preservation": 0.0,
+            "unauthorized_final_evidence": 0,
+            "explicit_model_confusion": 0,
+            "retrieval_p95_ms": 0.0,
         }
     source_scored = [result for result in question_results if result["counts_toward_source_metrics"]]
     safety_questions = [result for result in question_results if result["requires_safety_warning"]]
+    protected_scored = [result for result in question_results if result["has_protected_identifiers"]]
     return {
         "top5_source_hit_rate": ratio(source_scored, "source_hit"),
         "citation_correctness_rate": ratio(source_scored, "citation_correct"),
@@ -226,6 +315,27 @@ def metrics_for(question_results: list[dict[str, object]]) -> dict[str, float]:
             if safety_questions
             else 1.0
         ),
+        "recall_at_20": (
+            sum(float(result["recall_at_20"]) for result in source_scored) / len(source_scored)
+            if source_scored
+            else 0.0
+        ),
+        "ndcg_at_10": (
+            sum(float(result["ndcg_at_10"]) for result in source_scored) / len(source_scored)
+            if source_scored
+            else 0.0
+        ),
+        "protected_identifier_cases": len(protected_scored),
+        "protected_identifier_preservation": ratio(protected_scored, "protected_identifiers_preserved"),
+        "unauthorized_final_evidence": sum(
+            int(result["unauthorized_final_evidence"]) for result in question_results
+        ),
+        "explicit_model_confusion": sum(
+            int(result["wrong_model_final_evidence"]) for result in question_results
+        ),
+        "retrieval_p95_ms": percentile(
+            [float(result["retrieval_duration_ms"]) for result in question_results], 0.95
+        ),
     }
 
 
@@ -233,6 +343,56 @@ def ratio(results: list[dict[str, object]], key: str) -> float:
     if not results:
         return 0.0
     return sum(1 for result in results if result[key]) / len(results)
+
+
+def source_key(source: dict[str, object]) -> tuple[str, str]:
+    if source.get("chunk_id"):
+        return "chunk", str(source["chunk_id"])
+    return "document", str(source["document_id"])
+
+
+def source_is_relevant(candidate: dict[str, object], expected: dict[str, object]) -> bool:
+    kind, value = source_key(expected)
+    return str(candidate.get("chunk_id" if kind == "chunk" else "document_id")) == value
+
+
+def recall_at_k(
+    retrieved: list[dict[str, object]], expected: list[dict[str, object]], *, k: int
+) -> float:
+    if not expected:
+        return 0.0
+    matched = sum(
+        1
+        for source in expected
+        if any(source_is_relevant(candidate, source) for candidate in retrieved[:k])
+    )
+    return matched / len(expected)
+
+
+def ndcg_at_k(
+    retrieved: list[dict[str, object]], expected: list[dict[str, object]], *, k: int
+) -> float:
+    if not expected:
+        return 0.0
+    remaining = list(expected)
+    gains: list[float] = []
+    for candidate in retrieved[:k]:
+        match = next(
+            (source for source in remaining if source_is_relevant(candidate, source)), None
+        )
+        gains.append(1.0 if match else 0.0)
+        if match:
+            remaining.remove(match)
+    dcg = sum(gain / math.log2(index + 2) for index, gain in enumerate(gains))
+    ideal = sum(1.0 / math.log2(index + 2) for index in range(min(len(expected), k)))
+    return dcg / ideal if ideal else 0.0
+
+
+def percentile(values: list[float], probability: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(len(ordered) * probability) - 1)]
 
 
 def failure_types_for(question_results: list[dict[str, object]]) -> dict[str, int]:

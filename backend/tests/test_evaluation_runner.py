@@ -7,6 +7,8 @@ from agromech_api.evaluation.runner import (
     import_evaluation_questions,
     load_evaluation_questions,
     model_config_from_settings,
+    ndcg_at_k,
+    recall_at_k,
     run_evaluation_dataset,
     run_evaluation,
 )
@@ -29,6 +31,64 @@ def evaluation_settings(tmp_path) -> Settings:
         embedding_dimension=256,
         rerank_enabled=False,
     )
+
+
+def test_recall_at_k_uses_expected_chunk_or_document_ids() -> None:
+    retrieved = [
+        {"chunk_id": "chunk-x", "document_id": "doc-x"},
+        {"chunk_id": "chunk-a", "document_id": "doc-a"},
+    ]
+    expected = [{"chunk_id": "chunk-a", "document_id": "doc-a"}, {"document_id": "doc-b"}]
+
+    assert recall_at_k(retrieved, expected, k=20) == 0.5
+
+
+def test_ndcg_at_k_rewards_earlier_relevant_evidence() -> None:
+    expected = [{"document_id": "doc-a"}, {"document_id": "doc-b"}]
+    early = [{"document_id": "doc-a"}, {"document_id": "doc-x"}, {"document_id": "doc-b"}]
+    late = [{"document_id": "doc-x"}, {"document_id": "doc-a"}, {"document_id": "doc-b"}]
+
+    assert ndcg_at_k(early, expected, k=10) > ndcg_at_k(late, expected, k=10)
+
+
+def test_ndcg_at_k_does_not_count_the_same_expected_document_twice() -> None:
+    expected = [{"document_id": "doc-a"}]
+    retrieved = [
+        {"chunk_id": "a-1", "document_id": "doc-a"},
+        {"chunk_id": "a-2", "document_id": "doc-a"},
+    ]
+
+    assert ndcg_at_k(retrieved, expected, k=10) == 1.0
+
+
+def test_evaluation_summary_includes_retrieval_metrics(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    result = run_evaluation(
+        engine,
+        [
+            EvaluationQuestion(
+                question_id="q1",
+                question="M7040 E01 hydraulic pump",
+                category="fault",
+                expected_sources=[{"document_id": "doc-m7040", "chunk_id": "chunk-m7040"}],
+                expected_model="M7040",
+            )
+        ],
+        dataset_version="curated-v2",
+        model_config={},
+        prompt_version="p1",
+        settings=evaluation_settings(tmp_path),
+    )
+
+    assert result.metrics_summary["recall_at_20"] == 1.0
+    assert result.metrics_summary["ndcg_at_10"] == 1.0
+    assert result.metrics_summary["protected_identifier_cases"] == 1
+    assert result.metrics_summary["protected_identifier_preservation"] == 1.0
+    assert result.metrics_summary["unauthorized_final_evidence"] == 0
+    assert result.metrics_summary["explicit_model_confusion"] == 0
+    assert result.metrics_summary["retrieval_p95_ms"] >= 0
 
 
 def test_evaluation_runner_records_run_metadata_metrics_and_failure_types(tmp_path) -> None:
