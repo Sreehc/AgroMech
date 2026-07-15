@@ -272,6 +272,53 @@ def test_agent_controller_calls_visual_retrieval_when_planner_requests_visual_ev
     assert any(entry["step"] == "visual_retrieve" for entry in payload["agent_trace"])
 
 
+def test_agent_controller_rejects_text_only_evidence_when_visual_is_required() -> None:
+    visual_calls: list[str] = []
+    answer_calls: list[str] = []
+    controller = AgentController(
+        parse_query_fn=lambda question, engine=None: object(),
+        rewrite_fn=passthrough_rewrite,
+        retrieve_fn=lambda **_kwargs: {
+            "status": "ok",
+            "final_evidence": [
+                {
+                    "chunk_id": "chunk-1",
+                    "document_id": "doc-1",
+                    "evidence_type": "text",
+                }
+            ],
+            "citations": [{"chunk_id": "chunk-1", "document_id": "doc-1"}],
+        },
+        visual_retrieve_fn=lambda **kwargs: visual_calls.append(kwargs["question"])
+        or {"status": "ok", "final_evidence": [], "citations": []},
+        planner_fn=lambda **_kwargs: {
+            "evidence_sufficient": False,
+            "need_visual": True,
+            "need_query_rewrite": False,
+            "next_action": "VISUAL_PAGE_RETRIEVAL",
+            "missing_slots": ["visual_evidence"],
+            "reason": "visual evidence is required",
+        },
+        answer_fn=lambda **_kwargs: answer_calls.append("answer")
+        or {"answer": "must not run"},
+    )
+
+    payload = controller.answer_text(
+        engine=None,
+        question="液压泵在图中哪里？",
+        trace_id="trace-visual-empty",
+        filters={},
+    )
+
+    assert visual_calls == ["液压泵在图中哪里？", "液压泵在图中哪里？"]
+    assert answer_calls == []
+    assert payload["citations"] == []
+    assert payload["uncertainty"] == {
+        "level": "high",
+        "reasons": ["evidence_insufficient"],
+    }
+
+
 def test_agent_controller_uses_multimodal_answer_when_visual_evidence_is_present() -> None:
     answer_modes: list[str] = []
 

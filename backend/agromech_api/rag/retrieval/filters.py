@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import exists, or_, select
 
 from agromech_api.db.enums import DocumentStatus
-from agromech_api.db.models import chunk_entity_links, documents
+from agromech_api.db.models import chunk_entity_links, document_chunks, documents
 from agromech_api.domain.entities import normalize
 
 
@@ -74,6 +74,30 @@ def chunk_filter_conditions(chunk_id_column, filters: RetrievalFilters) -> list[
         exists(
             select(chunk_entity_links.c.id).where(
                 chunk_entity_links.c.chunk_id == chunk_id_column,
+                chunk_entity_links.c.entity_type == "system",
+                chunk_entity_links.c.normalized_value == normalize(filters.subsystem),
+            )
+        )
+    ]
+
+
+def document_chunk_filter_conditions(
+    document_id_column,
+    filters: RetrievalFilters,
+) -> list[object]:
+    """Apply chunk-level filters to an asset through its owning document."""
+    if filters.subsystem is None:
+        return []
+    return [
+        exists(
+            select(document_chunks.c.id)
+            .join(
+                chunk_entity_links,
+                chunk_entity_links.c.chunk_id == document_chunks.c.id,
+            )
+            .where(
+                document_chunks.c.document_id == document_id_column,
+                chunk_entity_links.c.document_id == document_id_column,
                 chunk_entity_links.c.entity_type == "system",
                 chunk_entity_links.c.normalized_value == normalize(filters.subsystem),
             )

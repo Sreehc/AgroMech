@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Engine, bindparam, delete, insert, literal, or_, select
+from sqlalchemy import Engine, and_, bindparam, delete, insert, literal, select
 
 from agromech_api.core.config import get_settings
 from agromech_api.db.enums import AssetType
@@ -26,6 +26,7 @@ from agromech_api.integrations.embeddings.visual import DeterministicVisualEmbed
 from agromech_api.rag.retrieval.filters import (
     RetrievalFilters,
     chunk_filter_conditions,
+    document_chunk_filter_conditions,
     document_filter_conditions,
 )
 
@@ -318,10 +319,10 @@ def visual_page_search(
     engine: Engine,
     query: str,
     *,
+    filters: RetrievalFilters,
     limit: int = 5,
     active_embedding_version: str | None = None,
     embedding_provider=None,
-    viewer_user_id: str | None = None,
 ) -> list[dict[str, object]]:
     settings = get_settings()
     provider = embedding_provider or DeterministicVisualEmbeddingProvider(
@@ -334,8 +335,8 @@ def visual_page_search(
             engine,
             pgvector_storage_embedding(query_embedding),
             embedding_version=embedding_version,
+            filters=filters,
             limit=limit,
-            viewer_user_id=viewer_user_id,
         )
     statement = (
         select(
@@ -353,7 +354,10 @@ def visual_page_search(
         .select_from(
             visual_page_vector_embeddings.join(
                 document_assets,
-                visual_page_vector_embeddings.c.asset_id == document_assets.c.id,
+                and_(
+                    visual_page_vector_embeddings.c.asset_id == document_assets.c.id,
+                    visual_page_vector_embeddings.c.document_id == document_assets.c.document_id,
+                ),
             ).join(
                 documents,
                 visual_page_vector_embeddings.c.document_id == documents.c.id,
@@ -361,7 +365,14 @@ def visual_page_search(
         )
         .where(visual_page_vector_embeddings.c.embedding_version == embedding_version)
         .where(visual_page_vector_embeddings.c.status == "ready")
-        .where(visible_document_condition(viewer_user_id))
+        .where(document_assets.c.asset_type == AssetType.PAGE_IMAGE.value)
+        .where(*document_filter_conditions(filters))
+        .where(
+            *document_chunk_filter_conditions(
+                visual_page_vector_embeddings.c.document_id,
+                filters,
+            )
+        )
     )
     with engine.connect() as connection:
         rows = connection.execute(statement).mappings().all()
@@ -467,8 +478,8 @@ def postgres_visual_page_search(
     query_embedding: list[float],
     *,
     embedding_version: str,
+    filters: RetrievalFilters,
     limit: int,
-    viewer_user_id: str | None,
 ) -> list[dict[str, object]]:
     distance = visual_page_vector_embeddings.c.embedding.op("<=>")(
         bindparam("query_embedding", query_embedding, type_=Vector(PGVECTOR_DIMENSION))
@@ -490,7 +501,10 @@ def postgres_visual_page_search(
         .select_from(
             visual_page_vector_embeddings.join(
                 document_assets,
-                visual_page_vector_embeddings.c.asset_id == document_assets.c.id,
+                and_(
+                    visual_page_vector_embeddings.c.asset_id == document_assets.c.id,
+                    visual_page_vector_embeddings.c.document_id == document_assets.c.document_id,
+                ),
             ).join(
                 documents,
                 visual_page_vector_embeddings.c.document_id == documents.c.id,
@@ -498,7 +512,14 @@ def postgres_visual_page_search(
         )
         .where(visual_page_vector_embeddings.c.embedding_version == embedding_version)
         .where(visual_page_vector_embeddings.c.status == "ready")
-        .where(visible_document_condition(viewer_user_id))
+        .where(document_assets.c.asset_type == AssetType.PAGE_IMAGE.value)
+        .where(*document_filter_conditions(filters))
+        .where(
+            *document_chunk_filter_conditions(
+                visual_page_vector_embeddings.c.document_id,
+                filters,
+            )
+        )
         .order_by(distance)
         .limit(limit)
     )
@@ -529,11 +550,38 @@ def postgres_visual_page_search(
     return results
 
 
-def visible_document_condition(viewer_user_id: str | None):
-    conditions = [documents.c.visibility == "public"]
-    if viewer_user_id is not None:
-        conditions.append(documents.c.owner_user_id == viewer_user_id)
-    return or_(*conditions)
+def enforce_visual_page_filters(
+    engine: Engine,
+    evidence: list[dict[str, object]],
+    *,
+    filters: RetrievalFilters,
+) -> list[dict[str, object]]:
+    asset_ids = [str(item["asset_id"]) for item in evidence if item.get("asset_id")]
+    if not asset_ids:
+        return []
+    statement = (
+        select(document_assets.c.id, document_assets.c.document_id)
+        .select_from(
+            document_assets.join(
+                documents,
+                document_assets.c.document_id == documents.c.id,
+            )
+        )
+        .where(document_assets.c.id.in_(asset_ids))
+        .where(document_assets.c.asset_type == AssetType.PAGE_IMAGE.value)
+        .where(*document_filter_conditions(filters))
+        .where(*document_chunk_filter_conditions(document_assets.c.document_id, filters))
+    )
+    with engine.connect() as connection:
+        allowed = {
+            (str(row["id"]), str(row["document_id"]))
+            for row in connection.execute(statement).mappings()
+        }
+    return [
+        item
+        for item in evidence
+        if (str(item.get("asset_id")), str(item.get("document_id"))) in allowed
+    ]
 
 
 def vector_values(value) -> list[float]:

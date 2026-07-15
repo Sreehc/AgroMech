@@ -37,11 +37,10 @@ class AnswerWriterAgent:
 
     def run(self, state: AgentState) -> AgentResult:
         check = state.get("evidence_check") or {}
-        planner = state.get("planner") or {}
         visual_evidence_present = any(
             evidence.get("evidence_type") == "visual_page" for evidence in (state.get("final_evidence") or [])
         )
-        if check.get("status") != "sufficient" and not visual_evidence_present and not planner.get("evidence_sufficient"):
+        if check.get("status") != "sufficient":
             trace = agent_trace(
                 agent=self.name,
                 step="generation_guard",

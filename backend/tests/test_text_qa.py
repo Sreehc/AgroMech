@@ -1,17 +1,32 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, insert, select
+from sqlalchemy import create_engine, insert, select, update
 
 from auth_helpers import auth_token_for_user
 from agromech_api.rag.generation.answer import AnswerGenerationError
 from agromech_api.core.config import Settings
 from agromech_api.db.enums import ChunkType, DocumentStatus, UserRole
-from agromech_api.db.models import answer_citations, chat_sessions, document_chunks, documents, metadata, qa_messages, qa_records, retrieval_logs
+from agromech_api.db.models import (
+    answer_citations,
+    chat_sessions,
+    chunk_entity_links,
+    document_assets,
+    document_chunks,
+    documents,
+    metadata,
+    qa_messages,
+    qa_records,
+    retrieval_logs,
+    users,
+    visual_page_vector_embeddings,
+)
 from agromech_api.main import create_app
+from agromech_api.qa.text import answer_for_text_agent
 from agromech_api.rag.retrieval.hybrid import hybrid_retrieve_with_trace
-from agromech_api.rag.retrieval.indexing import SearchIndexer
+from agromech_api.rag.retrieval.indexing import SearchIndexer, pgvector_storage_embedding
 from test_hybrid_retrieval import seed_retrieval_corpus
 
 
@@ -286,6 +301,7 @@ def test_text_qa_visual_only_evidence_overrides_insufficient_text_status(
 ) -> None:
     client, engine, token = qa_client(tmp_path)
     seed_retrieval_corpus(engine)
+    seed_allowed_visual_asset(engine)
     monkeypatch.setattr(
         "agromech_api.qa.text.visual_page_search",
         lambda *_args, **_kwargs: [_visual_page_evidence()],
@@ -319,6 +335,7 @@ def test_text_qa_merges_text_and_visual_evidence_in_final_order(
 ) -> None:
     client, engine, token = qa_client(tmp_path)
     seed_retrieval_corpus(engine)
+    seed_allowed_visual_asset(engine)
     visual_calls: list[str] = []
 
     def visual_page_search(_engine, query, **_kwargs):
@@ -361,6 +378,169 @@ def test_text_qa_merges_text_and_visual_evidence_in_final_order(
     assert log["channels"]["citation"]["asset_ids"] == ["asset-page-1"]
 
 
+def test_text_qa_real_visual_retrieval_filters_forbidden_documents_before_citation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = qa_settings(tmp_path)
+    engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
+    metadata.create_all(engine)
+    seed_retrieval_corpus(engine)
+    seed_visual_filter_corpus(engine, settings.visual_embedding_version)
+    token = auth_token_for_user(
+        engine,
+        settings,
+        username=UserRole.USER.value,
+        role=UserRole.USER,
+    )
+    client = TestClient(create_app(settings=settings, database_engine=engine))
+
+    class FixedVisualQueryProvider:
+        provider = "test"
+        model = "fixed-visual-query"
+
+        def embed_query(self, _text):
+            return [1.0] + [0.0] * 1023
+
+    monkeypatch.setattr(
+        "agromech_api.qa.text.build_visual_embedding_provider",
+        lambda _settings: FixedVisualQueryProvider(),
+    )
+
+    response = client.post(
+        "/qa/text",
+        headers=auth_header(token, "trace-visual-filter-security"),
+        json={
+            "question": "M7040 液压泵图示位置",
+            "filters": {
+                "brand": "Kubota",
+                "model": "M7040",
+                "document_type": "visual_observation",
+                "language": "zh-CN",
+                "subsystem": "hydraulic",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [
+        citation["asset_id"]
+        for citation in payload["citations"]
+        if citation.get("asset_id")
+    ] == ["asset-page-allowed"]
+    forbidden_assets = {
+        "asset-page-deleted",
+        "asset-page-processing",
+        "asset-page-private",
+        "asset-page-model-mismatch",
+    }
+    assert forbidden_assets.isdisjoint(
+        {citation.get("asset_id") for citation in payload["citations"]}
+    )
+    with engine.connect() as connection:
+        log = connection.execute(
+            select(retrieval_logs).where(
+                retrieval_logs.c.trace_id == "trace-visual-filter-security"
+            )
+        ).mappings().one()
+    assert [
+        item["asset_id"]
+        for item in log["final_evidence"]
+        if item.get("asset_id")
+    ] == ["asset-page-allowed"]
+    assert log["channels"]["citation"]["asset_ids"] == ["asset-page-allowed"]
+
+
+def test_text_qa_final_limit_reserves_visual_evidence_slot(tmp_path: Path) -> None:
+    settings = qa_settings(tmp_path)
+    settings.final_evidence_limit = 2
+    engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
+    metadata.create_all(engine)
+    seed_retrieval_corpus(engine)
+    seed_allowed_visual_asset(engine)
+    final_evidence = [
+        {
+            "chunk_id": "chunk-m7040",
+            "document_id": "doc-m7040",
+            "chunk_type": ChunkType.TEXT.value,
+            "content": "Kubota M7040 hydraulic pump fault code E01 check pump pressure.",
+            "source_locator": {"type": "text", "line_start": 1, "line_end": 1},
+            "evidence_type": "text",
+        },
+        {
+            "chunk_id": "chunk-l3901",
+            "document_id": "doc-l3901",
+            "chunk_type": ChunkType.TEXT.value,
+            "content": "Kubota L3901 fault code E01 electrical sensor troubleshooting.",
+            "source_locator": {"type": "text", "line_start": 1, "line_end": 1},
+            "evidence_type": "text",
+        },
+        _visual_page_evidence(),
+    ]
+
+    payload = answer_for_text_agent(
+        settings=settings,
+        engine=engine,
+        question="M7040 液压泵图示位置",
+        trace_id="trace-visual-limit",
+        filters={},
+        retrieval={"status": "ok", "final_evidence": final_evidence},
+        final_evidence=final_evidence,
+        planner={"need_visual": True},
+    )
+
+    citation_ids = [
+        citation.get("chunk_id") or citation.get("asset_id")
+        for citation in payload["citations"]
+    ]
+    assert citation_ids == ["chunk-m7040", "asset-page-1"]
+    assert len(payload["citations"]) == settings.final_evidence_limit
+
+
+def test_text_qa_final_assembly_rejects_private_visual_provider_evidence(
+    tmp_path: Path,
+) -> None:
+    settings = qa_settings(tmp_path)
+    engine = create_engine(f"sqlite:///{tmp_path / 'agromech.db'}")
+    metadata.create_all(engine)
+    seed_retrieval_corpus(engine)
+    seed_visual_filter_corpus(engine, settings.visual_embedding_version)
+    final_evidence = [
+        {
+            "chunk_id": "chunk-m7040",
+            "document_id": "doc-m7040",
+            "chunk_type": ChunkType.TEXT.value,
+            "content": "Kubota M7040 hydraulic pump fault code E01 check pump pressure.",
+            "source_locator": {"type": "text", "line_start": 1, "line_end": 1},
+            "evidence_type": "text",
+        },
+        {
+            **_visual_page_evidence(),
+            "asset_id": "asset-page-private",
+            "document_id": "doc-visual-private",
+        },
+    ]
+
+    payload = answer_for_text_agent(
+        settings=settings,
+        engine=engine,
+        question="M7040 液压泵图示位置",
+        trace_id="trace-private-visual-bypass",
+        filters={},
+        retrieval={"status": "ok", "final_evidence": final_evidence},
+        final_evidence=final_evidence,
+        planner={"need_visual": True},
+        viewer_user_id=None,
+    )
+
+    assert payload["citations"] == []
+    assert payload["uncertainty"] == {
+        "level": "high",
+        "reasons": ["evidence_insufficient"],
+    }
+
+
 def _visual_page_evidence() -> dict[str, object]:
     return {
         "asset_id": "asset-page-1",
@@ -373,6 +553,146 @@ def _visual_page_evidence() -> dict[str, object]:
         "evidence_type": "visual_page",
         "score": 0.9,
     }
+
+
+def seed_allowed_visual_asset(engine) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            insert(document_assets).values(
+                id="asset-page-1",
+                document_id="doc-image",
+                asset_type="page_image",
+                storage_uri="file:///tmp/page-1.png",
+                mime_type="image/png",
+                page_number=1,
+                source_locator={"type": "pdf_page", "page": 1},
+                ocr_text="Dashboard hydraulic warning diagram.",
+                visual_observation={
+                    "description": "The page shows the hydraulic warning location."
+                },
+            )
+        )
+
+
+def seed_visual_filter_corpus(engine, embedding_version: str) -> None:
+    now = datetime.now(UTC)
+    document_rows = [
+        {
+            "id": "doc-visual-deleted",
+            "status": DocumentStatus.INDEXED.value,
+            "visibility": "public",
+            "deleted_at": now,
+        },
+        {
+            "id": "doc-visual-processing",
+            "status": DocumentStatus.PROCESSING.value,
+            "visibility": "public",
+        },
+        {
+            "id": "doc-visual-private",
+            "status": DocumentStatus.INDEXED.value,
+            "visibility": "private",
+            "owner_user_id": "other-visual-owner",
+        },
+        {
+            "id": "doc-visual-model-mismatch",
+            "status": DocumentStatus.INDEXED.value,
+            "visibility": "public",
+            "model": "L3901",
+        },
+    ]
+    with engine.begin() as connection:
+        connection.execute(
+            insert(users).values(
+                id="other-visual-owner",
+                username="other-visual-owner",
+                password_hash="hash",
+                role=UserRole.USER.value,
+            )
+        )
+        connection.execute(
+            update(documents)
+            .where(documents.c.id == "doc-image")
+            .values(
+                brand="Kubota",
+                model="M7040",
+                document_type="visual_observation",
+                language="zh-CN",
+            )
+        )
+        for row in document_rows:
+            connection.execute(
+                insert(documents).values(
+                    title=row["id"],
+                    original_file_name=f"{row['id']}.pdf",
+                    file_hash=f"hash-{row['id']}",
+                    file_size_bytes=100,
+                    mime_type="application/pdf",
+                    storage_uri=f"file:///tmp/{row['id']}.pdf",
+                    brand="Kubota",
+                    model=row.get("model", "M7040"),
+                    document_type="visual_observation",
+                    language="zh-CN",
+                    created_by_role="admin",
+                    **{key: value for key, value in row.items() if key != "model"},
+                )
+            )
+
+        all_documents = ["doc-image", *(row["id"] for row in document_rows)]
+        for index, document_id in enumerate(all_documents):
+            suffix = "allowed" if document_id == "doc-image" else document_id.removeprefix("doc-visual-")
+            asset_id = f"asset-page-{suffix}"
+            chunk_id = "chunk-image" if document_id == "doc-image" else f"chunk-visual-{suffix}"
+            if document_id != "doc-image":
+                connection.execute(
+                    insert(document_chunks).values(
+                        id=chunk_id,
+                        document_id=document_id,
+                        chunk_type=ChunkType.TEXT.value,
+                        content="Hydraulic system diagram",
+                        source_locator={"type": "text"},
+                    )
+                )
+            connection.execute(
+                insert(chunk_entity_links).values(
+                    id=f"system-link-{suffix}",
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    entity_type="system",
+                    entity_value="Hydraulic",
+                    normalized_value="hydraulic",
+                    confidence=1.0,
+                    source="test",
+                )
+            )
+            connection.execute(
+                insert(document_assets).values(
+                    id=asset_id,
+                    document_id=document_id,
+                    asset_type="page_image",
+                    storage_uri=f"file:///tmp/{asset_id}.png",
+                    mime_type="image/png",
+                    page_number=1,
+                    source_locator={"type": "pdf_page", "page": 1},
+                    ocr_text="Hydraulic pump diagram",
+                    visual_observation={"description": "Hydraulic pump location"},
+                )
+            )
+            vector = [1.0] + [0.0] * 1023 if index > 0 else [0.8, 0.6] + [0.0] * 1022
+            connection.execute(
+                insert(visual_page_vector_embeddings).values(
+                    id=f"visual-embedding-{suffix}",
+                    asset_id=asset_id,
+                    document_id=document_id,
+                    page_number=1,
+                    provider="test",
+                    model="fixed-visual-query",
+                    embedding_version=embedding_version,
+                    embedding_dimension=1024,
+                    embedding=pgvector_storage_embedding(vector),
+                    status="ready",
+                )
+            )
 
 
 def test_text_qa_forwards_context_filters_to_retrieval_query(tmp_path: Path) -> None:

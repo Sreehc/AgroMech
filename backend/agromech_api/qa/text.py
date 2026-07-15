@@ -11,12 +11,15 @@ from agromech_api.rag.langchain.adapters import (
     build_answer_chain,
 )
 from agromech_api.rag.retrieval.evidence_check import check_evidence_sufficiency
-from agromech_api.rag.retrieval.filters import build_retrieval_filters
+from agromech_api.rag.retrieval.filters import RetrievalFilters, build_retrieval_filters
 from agromech_api.rag.retrieval.hybrid import (
     RetrievalTraceConflictError,
     hybrid_retrieve_with_trace,
 )
-from agromech_api.rag.retrieval.indexing import visual_page_search
+from agromech_api.rag.retrieval.indexing import (
+    enforce_visual_page_filters,
+    visual_page_search,
+)
 from agromech_api.rag.retrieval.query_rewrite import (
     build_query_rewrite_provider,
     rewrite_query,
@@ -156,8 +159,16 @@ def build_text_agent_controller(
         visual_retrieve_fn=lambda **kwargs: retrieve_visual_for_text_agent(
             settings=settings, viewer_user_id=viewer_user_id, **kwargs
         ),
-        answer_fn=lambda **kwargs: answer_for_text_agent(settings=settings, **kwargs),
-        multimodal_answer_fn=lambda **kwargs: answer_for_text_agent(settings=settings, **kwargs),
+        answer_fn=lambda **kwargs: answer_for_text_agent(
+            settings=settings,
+            viewer_user_id=viewer_user_id,
+            **kwargs,
+        ),
+        multimodal_answer_fn=lambda **kwargs: answer_for_text_agent(
+            settings=settings,
+            viewer_user_id=viewer_user_id,
+            **kwargs,
+        ),
     )
 
 
@@ -238,15 +249,23 @@ def retrieve_visual_for_text_agent(
 ) -> dict[str, object]:
     _ = trace_id
     query = query_with_filters(question, filters)
+    retrieval_filters = build_retrieval_filters(
+        request_filters=filters,
+        viewer_user_id=viewer_user_id,
+    )
     embedding_provider = build_visual_embedding_provider(settings)
     retrieval = visual_page_search(
         engine,
         query,
+        filters=retrieval_filters,
         embedding_provider=embedding_provider,
         active_embedding_version=settings.visual_embedding_version,
-        viewer_user_id=viewer_user_id,
     )
-    final_evidence = retrieval[: settings.final_evidence_limit]
+    final_evidence = enforce_visual_page_filters(
+        engine,
+        retrieval,
+        filters=retrieval_filters,
+    )[: settings.final_evidence_limit]
     return {
         "status": "ok",
         "trace_id": trace_id,
@@ -268,14 +287,24 @@ def planner_for_text_agent(
     image_context: dict[str, object] | None = None,
     **_kwargs,
 ) -> dict[str, object]:
-    _ = settings, engine, filters, route, image_context
+    _ = settings, engine, filters
     check = check_evidence_sufficiency(
         question=question,
         final_evidence=final_evidence,
         citations=citations,
     )
-    need_visual = route.get("route") == "text_visual" or any(
-        marker in question for marker in ("图", "页面", "位置", "示意")
+    uploaded_visual_available = bool(
+        image_context
+        and (
+            image_context.get("ocr_text")
+            or image_context.get("description")
+            or image_context.get("detected_entities")
+        )
+    )
+    need_visual = not uploaded_visual_available and (
+        route.get("route") == "text_visual" or any(
+            marker in question for marker in ("图", "页面", "位置", "示意")
+        )
     )
     return {
         "evidence_sufficient": check["status"] == "sufficient" and not need_visual,
@@ -298,11 +327,26 @@ def answer_for_text_agent(
     final_evidence: list[dict[str, object]],
     planner: dict[str, object] | None = None,
     domain_context: dict[str, object] | None = None,
+    viewer_user_id: str | None = None,
     **_kwargs,
 ) -> dict[str, object]:
-    final_evidence = [
-        item for item in final_evidence if not item.get("not_applicable")
-    ][: settings.final_evidence_limit]
+    retrieval_filters = build_retrieval_filters(
+        request_filters=filters,
+        viewer_user_id=viewer_user_id,
+    )
+    final_evidence = filter_merged_visual_evidence(
+        engine,
+        [item for item in final_evidence if not item.get("not_applicable")],
+        filters=retrieval_filters,
+    )
+    require_visual = bool((planner or {}).get("need_visual"))
+    final_evidence = select_final_evidence(
+        final_evidence,
+        limit=settings.final_evidence_limit,
+        require_visual=require_visual,
+    )
+    if require_visual and not any(item.get("asset_id") for item in final_evidence):
+        final_evidence = []
     retrieval["final_evidence"] = final_evidence
     trim_retrieval_final_evidence(engine, trace_id=trace_id, final_evidence=final_evidence)
     if not final_evidence:
@@ -387,6 +431,45 @@ def answer_for_text_agent(
         "safety_warnings": safety_warnings,
     }
     return payload
+
+
+def filter_merged_visual_evidence(
+    engine: Engine,
+    evidence: list[dict[str, object]],
+    *,
+    filters: RetrievalFilters,
+) -> list[dict[str, object]]:
+    visual_evidence = [item for item in evidence if item.get("asset_id")]
+    allowed_visual = {
+        (str(item["asset_id"]), str(item["document_id"]))
+        for item in enforce_visual_page_filters(
+            engine,
+            visual_evidence,
+            filters=filters,
+        )
+    }
+    return [
+        item
+        for item in evidence
+        if not item.get("asset_id")
+        or (str(item.get("asset_id")), str(item.get("document_id")))
+        in allowed_visual
+    ]
+
+
+def select_final_evidence(
+    evidence: list[dict[str, object]],
+    *,
+    limit: int,
+    require_visual: bool,
+) -> list[dict[str, object]]:
+    selected = evidence[:limit]
+    if not require_visual or any(item.get("asset_id") for item in selected):
+        return selected
+    first_visual = next((item for item in evidence if item.get("asset_id")), None)
+    if first_visual is None or limit <= 0:
+        return selected
+    return [*selected[: limit - 1], first_visual]
 
 
 def apply_domain_strategy(sections: dict[str, object], domain_context: dict[str, object]) -> None:
