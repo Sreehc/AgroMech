@@ -20,6 +20,7 @@ def test_retrieval_settings_defaults_and_ordering() -> None:
 
     assert settings.bm25_top_k == 50
     assert settings.dense_top_k == 50
+    assert settings.dense_only_min_similarity == 0.25
     assert settings.rrf_k == 60
     assert settings.rrf_dense_weight == 1.0
     assert settings.rrf_bm25_weight == 1.0
@@ -45,6 +46,12 @@ def test_retrieval_settings_defaults_and_ordering() -> None:
 def test_query_rewrite_timeout_must_be_finite(value: float) -> None:
     with pytest.raises(ValueError, match="QUERY_REWRITE_TIMEOUT_SECONDS must be finite"):
         Settings(_env_file=None, query_rewrite_timeout_seconds=value)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), -0.1, 1.1])
+def test_dense_only_min_similarity_must_be_a_probability(value: float) -> None:
+    with pytest.raises(ValueError, match="DENSE_ONLY_MIN_SIMILARITY must be between 0 and 1"):
+        Settings(_env_file=None, dense_only_min_similarity=value)
 
 
 @pytest.mark.parametrize("field_name", ["rrf_dense_weight", "rrf_bm25_weight"])

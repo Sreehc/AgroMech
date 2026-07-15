@@ -92,6 +92,7 @@ def test_retrieval_agent_wraps_existing_retrieval_tool_payload() -> None:
     assert calls[0]["question"] == "M7040 E01"
     assert calls[0]["original_question"] == "M7040 E01"
     assert calls[0]["query_rewrite"] == {}
+    assert calls[0]["retrieval_round"] == 0
     assert result["output"]["final_evidence"] == [{"chunk_id": "chunk-1"}]
     assert result["output"]["citations"] == [{"chunk_id": "chunk-1"}]
     assert result["trace"]["agent"] == "RetrievalAgent"

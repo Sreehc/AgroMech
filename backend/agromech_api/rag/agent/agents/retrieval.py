@@ -22,6 +22,7 @@ class RetrievalAgent:
                     "question": state.get("rewritten_query") or state["question"],
                     "original_question": state["question"],
                     "query_rewrite": state.get("query_rewrite") or {},
+                    "retrieval_round": int(state.get("retrieval_round", 0)),
                     "filters": state.get("filters") or {},
                     "trace_id": state.get("trace_id"),
                     "route": state.get("route") or {},

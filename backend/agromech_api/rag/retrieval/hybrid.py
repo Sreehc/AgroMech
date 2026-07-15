@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 from sqlalchemy import Engine, select, update
+from sqlalchemy.exc import IntegrityError
 
 from agromech_api.core.config import get_settings
 from agromech_api.db.enums import ChunkType
@@ -23,8 +24,8 @@ from agromech_api.rag.retrieval.query_understanding import ParsedQuery, parse_qu
 from agromech_api.rag.retrieval.rerank import RerankError
 
 
-# Preserve the pre-RRF viability cutoff on raw cosine similarity.
-MIN_DENSE_COSINE_SIMILARITY = 0.25
+class RetrievalTraceConflictError(RuntimeError):
+    """Raised when a retrieval round cannot safely mutate the requested trace."""
 
 
 class DenseRetrievalAgent:
@@ -46,11 +47,6 @@ class DenseRetrievalAgent:
             limit=limit,
             embedding_provider=embedding_provider,
         )
-        eligible_results = [
-            result
-            for result in results
-            if float(result["score"]) >= MIN_DENSE_COSINE_SIMILARITY
-        ]
         return [
             RankedHit(
                 chunk_id=str(result["chunk_id"]),
@@ -59,7 +55,7 @@ class DenseRetrievalAgent:
                 vector_ref=str(result["vector_ref"]) if result.get("vector_ref") else None,
                 embedding_id=str(result["embedding_id"]) if result.get("embedding_id") else None,
             )
-            for rank, result in enumerate(eligible_results, start=1)
+            for rank, result in enumerate(results, start=1)
         ]
 
 
@@ -145,6 +141,7 @@ def hybrid_retrieve_with_trace(
     logged_query: str | None = None,
     filters: RetrievalFilters | None = None,
     query_rewrite: dict[str, object] | None = None,
+    retrieval_round: int = 1,
     degraded_channels: dict[str, str] | None = None,
     embedding_provider=None,
     bm25_retriever: Bm25Retriever | None = None,
@@ -153,6 +150,7 @@ def hybrid_retrieve_with_trace(
     settings=None,
 ) -> dict[str, object]:
     started = time.perf_counter()
+    validate_retrieval_round(retrieval_round)
     settings = settings or get_settings()
     filters = filters or build_retrieval_filters(request_filters={}, viewer_user_id=None)
     query_rewrite = dict(query_rewrite or {})
@@ -183,6 +181,7 @@ def hybrid_retrieve_with_trace(
         channels=channels,
         model_config=trace_model_config(settings),
         query_rewrite=query_rewrite,
+        retrieval_round=retrieval_round,
         fusion=fusion_trace,
         candidates=[trace_candidate(candidate) for candidate in candidates],
         rerank=rerank_trace,
@@ -230,6 +229,10 @@ def retrieve_candidates(
     for channel, status in channel_status.items():
         if status.endswith("_degraded"):
             degraded_channels[channel] = status
+    channel_hits = filter_low_similarity_dense_only_hits(
+        channel_hits,
+        min_similarity=settings.dense_only_min_similarity,
+    )
     fused, fusion_trace = rrf_fuse(
         channel_hits,
         rrf_k=settings.rrf_k,
@@ -252,6 +255,32 @@ def retrieve_candidates(
         rerank_top_k=rerank_top_k or settings.rerank_top_k,
     )
     return candidates, reranked, fusion_trace, rerank_trace
+
+
+def filter_low_similarity_dense_only_hits(
+    channel_hits: dict[str, list[RankedHit]],
+    *,
+    min_similarity: float,
+) -> dict[str, list[RankedHit]]:
+    bm25_chunk_ids = {hit.chunk_id for hit in channel_hits.get("bm25", [])}
+    eligible_dense = [
+        hit
+        for hit in channel_hits.get("dense", [])
+        if hit.score >= min_similarity or hit.chunk_id in bm25_chunk_ids
+    ]
+    return {
+        **channel_hits,
+        "dense": [
+            RankedHit(
+                chunk_id=hit.chunk_id,
+                rank=rank,
+                score=hit.score,
+                vector_ref=hit.vector_ref,
+                embedding_id=hit.embedding_id,
+            )
+            for rank, hit in enumerate(eligible_dense, start=1)
+        ],
+    }
 
 
 def collect_ranked_hits(
@@ -580,6 +609,7 @@ def trace_model_config(settings) -> dict[str, object]:
         "bm25_backend": "pg_search",
         "bm25_top_k": settings.bm25_top_k,
         "dense_top_k": settings.dense_top_k,
+        "dense_only_min_similarity": settings.dense_only_min_similarity,
         "rrf_k": settings.rrf_k,
         "rrf_dense_weight": settings.rrf_dense_weight,
         "rrf_bm25_weight": settings.rrf_bm25_weight,
@@ -644,22 +674,62 @@ def write_retrieval_log(
     channels: dict[str, object],
     model_config: dict[str, object],
     query_rewrite: dict[str, object],
+    retrieval_round: int,
     fusion: dict[str, object],
     candidates: list[dict[str, object]],
     rerank: dict[str, object],
     final_evidence: list[dict[str, object]],
 ) -> None:
+    validate_retrieval_round(retrieval_round)
+    rewrite_attempt = {**query_rewrite, "retrieval_round": retrieval_round}
+    fusion_attempt = {**fusion, "retrieval_round": retrieval_round}
+    if retrieval_round == 1:
+        rewrite_payload = append_trace_attempt(None, rewrite_attempt)
+        fusion_payload = append_trace_attempt(None, fusion_attempt)
+        fusion_payload["retrieval_duration_ms"] = round(
+            float(fusion_attempt.get("retrieval_duration_ms", 0.0)),
+            3,
+        )
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    retrieval_logs.insert().values(
+                        id=str(uuid4()),
+                        trace_id=trace_id,
+                        query=query,
+                        filters=filters,
+                        channels=channels,
+                        model_config=model_config,
+                        query_rewrite=rewrite_payload,
+                        fusion=fusion_payload,
+                        candidates=candidates,
+                        rerank=rerank,
+                        final_evidence=final_evidence,
+                    )
+                )
+        except IntegrityError as exc:
+            raise RetrievalTraceConflictError("retrieval trace already exists") from exc
+        return
+
     with engine.begin() as connection:
         existing = connection.execute(
-            select(retrieval_logs).where(retrieval_logs.c.trace_id == trace_id)
+            select(retrieval_logs)
+            .where(retrieval_logs.c.trace_id == trace_id)
+            .with_for_update()
         ).mappings().one_or_none()
+        if not supplemental_trace_is_appendable(
+            existing,
+            query=query,
+            filters=filters,
+        ):
+            raise RetrievalTraceConflictError("retrieval trace cannot accept a supplemental round")
         rewrite_payload = append_trace_attempt(
-            existing["query_rewrite"] if existing else None,
-            query_rewrite,
+            existing["query_rewrite"],
+            rewrite_attempt,
         )
         fusion_payload = append_trace_attempt(
-            existing["fusion"] if existing else None,
-            fusion,
+            existing["fusion"],
+            fusion_attempt,
         )
         fusion_payload["retrieval_duration_ms"] = round(
             sum(
@@ -668,31 +738,60 @@ def write_retrieval_log(
             ),
             3,
         )
-        values = {
-            "channels": channels,
-            "model_config": model_config,
-            "query_rewrite": rewrite_payload,
-            "fusion": fusion_payload,
-            "candidates": candidates,
-            "rerank": rerank,
-            "final_evidence": final_evidence,
-        }
-        if existing is None:
-            connection.execute(
-                retrieval_logs.insert().values(
-                    id=str(uuid4()),
-                    trace_id=trace_id,
-                    query=query,
-                    filters=filters,
-                    **values,
-                )
+        result = connection.execute(
+            update(retrieval_logs)
+            .where(retrieval_logs.c.id == existing["id"])
+            .where(
+                retrieval_logs.c.query_rewrite["final"]["retrieval_round"].as_integer()
+                == 1
             )
-        else:
-            connection.execute(
-                update(retrieval_logs)
-                .where(retrieval_logs.c.id == existing["id"])
-                .values(**values)
+            .where(
+                retrieval_logs.c.fusion["final"]["retrieval_round"].as_integer()
+                == 1
             )
+            .values(
+                channels=channels,
+                model_config=model_config,
+                query_rewrite=rewrite_payload,
+                fusion=fusion_payload,
+                candidates=candidates,
+                rerank=rerank,
+                final_evidence=final_evidence,
+            )
+        )
+        if result.rowcount != 1:
+            raise RetrievalTraceConflictError("supplemental retrieval trace update lost its round guard")
+
+
+def validate_retrieval_round(retrieval_round: int) -> None:
+    if retrieval_round not in {1, 2}:
+        raise RetrievalTraceConflictError("retrieval round must be 1 or 2")
+
+
+def supplemental_trace_is_appendable(
+    existing,
+    *,
+    query: str,
+    filters: dict[str, object],
+) -> bool:
+    if existing is None:
+        return False
+    rewrite = dict(existing["query_rewrite"] or {})
+    fusion = dict(existing["fusion"] or {})
+    rewrite_attempts = list(rewrite.get("attempts") or [])
+    fusion_attempts = list(fusion.get("attempts") or [])
+    rewrite_final = dict(rewrite.get("final") or {})
+    fusion_final = dict(fusion.get("final") or {})
+    channels = dict(existing["channels"] or {})
+    return (
+        existing["query"] == query
+        and dict(existing["filters"] or {}) == filters
+        and "citation" not in channels
+        and len(rewrite_attempts) == 1
+        and len(fusion_attempts) == 1
+        and rewrite_final.get("retrieval_round") == 1
+        and fusion_final.get("retrieval_round") == 1
+    )
 
 
 def append_trace_attempt(

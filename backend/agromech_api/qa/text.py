@@ -12,7 +12,10 @@ from agromech_api.rag.langchain.adapters import (
 )
 from agromech_api.rag.retrieval.evidence_check import check_evidence_sufficiency
 from agromech_api.rag.retrieval.filters import build_retrieval_filters
-from agromech_api.rag.retrieval.hybrid import hybrid_retrieve_with_trace
+from agromech_api.rag.retrieval.hybrid import (
+    RetrievalTraceConflictError,
+    hybrid_retrieve_with_trace,
+)
 from agromech_api.rag.retrieval.indexing import visual_page_search
 from agromech_api.rag.retrieval.query_rewrite import (
     build_query_rewrite_provider,
@@ -107,13 +110,20 @@ def answer_text_question(
 
     settings = settings or get_settings()
     controller = build_text_agent_controller(settings, viewer_user_id=viewer_user_id)
-    payload = controller.answer_text(
-        engine=engine,
-        question=normalized_question,
-        trace_id=trace_id,
-        filters=normalized_filters,
-        image_context=image_context,
-    )
+    try:
+        payload = controller.answer_text(
+            engine=engine,
+            question=normalized_question,
+            trace_id=trace_id,
+            filters=normalized_filters,
+            image_context=image_context,
+        )
+    except RetrievalTraceConflictError as exc:
+        raise AppError(
+            ErrorCode.TRACE_ID_CONFLICT,
+            "Trace ID is already in use",
+            status_code=status.HTTP_409_CONFLICT,
+        ) from exc
     record_citation_trace(engine, trace_id, list(payload.get("citations") or []))
     record_qa(engine, question=normalized_question, payload=payload)
     if session_id and username:
@@ -180,6 +190,7 @@ def retrieve_for_text_agent(
     original_question: str,
     filters: dict[str, str | None],
     query_rewrite: dict[str, object],
+    retrieval_round: int,
     trace_id: str,
     viewer_user_id: str | None = None,
     **_kwargs,
@@ -202,6 +213,7 @@ def retrieve_for_text_agent(
         logged_query=original_question,
         filters=retrieval_filters,
         query_rewrite=query_rewrite,
+        retrieval_round=retrieval_round,
         embedding_provider=build_embedding_provider(settings),
         rerank_provider=rerank_provider,
         rerank_top_k=settings.rerank_top_k,
@@ -267,7 +279,7 @@ def planner_for_text_agent(
     )
     return {
         "evidence_sufficient": check["status"] == "sufficient" and not need_visual,
-        "need_visual": need_visual and check["status"] != "sufficient",
+        "need_visual": need_visual,
         "need_query_rewrite": check["status"] != "sufficient",
         "next_action": "VISUAL_PAGE_RETRIEVAL" if need_visual else ("QUERY_REWRITE" if check["status"] != "sufficient" else "ANSWER"),
         "missing_slots": check["missing"],
@@ -288,9 +300,6 @@ def answer_for_text_agent(
     domain_context: dict[str, object] | None = None,
     **_kwargs,
 ) -> dict[str, object]:
-    if retrieval["status"] == "evidence_insufficient":
-        return evidence_insufficient_answer(trace_id)
-
     final_evidence = [
         item for item in final_evidence if not item.get("not_applicable")
     ][: settings.final_evidence_limit]

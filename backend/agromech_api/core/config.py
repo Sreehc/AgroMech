@@ -144,6 +144,7 @@ class Settings(BaseSettings):
     # Hybrid retrieval
     bm25_top_k: int = 50
     dense_top_k: int = 50
+    dense_only_min_similarity: float = 0.25
     rrf_k: int = 60
     rrf_dense_weight: float = 1.0
     rrf_bm25_weight: float = 1.0
@@ -234,6 +235,10 @@ class Settings(BaseSettings):
             raise ValueError("QUERY_REWRITE_TIMEOUT_SECONDS must be finite")
         if self.query_rewrite_timeout_seconds <= 0:
             raise ValueError("QUERY_REWRITE_TIMEOUT_SECONDS must be positive")
+        ensure_probability(
+            self.dense_only_min_similarity,
+            "DENSE_ONLY_MIN_SIMILARITY",
+        )
         if not math.isfinite(self.rrf_dense_weight) or not math.isfinite(self.rrf_bm25_weight):
             raise ValueError("RRF weights must be finite")
         if self.rrf_dense_weight < 0 or self.rrf_bm25_weight < 0:

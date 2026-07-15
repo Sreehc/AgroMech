@@ -1,10 +1,12 @@
-from sqlalchemy import create_engine, event, insert, select
+import pytest
+from sqlalchemy import create_engine, event, insert, select, update
 
 from agromech_api.core.config import Settings
 from agromech_api.db.enums import ChunkType, DocumentStatus
 from agromech_api.db.models import document_chunks, documents, metadata, retrieval_logs
 from agromech_api.domain.entities import process_document_entities
 from agromech_api.rag.retrieval.hybrid import (
+    RetrievalTraceConflictError,
     hybrid_retrieve,
     hybrid_retrieve_with_trace,
 )
@@ -142,6 +144,266 @@ def test_hybrid_retrieval_uses_dense_bm25_rrf_and_no_structured_channel(tmp_path
     assert "structured" not in first["channels"]
 
 
+def test_duplicate_round_one_trace_uses_atomic_insert_and_preserves_first_row(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    hybrid_retrieve_with_trace(
+        engine,
+        "M7040 E01 hydraulic pump",
+        trace_id="trace-atomic-round-one",
+        logged_query="first question",
+        retrieval_round=1,
+    )
+    with engine.connect() as connection:
+        before = dict(
+            connection.execute(
+                select(retrieval_logs).where(
+                    retrieval_logs.c.trace_id == "trace-atomic-round-one"
+                )
+            ).mappings().one()
+        )
+
+    retrieval_log_statements: list[str] = []
+
+    def capture_retrieval_log_sql(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if "retrieval_logs" in statement:
+            retrieval_log_statements.append(statement.strip().upper())
+
+    event.listen(engine, "before_cursor_execute", capture_retrieval_log_sql)
+    try:
+        with pytest.raises(Exception) as caught:
+            hybrid_retrieve_with_trace(
+                engine,
+                "L3901 electrical sensor troubleshooting",
+                trace_id="trace-atomic-round-one",
+                logged_query="second question",
+                retrieval_round=1,
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_retrieval_log_sql)
+
+    assert caught.type.__name__ == "RetrievalTraceConflictError"
+    assert retrieval_log_statements[0].startswith("INSERT INTO RETRIEVAL_LOGS")
+    with engine.connect() as connection:
+        after = dict(
+            connection.execute(
+                select(retrieval_logs).where(
+                    retrieval_logs.c.trace_id == "trace-atomic-round-one"
+                )
+            ).mappings().one()
+        )
+    for field in ("query", "filters", "query_rewrite", "fusion", "candidates", "rerank", "final_evidence", "channels"):
+        assert after[field] == before[field]
+
+
+@pytest.mark.parametrize("retrieval_round", [0, 3])
+def test_retrieval_trace_rejects_rounds_outside_controller_limit(
+    tmp_path,
+    retrieval_round: int,
+) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    with pytest.raises(Exception) as caught:
+        hybrid_retrieve_with_trace(
+            engine,
+            "M7040 E01 hydraulic pump",
+            trace_id=f"trace-invalid-round-{retrieval_round}",
+            retrieval_round=retrieval_round,
+        )
+
+    assert caught.type.__name__ == "RetrievalTraceConflictError"
+
+
+def test_retrieval_trace_rejects_supplemental_round_without_initial_row(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    with pytest.raises(Exception) as caught:
+        hybrid_retrieve_with_trace(
+            engine,
+            "M7040 E01 hydraulic pump",
+            trace_id="trace-missing-round-one",
+            retrieval_round=2,
+        )
+
+    assert caught.type.__name__ == "RetrievalTraceConflictError"
+
+
+@pytest.mark.parametrize(
+    ("second_query", "second_filters"),
+    [
+        ("different original question", {}),
+        ("original question", {"model": "L3901"}),
+    ],
+)
+def test_supplemental_round_requires_matching_original_query_and_filters(
+    tmp_path,
+    second_query: str,
+    second_filters: dict[str, str],
+) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    initial_filters = build_retrieval_filters(
+        request_filters={},
+        viewer_user_id=None,
+    )
+    hybrid_retrieve_with_trace(
+        engine,
+        "M7040 E01 hydraulic pump",
+        trace_id="trace-supplemental-identity",
+        logged_query="original question",
+        filters=initial_filters,
+        retrieval_round=1,
+    )
+    before = retrieval_log_snapshot(engine, "trace-supplemental-identity")
+
+    with pytest.raises(RetrievalTraceConflictError):
+        hybrid_retrieve_with_trace(
+            engine,
+            "M7040 E01 hydraulic pump repair",
+            trace_id="trace-supplemental-identity",
+            logged_query=second_query,
+            filters=build_retrieval_filters(
+                request_filters=second_filters,
+                viewer_user_id=None,
+            ),
+            retrieval_round=2,
+        )
+
+    assert retrieval_log_snapshot(engine, "trace-supplemental-identity") == before
+
+
+def test_supplemental_round_rejects_completed_citation_trace(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    hybrid_retrieve_with_trace(
+        engine,
+        "M7040 E01 hydraulic pump",
+        trace_id="trace-completed-citation",
+        logged_query="original question",
+        retrieval_round=1,
+    )
+    with engine.begin() as connection:
+        row = connection.execute(
+            select(retrieval_logs.c.channels).where(
+                retrieval_logs.c.trace_id == "trace-completed-citation"
+            )
+        ).mappings().one()
+        channels = dict(row["channels"])
+        channels["citation"] = {
+            "status": "ok",
+            "count": 1,
+            "chunk_ids": ["chunk-m7040"],
+            "asset_ids": [],
+        }
+        connection.execute(
+            update(retrieval_logs)
+            .where(retrieval_logs.c.trace_id == "trace-completed-citation")
+            .values(channels=channels)
+        )
+    before = retrieval_log_snapshot(engine, "trace-completed-citation")
+
+    with pytest.raises(RetrievalTraceConflictError):
+        hybrid_retrieve_with_trace(
+            engine,
+            "M7040 E01 hydraulic pump repair",
+            trace_id="trace-completed-citation",
+            logged_query="original question",
+            retrieval_round=2,
+        )
+
+    assert retrieval_log_snapshot(engine, "trace-completed-citation") == before
+
+
+def test_supplemental_round_rejects_a_second_round_two_and_preserves_final_audit(
+    tmp_path,
+) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    hybrid_retrieve_with_trace(
+        engine,
+        "orchard sprayer calibration nozzle",
+        trace_id="trace-one-supplement-only",
+        logged_query="original question",
+        retrieval_round=1,
+    )
+    hybrid_retrieve_with_trace(
+        engine,
+        "M7040 E01 hydraulic pump repair",
+        trace_id="trace-one-supplement-only",
+        logged_query="original question",
+        retrieval_round=2,
+    )
+    before = retrieval_log_snapshot(engine, "trace-one-supplement-only")
+
+    with pytest.raises(RetrievalTraceConflictError):
+        hybrid_retrieve_with_trace(
+            engine,
+            "M7040 E01 hydraulic pump repair manual",
+            trace_id="trace-one-supplement-only",
+            logged_query="original question",
+            retrieval_round=2,
+        )
+
+    assert retrieval_log_snapshot(engine, "trace-one-supplement-only") == before
+
+
+def test_supplemental_round_maps_zero_row_atomic_update_to_conflict(
+    tmp_path,
+) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    hybrid_retrieve_with_trace(
+        engine,
+        "orchard sprayer calibration nozzle",
+        trace_id="trace-lost-atomic-guard",
+        logged_query="original question",
+        retrieval_round=1,
+    )
+    before = retrieval_log_snapshot(engine, "trace-lost-atomic-guard")
+
+    def force_guard_miss(_conn, _cursor, statement, parameters, _context, _executemany):
+        if statement.lstrip().upper().startswith("UPDATE RETRIEVAL_LOGS"):
+            return f"{statement} AND 0 = 1", parameters
+        return statement, parameters
+
+    event.listen(engine, "before_cursor_execute", force_guard_miss, retval=True)
+    try:
+        with pytest.raises(RetrievalTraceConflictError):
+            hybrid_retrieve_with_trace(
+                engine,
+                "M7040 E01 hydraulic pump repair",
+                trace_id="trace-lost-atomic-guard",
+                logged_query="original question",
+                retrieval_round=2,
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", force_guard_miss)
+
+    assert retrieval_log_snapshot(engine, "trace-lost-atomic-guard") == before
+
+
+def retrieval_log_snapshot(engine, trace_id: str) -> dict[str, object]:
+    with engine.connect() as connection:
+        row = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == trace_id)
+        ).mappings().one()
+    return {
+        field: row[field]
+        for field in (
+            "query",
+            "filters",
+            "query_rewrite",
+            "fusion",
+            "candidates",
+            "rerank",
+            "final_evidence",
+            "channels",
+        )
+    }
+
+
 def test_bm25_failure_degrades_to_dense_only(tmp_path) -> None:
     class FailingBm25Retriever:
         def search(self, *_args, **_kwargs):
@@ -185,18 +447,38 @@ def test_low_similarity_dense_only_query_returns_evidence_insufficient(tmp_path)
     assert result["final_evidence"] == []
 
 
-def test_bm25_hit_survives_low_similarity_dense_filter(tmp_path, monkeypatch) -> None:
+def test_low_similarity_dense_hit_keeps_dense_channel_when_bm25_matches(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class MatchingBm25Retriever:
+        def search(self, _engine, _query, *, filters, limit):
+            _ = filters, limit
+            return [RankedHit(chunk_id="chunk-m7040", rank=1, score=8.0)]
+
     engine = create_test_engine(tmp_path)
     seed_retrieval_corpus(engine)
     monkeypatch.setattr(
         "agromech_api.rag.retrieval.hybrid.vector_search",
         lambda *_args, **_kwargs: [
             {
+                "chunk_id": "chunk-image",
+                "score": 0.9,
+                "vector_ref": "pgvector://chunk_vector_embeddings/high-score",
+                "embedding_id": "high-score",
+            },
+            {
                 "chunk_id": "chunk-m7040",
                 "score": 0.1,
                 "vector_ref": "pgvector://chunk_vector_embeddings/low-score",
                 "embedding_id": "low-score",
-            }
+            },
+            {
+                "chunk_id": "chunk-l3901",
+                "score": 0.08,
+                "vector_ref": "pgvector://chunk_vector_embeddings/unrelated-low-score",
+                "embedding_id": "unrelated-low-score",
+            },
         ],
     )
 
@@ -204,13 +486,43 @@ def test_bm25_hit_survives_low_similarity_dense_filter(tmp_path, monkeypatch) ->
         engine,
         "M7040 E01 hydraulic pump",
         filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
-        bm25_retriever=FixedBm25Retriever(),
+        bm25_retriever=MatchingBm25Retriever(),
         trace_id="trace-bm25-survives-dense-filter",
     )
 
     assert result["status"] == "ok"
     assert result["candidates"][0]["chunk_id"] == "chunk-m7040"
-    assert result["candidates"][0]["channels"] == ["bm25"]
+    assert set(result["candidates"][0]["channels"]) == {"bm25", "dense"}
+    assert result["candidates"][0]["channel_scores"]["dense"] == 0.1
+    assert all(candidate["chunk_id"] != "chunk-l3901" for candidate in result["candidates"])
+
+
+def test_dense_only_similarity_threshold_is_configurable_and_traced(tmp_path) -> None:
+    class EmptyBm25Retriever:
+        def search(self, *_args, **_kwargs):
+            return []
+
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    settings = Settings(_env_file=None, dense_only_min_similarity=0.75)
+
+    result = hybrid_retrieve_with_trace(
+        engine,
+        "dashboard hydraulic warning",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
+        bm25_retriever=EmptyBm25Retriever(),
+        trace_id="trace-configurable-dense-only-threshold",
+        settings=settings,
+    )
+
+    assert result["status"] == "evidence_insufficient"
+    with engine.connect() as connection:
+        log = connection.execute(
+            select(retrieval_logs).where(
+                retrieval_logs.c.trace_id == "trace-configurable-dense-only-threshold"
+            )
+        ).mappings().one()
+    assert log["model_config"]["dense_only_min_similarity"] == 0.75
 
 
 def test_dense_failure_degrades_to_bm25_only(tmp_path) -> None:

@@ -126,6 +126,7 @@ def test_retrieval_log_accumulates_two_rounds_in_one_trace_row(tmp_path: Path) -
         trace_id="trace-two-rounds",
         logged_query="液压泵异响",
         query_rewrite={"query": "orchard sprayer calibration nozzle", "provider": "test", "fallback": False},
+        retrieval_round=1,
     )
     hybrid_retrieve_with_trace(
         engine,
@@ -133,6 +134,7 @@ def test_retrieval_log_accumulates_two_rounds_in_one_trace_row(tmp_path: Path) -
         trace_id="trace-two-rounds",
         logged_query="液压泵异响",
         query_rewrite={"query": "液压泵异响 hydraulic pump abnormal noise", "provider": "rule", "fallback": True},
+        retrieval_round=2,
     )
 
     with engine.connect() as connection:
@@ -141,6 +143,7 @@ def test_retrieval_log_accumulates_two_rounds_in_one_trace_row(tmp_path: Path) -
         ).mappings().all()
     assert len(logs) == 1
     assert len(logs[0]["query_rewrite"]["attempts"]) == 2
+    assert [attempt["retrieval_round"] for attempt in logs[0]["query_rewrite"]["attempts"]] == [1, 2]
     assert logs[0]["query_rewrite"]["final"]["provider"] == "rule"
     assert len(logs[0]["fusion"]["attempts"]) == 2
     assert logs[0]["fusion"]["final"] == logs[0]["fusion"]["attempts"][-1]
@@ -166,6 +169,210 @@ def test_text_qa_returns_evidence_insufficient_without_citations(tmp_path: Path)
         "reasons": ["evidence_insufficient"],
     }
     assert payload["trace_id"] == "trace-empty"
+    with engine.connect() as connection:
+        log = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-empty")
+        ).mappings().one()
+    assert log["query"] == "orchard sprayer calibration nozzle"
+    assert [attempt["retrieval_round"] for attempt in log["query_rewrite"]["attempts"]] == [1, 2]
+    assert log["channels"]["citation"] == {
+        "status": "insufficient",
+        "count": 0,
+        "chunk_ids": [],
+        "asset_ids": [],
+    }
+
+
+def test_text_qa_first_round_insufficient_then_second_round_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_calls: list[str] = []
+
+    class FirstRoundMissProvider:
+        provider = "test"
+        model = "test-rewrite"
+
+        def rewrite(self, question: str, protected_identifiers: list[str]) -> str:
+            _ = protected_identifiers
+            provider_calls.append(question)
+            return "orchard sprayer calibration nozzle"
+
+    monkeypatch.setattr(
+        "agromech_api.qa.text.build_query_rewrite_provider",
+        lambda _settings: FirstRoundMissProvider(),
+    )
+    client, engine, token = qa_client(tmp_path)
+    seed_retrieval_corpus(engine)
+
+    response = client.post(
+        "/qa/text",
+        headers=auth_header(token, "trace-supplemental-success"),
+        json={"question": "液压泵异响"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["citations"]
+    assert provider_calls == ["液压泵异响"]
+    with engine.connect() as connection:
+        log = connection.execute(
+            select(retrieval_logs).where(
+                retrieval_logs.c.trace_id == "trace-supplemental-success"
+            )
+        ).mappings().one()
+    assert log["query"] == "液压泵异响"
+    assert [attempt["retrieval_round"] for attempt in log["query_rewrite"]["attempts"]] == [1, 2]
+    assert log["query_rewrite"]["attempts"][0]["provider"] == "test"
+    assert log["query_rewrite"]["final"]["fallback"] is True
+    assert log["channels"]["citation"]["status"] == "ok"
+    assert log["channels"]["citation"]["chunk_ids"] == [
+        citation["chunk_id"] for citation in payload["citations"]
+    ]
+
+
+def test_text_qa_rejects_reused_trace_id_without_mutating_first_audit(
+    tmp_path: Path,
+) -> None:
+    client, engine, token = qa_client(tmp_path)
+    seed_retrieval_corpus(engine)
+    headers = auth_header(token, "trace-reused-client-header")
+
+    first = client.post(
+        "/qa/text",
+        headers=headers,
+        json={"question": "M7040 E01 hydraulic pump repair"},
+    )
+    assert first.status_code == 200
+    with engine.connect() as connection:
+        before = dict(
+            connection.execute(
+                select(retrieval_logs).where(
+                    retrieval_logs.c.trace_id == "trace-reused-client-header"
+                )
+            ).mappings().one()
+        )
+
+    second = client.post(
+        "/qa/text",
+        headers=headers,
+        json={"question": "L3901 electrical sensor troubleshooting"},
+    )
+
+    assert second.status_code == 409
+    assert second.json() == {
+        "error": {
+            "code": "trace_id_conflict",
+            "message": "Trace ID is already in use",
+            "details": None,
+            "trace_id": "trace-reused-client-header",
+        }
+    }
+    with engine.connect() as connection:
+        after = dict(
+            connection.execute(
+                select(retrieval_logs).where(
+                    retrieval_logs.c.trace_id == "trace-reused-client-header"
+                )
+            ).mappings().one()
+        )
+    for field in ("query", "filters", "query_rewrite", "fusion", "candidates", "rerank", "final_evidence", "channels"):
+        assert after[field] == before[field]
+
+
+def test_text_qa_visual_only_evidence_overrides_insufficient_text_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, engine, token = qa_client(tmp_path)
+    seed_retrieval_corpus(engine)
+    monkeypatch.setattr(
+        "agromech_api.qa.text.visual_page_search",
+        lambda *_args, **_kwargs: [_visual_page_evidence()],
+    )
+
+    response = client.post(
+        "/qa/text",
+        headers=auth_header(token, "trace-visual-only"),
+        json={"question": "orchard sprayer calibration nozzle 图示"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [citation.get("asset_id") for citation in payload["citations"]] == ["asset-page-1"]
+    with engine.connect() as connection:
+        log = connection.execute(
+            select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-visual-only")
+        ).mappings().one()
+    assert [item.get("asset_id") for item in log["final_evidence"]] == ["asset-page-1"]
+    assert log["channels"]["citation"] == {
+        "status": "ok",
+        "count": 1,
+        "chunk_ids": [],
+        "asset_ids": ["asset-page-1"],
+    }
+
+
+def test_text_qa_merges_text_and_visual_evidence_in_final_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, engine, token = qa_client(tmp_path)
+    seed_retrieval_corpus(engine)
+    visual_calls: list[str] = []
+
+    def visual_page_search(_engine, query, **_kwargs):
+        visual_calls.append(query)
+        return [_visual_page_evidence()]
+
+    monkeypatch.setattr("agromech_api.qa.text.visual_page_search", visual_page_search)
+
+    response = client.post(
+        "/qa/text",
+        headers=auth_header(token, "trace-text-visual-final"),
+        json={"question": "M7040 E01 hydraulic pump 图示"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert visual_calls
+    response_ids = [
+        citation.get("chunk_id") or citation.get("asset_id")
+        for citation in payload["citations"]
+    ]
+    assert response_ids[-1] == "asset-page-1"
+    assert any(citation.get("chunk_id") for citation in payload["citations"][:-1])
+    with engine.connect() as connection:
+        log = connection.execute(
+            select(retrieval_logs).where(
+                retrieval_logs.c.trace_id == "trace-text-visual-final"
+            )
+        ).mappings().one()
+    evidence_ids = [
+        item.get("chunk_id") or item.get("asset_id")
+        for item in log["final_evidence"]
+    ]
+    assert response_ids == evidence_ids
+    assert log["channels"]["citation"]["chunk_ids"] == [
+        citation["chunk_id"]
+        for citation in payload["citations"]
+        if citation.get("chunk_id")
+    ]
+    assert log["channels"]["citation"]["asset_ids"] == ["asset-page-1"]
+
+
+def _visual_page_evidence() -> dict[str, object]:
+    return {
+        "asset_id": "asset-page-1",
+        "document_id": "doc-image",
+        "page_number": 1,
+        "source_locator": {"type": "pdf_page", "page": 1},
+        "ocr_text": "Dashboard hydraulic warning diagram.",
+        "visual_observation": "The page shows the hydraulic warning location.",
+        "image_uri": "file:///tmp/page-1.png",
+        "evidence_type": "visual_page",
+        "score": 0.9,
+    }
 
 
 def test_text_qa_forwards_context_filters_to_retrieval_query(tmp_path: Path) -> None:

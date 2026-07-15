@@ -22,6 +22,7 @@ class ErrorCode(StrEnum):
     TOO_MANY_IMAGES = "too_many_images"
     VALIDATION_ERROR = "validation_error"
     RATE_LIMITED = "rate_limited"
+    TRACE_ID_CONFLICT = "trace_id_conflict"
     INTERNAL_ERROR = "internal_error"
 
 
