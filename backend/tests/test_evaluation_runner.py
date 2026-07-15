@@ -1,5 +1,7 @@
+import argparse
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, insert, select
@@ -188,6 +190,31 @@ def test_evaluate_retrieval_acceptance_rejects_unchanged_metrics() -> None:
 
     with pytest.raises(SystemExit, match="至少有一项"):
         script.assert_acceptance(metrics, baseline)
+
+
+def test_evaluate_retrieval_defaults_to_configured_dataset(monkeypatch) -> None:
+    script = evaluate_retrieval_script()
+    settings = SimpleNamespace(evaluation_default_dataset="release-smoke")
+    captured = {}
+
+    monkeypatch.setattr(
+        script,
+        "parse_args",
+        lambda: argparse.Namespace(dataset=None, prompt_version="retrieval-v2", baseline=None),
+    )
+    monkeypatch.setattr(script, "get_settings", lambda: settings)
+    monkeypatch.setattr(script, "get_engine", lambda: "engine")
+    monkeypatch.setattr(
+        script,
+        "run_evaluation_dataset",
+        lambda engine, **kwargs: captured.update(engine=engine, **kwargs)
+        or SimpleNamespace(metrics_summary={}),
+    )
+
+    assert script.main() == 0
+    assert captured["engine"] == "engine"
+    assert captured["settings"] is settings
+    assert captured["dataset_version"] == "release-smoke"
 
 
 def test_evaluation_summary_includes_retrieval_metrics(tmp_path) -> None:

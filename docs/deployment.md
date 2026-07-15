@@ -139,7 +139,7 @@ workflow 会在部署期间让服务器登录 GHCR。默认使用本次 Actions 
 2. 构建后端镜像并推送到 GHCR。
 3. 上传 compose 文件。
 4. 在服务器执行 `docker login ghcr.io`。
-5. 执行 Alembic 迁移和重建检索索引，再用生产评测题实际运行 Dense/BM25/RRF 与 QA/Citation 冒烟；任一项失败即停止，不同步前端、不 reload Nginx。
+5. 执行 Alembic 迁移和重建检索索引，再用 `EVALUATION_DEFAULT_DATASET` 指定的生产评测题实际运行 Dense/BM25/RRF 与 QA/Citation 冒烟；两条门禁使用同一数据集。任一项失败即停止，不同步前端、不 reload Nginx。
 6. 重启 `api` 和 `worker`，确认 `/health/ready` 为 `200`，并以同一评测题调用 `/qa/text`；响应必须带 Citation，trace 必须记录 Dense、BM25、RRF 与 Citation 成功状态。
 7. 以上门禁通过后才同步 `frontend/out/` 到服务器静态目录并 reload 宿主 Nginx，随后持续监控。
 

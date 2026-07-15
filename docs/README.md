@@ -30,6 +30,7 @@ AgroMech 是面向农机资料的多模态 RAG 应用，当前已具备：
 - 真实 PostgreSQL 集成（ParadeDB/`pg_search`）：`166 passed, 1 warning`；BM25 jieba/filter 用例实际执行，未跳过。
 - 前端：`npm run build --prefix frontend` 通过；Vitest 为 `92 passed, 1 failed`。既有失败为 `src/lib/agromech-chat.test.ts > rejects direct chat requests without a token`，该测试与当前允许匿名文本问答的产品配置冲突，不属于本次检索改造。
 - 真实生产 `curated-mvp` 题库未提供，本地无法完成 Recall@20、nDCG@10、P95 与“至少一项提升”的生产验收比较；合成开发基线不能替代该结论。
+- 发布时，检索评测与 QA/Citation 冒烟统一使用 `EVALUATION_DEFAULT_DATASET`，避免两个门禁检查不同题集。
 
 后端和 worker 当前通过：
 

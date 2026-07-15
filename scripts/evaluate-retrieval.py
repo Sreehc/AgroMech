@@ -16,7 +16,7 @@ from agromech_api.evaluation.runner import run_evaluation_dataset  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="评估 AgroMech 检索质量。")
-    parser.add_argument("--dataset", default="curated-mvp")
+    parser.add_argument("--dataset", default=None)
     parser.add_argument("--prompt-version", default="retrieval-v2")
     parser.add_argument("--baseline", type=Path)
     return parser.parse_args()
@@ -46,10 +46,11 @@ def assert_acceptance(metrics: dict[str, float], baseline: dict[str, float]) -> 
 
 def main() -> int:
     args = parse_args()
+    settings = get_settings()
     result = run_evaluation_dataset(
         get_engine(),
-        settings=get_settings(),
-        dataset_version=args.dataset,
+        settings=settings,
+        dataset_version=args.dataset or settings.evaluation_default_dataset,
         prompt_version=args.prompt_version,
     )
     metrics = result.metrics_summary
