@@ -363,9 +363,19 @@ describe("agromech chat adapter", () => {
     }
   });
 
-  it("rejects direct chat requests without a token", async () => {
-    await expect(
-      createAgroMechChatTransport({}).sendMessages({
+  it("allows anonymous text requests without an authorization header", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    globalThis.fetch = (async (input, init) => {
+      requests.push({ input, init });
+      return new Response(
+        JSON.stringify({ answer: "匿名文本回答。", citations: [], trace_id: "trace-anonymous" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    try {
+      await createAgroMechChatTransport({}).sendMessages({
         trigger: "submit-message",
         chatId: "chat-1",
         messageId: undefined,
@@ -377,8 +387,13 @@ describe("agromech chat adapter", () => {
           },
         ],
         abortSignal: undefined,
-      }),
-    ).rejects.toThrow("Authentication required");
+      });
+
+      expect(String(requests[0].input)).toBe("/backend/qa/text");
+      expect(requests[0].init?.headers).toEqual({ "Content-Type": "application/json" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
