@@ -24,10 +24,6 @@ from agromech_api.rag.retrieval.query_understanding import ParsedQuery, parse_qu
 from agromech_api.rag.retrieval.rerank import RerankError
 
 
-# Citation remains intentionally short, while evaluation needs a deeper rank list.
-EVALUATION_RERANK_TRACE_LIMIT = 20
-
-
 class RetrievalTraceConflictError(RuntimeError):
     """Raised when a retrieval round cannot safely mutate the requested trace."""
 
@@ -113,6 +109,7 @@ def hybrid_retrieve(
     bm25_retriever: Bm25Retriever | None = None,
     rerank_provider=None,
     rerank_top_k: int | None = None,
+    fusion_top_k: int | None = None,
     settings=None,
 ) -> dict[str, object]:
     _ = query_rewrite
@@ -128,6 +125,7 @@ def hybrid_retrieve(
         bm25_retriever=bm25_retriever,
         rerank_provider=rerank_provider,
         rerank_top_k=rerank_top_k,
+        fusion_top_k=fusion_top_k,
         degraded_channels=degraded_channels,
         settings=settings,
     )
@@ -159,24 +157,22 @@ def hybrid_retrieve_with_trace(
     filters = filters or build_retrieval_filters(request_filters={}, viewer_user_id=None)
     query_rewrite = dict(query_rewrite or {})
     final_limit = limit or settings.final_evidence_limit
-    trace_rerank_limit = max(final_limit, EVALUATION_RERANK_TRACE_LIMIT)
     trace_id = trace_id or str(uuid4())
     degraded_channels = dict(degraded_channels or {})
     candidates, reranked, fusion_trace, rerank_trace = retrieve_candidates(
         engine,
         query,
         filters=filters,
-        final_limit=trace_rerank_limit,
+        final_limit=final_limit,
         embedding_provider=embedding_provider,
         bm25_retriever=bm25_retriever,
         rerank_provider=rerank_provider,
-        rerank_top_k=max(rerank_top_k or settings.rerank_top_k, trace_rerank_limit),
+        rerank_top_k=rerank_top_k,
         degraded_channels=degraded_channels,
         settings=settings,
     )
     status = "ok" if reranked else "evidence_insufficient"
-    final_candidates = reranked[:final_limit]
-    final_evidence = evidence_payload(final_candidates)
+    final_evidence = evidence_payload(reranked)
     channels = channel_trace(candidates, degraded_channels, settings=settings)
     fusion_trace["retrieval_duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
     write_retrieval_log(
@@ -198,7 +194,7 @@ def hybrid_retrieve_with_trace(
     return {
         "status": status,
         "trace_id": trace_id,
-        "candidates": final_candidates,
+        "candidates": reranked,
         "final_evidence": final_evidence,
     }
 
@@ -213,6 +209,7 @@ def retrieve_candidates(
     bm25_retriever: Bm25Retriever | None = None,
     rerank_provider=None,
     rerank_top_k: int | None = None,
+    fusion_top_k: int | None = None,
     degraded_channels: dict[str, str],
     settings=None,
 ) -> tuple[
@@ -246,7 +243,7 @@ def retrieve_candidates(
             "dense": settings.rrf_dense_weight,
             "bm25": settings.rrf_bm25_weight,
         },
-        limit=settings.fusion_top_k,
+        limit=fusion_top_k or settings.fusion_top_k,
     )
     candidates = hydrate_fused_candidates(engine, fused)
     candidates = enforce_retrieval_filters(engine, candidates, filters=filters)

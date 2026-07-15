@@ -7,10 +7,13 @@ from uuid import uuid4
 
 from sqlalchemy import Engine, delete, insert, select
 
-from agromech_api.core.config import Settings
+from agromech_api.core.config import Settings, get_settings
+from agromech_api.integrations.embeddings.text import build_embedding_provider
 from agromech_api.db.enums import DocumentStatus
 from agromech_api.db.models import documents, evaluation_questions, evaluation_runs, retrieval_logs
-from agromech_api.qa.text import answer_text_question
+from agromech_api.qa.text import answer_text_question, query_with_filters
+from agromech_api.rag.retrieval.filters import RetrievalFilters, build_retrieval_filters
+from agromech_api.rag.retrieval.hybrid import hybrid_retrieve
 
 
 @dataclass(frozen=True)
@@ -165,6 +168,7 @@ def evaluate_question(
     question: EvaluationQuestion,
     settings: Settings | None = None,
 ) -> dict[str, object]:
+    settings = settings or get_settings()
     answer = answer_text_question(
         engine,
         question=question.question,
@@ -201,7 +205,27 @@ def evaluate_question(
     protected = [str(value) for value in rewrite.get("protected_identifiers", [])]
     rewritten_query = str(rewrite.get("query") or question.question)
     protected_preserved = all(value.lower() in rewritten_query.lower() for value in protected)
-    retrieved = retrieved_sources_from_retrieval_log(retrieval_log)
+    request_filters = {
+        key: value
+        for key, value in dict(retrieval_log["filters"] or {}).items()
+        if isinstance(value, str)
+    }
+    rerank_provider = None
+    if settings.rerank_enabled:
+        from agromech_api.rag.retrieval.rerank import build_rerank_provider
+
+        rerank_provider = build_rerank_provider(settings)
+    retrieved = retrieve_evaluation_candidates(
+        engine,
+        query=query_with_filters(rewritten_query, request_filters),
+        filters=build_retrieval_filters(
+            request_filters=request_filters,
+            viewer_user_id=None,
+        ),
+        settings=settings,
+        embedding_provider=build_embedding_provider(settings),
+        rerank_provider=rerank_provider,
+    )
     final_document_ids = {
         str(item["document_id"])
         for item in retrieval_log["final_evidence"] or []
@@ -337,21 +361,29 @@ def source_key(source: dict[str, object]) -> tuple[str, str]:
     return "document", str(source["document_id"])
 
 
-def retrieved_sources_from_retrieval_log(retrieval_log) -> list[dict[str, object]]:
-    candidates = list(retrieval_log["candidates"] or [])
-    candidates_by_chunk = {
-        str(item["chunk_id"]): item for item in candidates if item.get("chunk_id")
-    }
-    rerank_items = sorted(
-        (retrieval_log["rerank"] or {}).get("items", []),
-        key=lambda item: int(item.get("after_rank", 10**9)),
+def retrieve_evaluation_candidates(
+    engine: Engine,
+    *,
+    query: str,
+    filters: RetrievalFilters,
+    settings: Settings,
+    embedding_provider=None,
+    bm25_retriever=None,
+    rerank_provider=None,
+) -> list[dict[str, object]]:
+    result = hybrid_retrieve(
+        engine,
+        query,
+        limit=20,
+        filters=filters,
+        embedding_provider=embedding_provider,
+        bm25_retriever=bm25_retriever,
+        rerank_provider=rerank_provider,
+        rerank_top_k=max(settings.rerank_top_k, 20),
+        fusion_top_k=max(settings.fusion_top_k, 20),
+        settings=settings,
     )
-    retrieved = [
-        candidates_by_chunk[str(item["chunk_id"])]
-        for item in rerank_items
-        if item.get("chunk_id") and str(item["chunk_id"]) in candidates_by_chunk
-    ]
-    return retrieved or candidates
+    return list(result.get("candidates", []))
 
 
 def source_is_relevant(candidate: dict[str, object], expected: dict[str, object]) -> bool:

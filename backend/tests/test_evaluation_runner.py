@@ -14,7 +14,7 @@ from agromech_api.evaluation.runner import (
     model_config_from_settings,
     ndcg_at_k,
     recall_at_k,
-    retrieved_sources_from_retrieval_log,
+    retrieve_evaluation_candidates,
     run_evaluation_dataset,
     run_evaluation,
 )
@@ -79,7 +79,7 @@ def test_ndcg_at_k_does_not_count_the_same_expected_document_twice() -> None:
     assert ndcg_at_k(retrieved, expected, k=10) == 1.0
 
 
-def test_evaluation_reads_relevant_rank_six_without_expanding_final_evidence(tmp_path) -> None:
+def test_evaluation_reads_rank_six_when_normal_fusion_limit_is_five(tmp_path) -> None:
     class TopTwentyBm25Retriever:
         def search(self, _engine, _query, *, filters, limit):
             _ = filters
@@ -122,8 +122,8 @@ def test_evaluation_reads_relevant_rank_six_without_expanding_final_evidence(tmp
         rerank_enabled=False,
         bm25_top_k=20,
         dense_top_k=20,
-        fusion_top_k=20,
-        rerank_top_k=20,
+        fusion_top_k=5,
+        rerank_top_k=5,
         final_evidence_limit=5,
     )
 
@@ -142,9 +142,17 @@ def test_evaluation_reads_relevant_rank_six_without_expanding_final_evidence(tmp
         retrieval_log = connection.execute(
             select(retrieval_logs).where(retrieval_logs.c.trace_id == "trace-evaluation-top-twenty")
         ).mappings().one()
-    retrieved = retrieved_sources_from_retrieval_log(retrieval_log)
+    retrieved = retrieve_evaluation_candidates(
+        engine,
+        query="evaluation ranking",
+        filters=build_retrieval_filters(request_filters={}, viewer_user_id=None),
+        settings=settings,
+        embedding_provider=FailingEmbeddingProvider(),
+        bm25_retriever=TopTwentyBm25Retriever(),
+    )
 
-    assert len(retrieval_log["rerank"]["items"]) == 20
+    assert len(retrieval_log["rerank"]["items"]) == settings.fusion_top_k
+    assert len(retrieved) == 20
     assert recall_at_k(retrieved, [{"chunk_id": "chunk-evaluation-06", "document_id": "doc-m7040"}], k=20) == 1.0
     assert ndcg_at_k(retrieved, [{"chunk_id": "chunk-evaluation-06", "document_id": "doc-m7040"}], k=10) > 0.0
 
