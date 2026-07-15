@@ -40,7 +40,12 @@ def main() -> int:
         include_visual=args.include_visual,
         dry_run=args.dry_run,
     )
-    print(f"selected={summary.selected} succeeded={summary.succeeded} failed={summary.failed}")
+    print(
+        f"selected={summary.selected} succeeded={summary.succeeded} failed={summary.failed} "
+        f"search_rows_rebuilt={summary.search_rows_rebuilt} "
+        f"vector_rows_rebuilt={summary.vector_rows_rebuilt} "
+        f"bm25_index={summary.bm25_index}"
+    )
     for document_id, error in summary.failures:
         print(f"failure document_id={document_id} error={error}")
     return 1 if summary.failed else 0

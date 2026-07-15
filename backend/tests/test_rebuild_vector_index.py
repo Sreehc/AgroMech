@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, update
 from agromech_api.db.enums import DocumentStatus
 from agromech_api.db.models import documents, metadata
 from agromech_api.core.config import Settings
+from agromech_api.rag.retrieval.indexing import IndexResult
 from scripts.rebuild_vector_index import rebuild_vector_index, select_document_ids
 
 
@@ -91,6 +92,8 @@ def test_rebuild_vector_index_dry_run_returns_selected_count_without_indexing(tm
     assert summary.succeeded == 0
     assert summary.failed == 0
     assert summary.failures == []
+    assert summary.search_rows_rebuilt == 0
+    assert summary.vector_rows_rebuilt == 0
     assert RecordingIndexer.calls == []
     assert RecordingIndexer.init_kwargs == []
 
@@ -173,3 +176,22 @@ def test_rebuild_vector_index_uses_configured_embedding_providers(tmp_path, monk
         {"embedding_provider": text_provider},
         {"embedding_provider": visual_provider},
     ]
+
+
+def test_rebuild_summary_reports_search_vector_rows_and_bm25_index(tmp_path) -> None:
+    class CountingIndexer(RecordingIndexer):
+        def index_document(self, document_id: str):
+            super().index_document(document_id)
+            return IndexResult(chunk_count=3)
+
+    engine = make_engine(tmp_path)
+    seed_document(engine, document_id="doc-a", status=DocumentStatus.INDEXED.value)
+    summary = rebuild_vector_index(
+        engine,
+        include_visual=False,
+        search_indexer_factory=CountingIndexer,
+    )
+
+    assert summary.search_rows_rebuilt == 3
+    assert summary.vector_rows_rebuilt == 3
+    assert summary.bm25_index == "ix_chunk_search_index_bm25"

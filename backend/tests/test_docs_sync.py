@@ -60,3 +60,22 @@ def test_current_docs_do_not_describe_legacy_vector_store_as_active() -> None:
         text = Path(path).read_text(encoding="utf-8")
         assert ("Z" + "vec") not in text, path
         assert ("z" + "vec") not in text, path
+
+
+def test_docs_describe_dense_bm25_rrf_pipeline_and_pg_search() -> None:
+    root = Path(__file__).parents[2]
+    tech = (root / "docs/tech-design.md").read_text(encoding="utf-8")
+    database = (root / "docs/database-design.md").read_text(encoding="utf-8")
+    deployment = (root / "docs/deployment.md").read_text(encoding="utf-8")
+    prd = (root / "docs/prd.md").read_text(encoding="utf-8")
+    api = (root / "docs/api-spec.md").read_text(encoding="utf-8")
+
+    assert "Dense + BM25" in tech
+    assert "RRF" in tech
+    assert "pg_search" in database
+    assert "ix_chunk_search_index_bm25" in database
+    assert "FROM pg_extension" in deployment
+    assert "/health/ready" in deployment
+    assert "Dense + BM25" in prd
+    assert "pg_search" in api
+    assert "/health/ready" in api

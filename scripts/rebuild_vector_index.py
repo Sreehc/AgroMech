@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, text
 
 from agromech_api.core.config import Settings, get_settings
 from agromech_api.db.enums import DocumentStatus
@@ -18,6 +18,9 @@ class RebuildSummary:
     succeeded: int
     failed: int
     failures: list[tuple[str, str]]
+    search_rows_rebuilt: int = 0
+    vector_rows_rebuilt: int = 0
+    bm25_index: str = "ix_chunk_search_index_bm25"
 
 
 def select_document_ids(engine: Engine, document_id: str | None = None) -> list[str]:
@@ -62,9 +65,14 @@ def rebuild_vector_index(
 
     succeeded = 0
     failures: list[tuple[str, str]] = []
+    search_rows_rebuilt = 0
+    vector_rows_rebuilt = 0
     for selected_document_id in document_ids:
         try:
-            search_indexer.index_document(selected_document_id)
+            index_result = search_indexer.index_document(selected_document_id)
+            if index_result is not None:
+                search_rows_rebuilt += index_result.chunk_count
+                vector_rows_rebuilt += index_result.chunk_count
             if visual_indexer is not None:
                 visual_indexer.index_document(selected_document_id)
         except Exception as exc:
@@ -72,9 +80,19 @@ def rebuild_vector_index(
             continue
         succeeded += 1
 
+    if engine.dialect.name == "postgresql":
+        with engine.connect() as connection:
+            index_present = connection.execute(
+                text("SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'ix_chunk_search_index_bm25')")
+            ).scalar_one()
+        if not index_present:
+            raise RuntimeError("BM25 index ix_chunk_search_index_bm25 is missing")
+
     return RebuildSummary(
         selected=len(document_ids),
         succeeded=succeeded,
         failed=len(failures),
         failures=failures,
+        search_rows_rebuilt=search_rows_rebuilt,
+        vector_rows_rebuilt=vector_rows_rebuilt,
     )

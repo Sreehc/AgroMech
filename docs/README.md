@@ -18,10 +18,10 @@ AgroMech 是面向农机资料的多模态 RAG 应用，当前已具备：
 
 - 登录和角色权限：用户存入 Postgres `users` 表，支持 `admin`、`maintainer`、`user`、`evaluator`，登录写入 `auth_audit_logs`。
 - 资料库：上传、筛选、详情、预览、重新处理、删除。
-- Worker 导入链路：文本、表格、PDF 页面、图片、OCR、视觉观察、LLM 元数据回填、实体、全文索引和 pgvector 向量索引。
+- Worker 导入链路：文本、表格、PDF 页面、图片、OCR、视觉观察、LLM 元数据回填、实体、`pg_search` BM25 索引和 pgvector 向量索引。
 - RabbitMQ 上传分发：API 创建 DB task 后可发布消息，worker 可常驻消费；DB `ingest_tasks` 仍是权威状态。
 - 文本和图片问答：`/qa/text`、`/qa/image` 均进入 Agent Controller，返回 citations、trace 和 agent_trace。
-- 检索链路：关键词、结构化、PostgreSQL + pgvector 向量、Vision RAG、rerank 和降级 trace；Graph RAG 暂不在主链路启用。
+- 检索链路：Query Rewrite 后并行 Dense + BM25，以 RRF 融合、Rerank 重排并以 Citation 输出最终证据；Graph RAG 明确不在主链路启用。
 - 前端：assistant-ui 问答工作台、资料库、上传队列、证据面板、文档预览、会话历史。
 
 ## 当前验证状态
@@ -68,3 +68,5 @@ npm run dev --prefix frontend
 ```
 
 `.venv/bin/python -m agromech_worker.main` 是一次性 DB 队列调度入口；`consume_forever()` 是 RabbitMQ 常驻消费入口。
+
+重建命令会重新写入 `chunk_search_index` 与 `chunk_vector_embeddings`，并在 PostgreSQL 上校验 `ix_chunk_search_index_bm25`。上线前还应检查 `/health/ready`。

@@ -51,7 +51,20 @@ http://127.0.0.1:8000
 
 ### `GET /health/dependencies`
 
-返回依赖状态，当前覆盖 `postgres`、可选 `neo4j`、`file_storage`、`pgvector`、`bailian`。任一依赖不可用时整体为 `degraded`。
+返回依赖状态，当前覆盖 `postgres`、可选 `neo4j`、`file_storage`、`pgvector`、`pg_search`、`bailian`。`pg_search` 检查会同时验证当前 schema 中 `chunk_search_index` 的 `ix_chunk_search_index_bm25` 是否使用 `bm25` 访问方法；`ok` 与 `not_applicable` 都不会使整体降级。
+
+### `GET /health/ready`
+
+发布就绪检查。所有必需依赖为 `ok`、或本地非 PostgreSQL 环境的依赖为 `not_applicable` 时返回 `200`：
+
+```json
+{
+  "status": "ok",
+  "dependencies": [{"name": "pg_search", "status": "ok", "target": "postgres:extension/pg_search"}]
+}
+```
+
+任何必需依赖不可用时返回 `503` 与 `status: "unavailable"`。部署必须在应用切换前检查此接口。
 
 ## 3. Auth
 
@@ -331,8 +344,10 @@ http://127.0.0.1:8000
 
 完整响应额外包含：
 
+- `query_rewrite`
+- `fusion`
 - `candidates`
 - `rerank`
 - `final_evidence`
 
-敏感字段、内部路径、异常栈会脱敏。
+其中 `query_rewrite` 展示最终 Query Rewrite 的 provider 和回退状态，`fusion` 展示 Dense + BM25 的 RRF 摘要。敏感字段、内部路径、异常栈会脱敏；普通角色不会得到候选内容或 Citation 审计细节。

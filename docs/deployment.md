@@ -17,7 +17,7 @@
   _next/
 ```
 
-`/opt/agromech/.env` 可参考 `deploy/env.prod.example`，必须填真实的 `DATABASE_URL`、`RABBITMQ_URL`、`AUTH_TOKEN_SECRET`、百炼配置和存储配置。Postgres 容器必须安装 pgvector；Alembic 迁移会在目标库执行 `CREATE EXTENSION IF NOT EXISTS vector`。如果使用 Docker PostgreSQL，镜像需要预装 pgvector，例如基于官方 Postgres 自建镜像或使用 pgvector-enabled 镜像。
+`/opt/agromech/.env` 可参考 `deploy/env.prod.example`，必须填真实的 `DATABASE_URL`、`RABBITMQ_URL`、`AUTH_TOKEN_SECRET`、百炼配置和存储配置。Postgres 容器必须同时安装 pgvector 和 ParadeDB `pg_search`；Alembic 会创建 `vector`、`pg_search` 扩展及 `ix_chunk_search_index_bm25`。使用 Docker PostgreSQL 时，镜像必须提供这两项扩展。
 
 ## 2. Nginx
 
@@ -49,7 +49,20 @@ cp deploy/env.prod.example /opt/agromech/.env
 cp deploy/docker-compose.prod.yml /opt/agromech/docker-compose.yml
 ```
 
-编辑 `/opt/agromech/.env` 后启动：
+编辑 `/opt/agromech/.env` 后，先记录当前检索评估基线并完成数据库备份。升级前必须确认所用 PostgreSQL 具备 `vector` 与 `pg_search`：
+
+```sql
+SELECT extname
+FROM pg_extension
+WHERE extname IN ('vector', 'pg_search')
+ORDER BY extname;
+
+SELECT indexname
+FROM pg_indexes
+WHERE indexname = 'ix_chunk_search_index_bm25';
+```
+
+启动与迁移：
 
 ```bash
 cd /opt/agromech
@@ -58,13 +71,23 @@ docker compose run --rm api python -m alembic upgrade head
 docker compose up -d api worker
 ```
 
-pgvector 迁移完成后，重建既有文档向量：
+迁移完成后，重建既有文档的 BM25 搜索行和 Dense 向量：
 
 ```bash
 docker compose run --rm api python scripts/rebuild-vector-index.py
 ```
 
-该命令会使用当前 `.env` 中配置的文本和视觉 embedding provider 重建 `chunk_vector_embeddings` 与 `visual_page_vector_embeddings`，不会迁移旧向量文件。
+该命令会使用当前 `.env` 中配置的文本 embedding provider 重建 `chunk_search_index` 与 `chunk_vector_embeddings`，并在 PostgreSQL 上确认 `ix_chunk_search_index_bm25` 存在；不会迁移旧向量文件。
+
+发布顺序必须为：
+
+```text
+record baseline -> backup -> install extensions -> alembic upgrade
+-> rebuild indexes -> Dense/BM25/RRF smoke test -> deploy app
+-> /health/ready -> QA/Citation smoke test -> monitor
+```
+
+任何一步失败都不得切换应用版本。`/health/ready` 返回 `503` 时，保留当前服务并排查 `vector`、`pg_search` 或 BM25 索引。
 
 创建首个管理员：
 
@@ -94,7 +117,7 @@ Workflow：`.github/workflows/deploy.yml`。
 
 workflow 会在部署期间让服务器登录 GHCR。默认使用本次 Actions job 的 `github.token`；只有需要改用固定 PAT 或专用机器账号时，才需要配置 `GHCR_USERNAME`/`GHCR_TOKEN`。
 
-当前分支的 frontend Vitest 和静态构建仍有既有失败；在修复 `anonymous-chat-store.test.ts`、`agromech-chat.test.ts` 和 assistant-ui `ThreadHistoryAdapter.withFormat` 前，包含 frontend build 的自动部署检查不会完整通过。
+前端测试的既有基线仅剩 `src/lib/agromech-chat.test.ts`：该测试期望匿名文本问答被拒绝，而当前产品配置明确允许匿名文本问答。该失败与本次检索改造无关，不应通过回退匿名问答行为来绕过。
 
 推送 `main` 或手动触发 workflow 后会执行：
 
@@ -103,9 +126,9 @@ workflow 会在部署期间让服务器登录 GHCR。默认使用本次 Actions 
 3. 同步 `frontend/out/` 到服务器静态目录。
 4. 上传 compose 文件。
 5. 在服务器执行 `docker login ghcr.io`。
-6. 执行 Alembic 迁移。
-7. 重启 `api` 和 `worker`。
-8. reload 宿主 Nginx。
+6. 执行 Alembic 迁移、重建检索索引，并完成 Dense/BM25/RRF 冒烟检查。
+7. 重启 `api` 和 `worker`，确认 `/health/ready` 为 `200`。
+8. 完成 QA/Citation 冒烟检查后 reload 宿主 Nginx，并持续监控。
 
 ## 5. 静态前端约束
 
@@ -121,8 +144,9 @@ workflow 会在部署期间让服务器登录 GHCR。默认使用本次 Actions 
 ```bash
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/health/dependencies
+curl -i http://127.0.0.1:8000/health/ready
 docker logs agromech-api --tail=100
 docker logs agromech-worker --tail=100
 ```
 
-如果前端登录失败，先检查浏览器请求的 `/backend/auth/login` 是否被 Nginx 正确反代。
+`/health/ready` 必须返回 `200`；其中 `pgvector` 与 `pg_search` 应为 `ok`，并确认 `pg_search` 的 target 对应当前 schema 的 `ix_chunk_search_index_bm25`。如果前端登录失败，先检查浏览器请求的 `/backend/auth/login` 是否被 Nginx 正确反代。
