@@ -131,11 +131,11 @@ docker compose --project-name agromech up -d api worker
 ```text
 record baseline -> backup -> install extensions -> alembic upgrade
 -> rebuild indexes -> evaluation gate -> start inactive candidate slot
--> /health/ready and QA/Citation smoke -> atomically switch Nginx upstream
--> stop previous slot -> monitor
+-> /health/ready and QA/Citation smoke -> worker dependency preflight
+-> atomically switch Nginx upstream -> replace worker -> stop previous API -> monitor
 ```
 
-任何数据库迁移、重建、基线评测、`/health/ready`、QA/Citation 冒烟或候选 worker 启动失败，都不得切换应用版本。`/health/ready` 返回 `503` 时，保留当前服务并排查 `vector`、`pg_search` 或 BM25 索引。
+候选槽位在切流前只执行 Worker 依赖预检：连接数据库、连接 RabbitMQ 并声明目标队列，但不注册 RabbitMQ consumer，因此不会与旧 Worker 竞争真实任务。任何数据库迁移、重建、基线评测、`/health/ready`、QA/Citation 冒烟或该预检失败，都不得切换应用版本。`/health/ready` 返回 `503` 时，保留当前服务并排查 `vector`、`pg_search` 或 BM25 索引。Nginx 切换成功后，workflow 会先停止旧 Worker，再启动候选 Worker；若候选 Worker 启动失败，会恢复旧 upstream 并重启旧 Worker。
 
 创建首个管理员：
 
@@ -176,7 +176,7 @@ workflow 会在部署期间让服务器登录 GHCR。默认使用本次 Actions 
 4. 在服务器执行 `docker login ghcr.io`。
 5. 读取 Nginx 当前 upstream（`blue:8000` 或 `green:8001`），在另一个 Compose project 和端口启动候选镜像。先在候选容器中执行 Alembic、重建索引，并要求 `RETRIEVAL_BASELINE_PATH` 指向可读的版本化真实生产基线，运行 `scripts/evaluate-retrieval.py --baseline "$RETRIEVAL_BASELINE_PATH"`。
 6. 仅访问候选端口执行 `/health/ready` 和同一评测题的 `/qa/text`；响应必须带 Citation，trace 必须记录 Dense、BM25、RRF 与 Citation 成功状态。任何门禁失败都会停止在候选槽位，Nginx 仍代理旧版本。
-7. 候选 API 和 worker 都通过后，workflow 先备份现有 Nginx 站点/upstream 文件，再以 `nginx -t` 和 reload 原子切换 upstream；切换失败自动恢复备份。切换成功才停止旧 Compose project、同步 `frontend/out/`，随后持续监控。
+7. 候选 API 的验证通过后，workflow 在候选 Worker 容器中完成数据库/RabbitMQ 连通性与队列声明预检，不注册 consumer。随后备份现有 Nginx 站点/upstream 文件，再以 `nginx -t` 和 reload 原子切换 upstream；切换失败自动恢复备份。切换成功后才停止旧 Worker 并启动候选 Worker，候选 Worker 启动失败会恢复 upstream 并启动旧 Worker；最后停止旧 API、同步 `frontend/out/`，随后持续监控。
 
 ## 5. 静态前端约束
 

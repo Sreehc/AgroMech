@@ -2,7 +2,8 @@ from sqlalchemy import create_engine, insert, select
 
 from agromech_api.db.enums import DocumentStatus, IngestTaskStatus, TaskType
 from agromech_api.db.models import documents, ingest_tasks, metadata
-from agromech_worker.main import run_once
+from agromech_api.core.config import Settings
+from agromech_worker.main import preflight_dependencies, run_once
 
 
 def test_worker_run_once_processes_next_queued_task(tmp_path) -> None:
@@ -40,3 +41,17 @@ def test_worker_run_once_processes_next_queued_task(tmp_path) -> None:
         task_status = connection.execute(select(ingest_tasks.c.status)).scalar_one()
     assert status == "indexed"
     assert task_status == "succeeded"
+
+
+def test_worker_preflight_checks_database_then_declares_queue_without_consuming(monkeypatch, tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'preflight.db'}")
+    observed: list[Settings] = []
+    settings = Settings(_env_file=None, rabbitmq_queue="candidate-queue")
+    monkeypatch.setattr(
+        "agromech_worker.rabbitmq.preflight_queue",
+        lambda active_settings: observed.append(active_settings),
+    )
+
+    preflight_dependencies(settings=settings, engine=engine)
+
+    assert observed == [settings]

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from agromech_worker.rabbitmq import handle_task_message
+import sys
+from types import SimpleNamespace
+
+from agromech_api.core.config import Settings
+from agromech_worker.rabbitmq import handle_task_message, preflight_queue
 
 
 class AckRecorder:
@@ -46,3 +50,39 @@ def test_handle_task_message_rejects_malformed_json_without_requeue() -> None:
 
     assert channel.acked == []
     assert channel.nacked == [(7, False)]
+
+
+def test_preflight_queue_declares_queue_without_registering_a_consumer(monkeypatch) -> None:
+    events: list[tuple[str, object]] = []
+
+    class Channel:
+        def queue_declare(self, *, queue: str, durable: bool) -> None:
+            events.append(("queue_declare", (queue, durable)))
+
+        def basic_consume(self, **_kwargs) -> None:
+            raise AssertionError("preflight must not register a RabbitMQ consumer")
+
+    class Connection:
+        def channel(self) -> Channel:
+            events.append(("channel", None))
+            return Channel()
+
+        def close(self) -> None:
+            events.append(("close", None))
+
+    pika = SimpleNamespace(
+        URLParameters=lambda url: events.append(("url", url)) or url,
+        BlockingConnection=lambda parameters: events.append(("connect", parameters)) or Connection(),
+    )
+    monkeypatch.setitem(sys.modules, "pika", pika)
+    settings = Settings(_env_file=None, rabbitmq_url="amqp://queue", rabbitmq_queue="agromech.ingest")
+
+    preflight_queue(settings)
+
+    assert events == [
+        ("url", "amqp://queue"),
+        ("connect", "amqp://queue"),
+        ("channel", None),
+        ("queue_declare", ("agromech.ingest", True)),
+        ("close", None),
+    ]

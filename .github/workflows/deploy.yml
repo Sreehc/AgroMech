@@ -235,8 +235,9 @@ jobs:
           if trace["citation_status"] != "completed" or channels.get("citation", {}).get("status") != "ok":
               raise SystemExit("retrieval smoke Citation trace is not ready")
           '
-          "${candidate_compose[@]}" up -d worker
-          "${candidate_compose[@]}" ps --status running --services | grep -Fx worker
+          "${candidate_compose[@]}" run --rm worker python -c '
+          from agromech_worker.main import preflight_dependencies; preflight_dependencies()
+          '
           upstream_tmp="$(mktemp)"
           site_backup="$(mktemp)"
           upstream_backup="$(mktemp)"
@@ -255,11 +256,23 @@ jobs:
             echo "Nginx cutover failed; restored previous backend upstream" >&2
             exit 1
           fi
+          if [ "$active_project" != "$candidate_project" ]; then
+            docker compose --project-name "$active_project" stop worker || true
+          fi
+          if ! "${candidate_compose[@]}" up -d worker || \
+             ! "${candidate_compose[@]}" ps --status running --services | grep -Fx worker; then
+            rollback_nginx || true
+            if [ "$active_project" != "$candidate_project" ]; then
+              docker compose --project-name "$active_project" up -d worker || true
+            fi
+            echo "Candidate worker did not start; restored previous backend upstream" >&2
+            exit 1
+          fi
           candidate_promoted=true
           printf '%s\n' "$candidate_project" > "${active_project_file}.tmp"
           mv "${active_project_file}.tmp" "$active_project_file"
           if [ "$active_project" != "$candidate_project" ]; then
-            docker compose --project-name "$active_project" stop api worker || true
+            docker compose --project-name "$active_project" stop api || true
           fi
           EOF
 

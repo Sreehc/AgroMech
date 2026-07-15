@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 from sqlalchemy import Engine
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from agromech_api.core.config import get_settings
 from agromech_api.core.database import get_engine
@@ -26,6 +26,17 @@ SKIP_METADATA_EXTRACTION = object()
 
 def health_status() -> dict[str, str]:
     return {"status": "ok", "service": "worker"}
+
+
+def preflight_dependencies(*, settings=None, engine: Engine | None = None) -> None:
+    """Check the Worker dependencies without registering a queue consumer."""
+    from agromech_worker.rabbitmq import preflight_queue
+
+    active_settings = settings or get_settings()
+    active_engine = engine or get_engine()
+    with active_engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+    preflight_queue(active_settings)
 
 
 def process_ingest_task(

@@ -11,6 +11,19 @@ from agromech_api.core.config import Settings
 LOGGER = logging.getLogger("agromech.worker.rabbitmq")
 
 
+def preflight_queue(settings: Settings) -> None:
+    """Verify RabbitMQ connectivity and queue topology without consuming tasks."""
+    import pika
+
+    parameters = pika.URLParameters(settings.rabbitmq_url)
+    connection = pika.BlockingConnection(parameters)
+    try:
+        channel = connection.channel()
+        channel.queue_declare(queue=settings.rabbitmq_queue, durable=True)
+    finally:
+        connection.close()
+
+
 def handle_task_message(channel, method, body: bytes, runner: Callable[[], str]) -> None:
     try:
         json.loads(body.decode("utf-8"))
