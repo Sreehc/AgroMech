@@ -47,9 +47,14 @@ def record_citation_trace(
 ) -> None:
     with engine.begin() as connection:
         row = connection.execute(
-            select(retrieval_logs.c.channels).where(retrieval_logs.c.trace_id == trace_id)
+            select(
+                retrieval_logs.c.id,
+                retrieval_logs.c.channels,
+                retrieval_logs.c.retrieval_round,
+                retrieval_logs.c.citation_status,
+            ).where(retrieval_logs.c.trace_id == trace_id)
         ).mappings().one_or_none()
-        if row is None:
+        if row is None or row["citation_status"] != "pending":
             return
         channels = dict(row["channels"] or {})
         channels["citation"] = {
@@ -60,8 +65,10 @@ def record_citation_trace(
         }
         connection.execute(
             update(retrieval_logs)
-            .where(retrieval_logs.c.trace_id == trace_id)
-            .values(channels=channels)
+            .where(retrieval_logs.c.id == row["id"])
+            .where(retrieval_logs.c.retrieval_round == row["retrieval_round"])
+            .where(retrieval_logs.c.citation_status == "pending")
+            .values(channels=channels, citation_status="completed")
         )
 
 

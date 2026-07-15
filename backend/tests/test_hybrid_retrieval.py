@@ -14,6 +14,7 @@ from agromech_api.rag.retrieval.filters import build_retrieval_filters
 from agromech_api.rag.retrieval.fusion import RankedHit
 from agromech_api.rag.retrieval.rerank import RerankError
 from agromech_api.rag.retrieval.indexing import SearchIndexer
+from agromech_api.rag.traces import record_citation_trace
 
 
 def create_test_engine(tmp_path):
@@ -314,6 +315,65 @@ def test_supplemental_round_rejects_completed_citation_trace(tmp_path) -> None:
         )
 
     assert retrieval_log_snapshot(engine, "trace-completed-citation") == before
+
+
+def test_supplemental_round_does_not_overwrite_citation_written_before_cas_update(tmp_path) -> None:
+    engine = create_test_engine(tmp_path)
+    seed_retrieval_corpus(engine)
+    trace_id = "trace-citation-before-round-two-cas"
+    hybrid_retrieve_with_trace(
+        engine,
+        "orchard sprayer calibration nozzle",
+        trace_id=trace_id,
+        logged_query="original question",
+        retrieval_round=1,
+    )
+    before = retrieval_log_snapshot(engine, trace_id)
+    citation_written = False
+
+    def write_citation_before_round_two_update(_conn, _cursor, statement, _parameters, _context, _executemany):
+        nonlocal citation_written
+        if citation_written or not statement.lstrip().upper().startswith("UPDATE RETRIEVAL_LOGS"):
+            return
+        citation_written = True
+        record_citation_trace(
+            engine,
+            trace_id,
+            [{"chunk_id": "chunk-m7040", "document_id": "doc-m7040"}],
+        )
+
+    event.listen(engine, "before_cursor_execute", write_citation_before_round_two_update)
+    try:
+        with pytest.raises(RetrievalTraceConflictError):
+            hybrid_retrieve_with_trace(
+                engine,
+                "M7040 E01 hydraulic pump repair",
+                trace_id=trace_id,
+                logged_query="original question",
+                retrieval_round=2,
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", write_citation_before_round_two_update)
+
+    assert citation_written is True
+    with engine.connect() as connection:
+        citation_status = connection.execute(
+            select(retrieval_logs.c.citation_status).where(retrieval_logs.c.trace_id == trace_id)
+        ).scalar_one()
+    assert citation_status == "completed"
+    after = retrieval_log_snapshot(engine, trace_id)
+    assert after == {
+        **before,
+        "channels": {
+            **before["channels"],
+            "citation": {
+                "status": "ok",
+                "count": 1,
+                "chunk_ids": ["chunk-m7040"],
+                "asset_ids": [],
+            },
+        },
+    }
 
 
 def test_supplemental_round_rejects_a_second_round_two_and_preserves_final_audit(

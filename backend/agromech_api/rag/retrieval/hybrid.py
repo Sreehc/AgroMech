@@ -702,6 +702,8 @@ def write_retrieval_log(
                         model_config=model_config,
                         query_rewrite=rewrite_payload,
                         fusion=fusion_payload,
+                        retrieval_round=1,
+                        citation_status="pending",
                         candidates=candidates,
                         rerank=rerank,
                         final_evidence=final_evidence,
@@ -741,19 +743,14 @@ def write_retrieval_log(
         result = connection.execute(
             update(retrieval_logs)
             .where(retrieval_logs.c.id == existing["id"])
-            .where(
-                retrieval_logs.c.query_rewrite["final"]["retrieval_round"].as_integer()
-                == 1
-            )
-            .where(
-                retrieval_logs.c.fusion["final"]["retrieval_round"].as_integer()
-                == 1
-            )
+            .where(retrieval_logs.c.retrieval_round == 1)
+            .where(retrieval_logs.c.citation_status == "pending")
             .values(
                 channels=channels,
                 model_config=model_config,
                 query_rewrite=rewrite_payload,
                 fusion=fusion_payload,
+                retrieval_round=2,
                 candidates=candidates,
                 rerank=rerank,
                 final_evidence=final_evidence,

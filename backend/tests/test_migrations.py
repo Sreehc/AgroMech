@@ -116,7 +116,9 @@ def test_alembic_migration_can_run_repeatedly(tmp_path: Path) -> None:
     assert {"schema_version", "is_active", "valid_to"}.issubset(graph_edge_columns)
     assert "document_version" in document_columns
     assert "model_config" in retrieval_log_columns
-    assert {"query_rewrite", "fusion"}.issubset(retrieval_log_columns)
+    assert {"query_rewrite", "fusion", "retrieval_round", "citation_status"}.issubset(
+        retrieval_log_columns
+    )
 
     document_indexes = {index["name"] for index in inspector.get_indexes("documents")}
     assert "ix_documents_retrieval_state" in document_indexes
