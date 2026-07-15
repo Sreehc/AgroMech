@@ -108,12 +108,10 @@ curl -i http://127.0.0.1:8000/health/ready
 
 该命令重建 `chunk_search_index` 与 `chunk_vector_embeddings`，输出重建行数，并在 PostgreSQL 上确认 BM25 索引存在。生产升级会在未承接流量的 blue/green 候选槽位完成记录基线、备份、安装扩展、迁移、重建索引、评测、`/health/ready` 与 QA/Citation 冒烟；全部通过后才原子切换 Nginx upstream 并停止旧槽位。详情见 [部署文档](docs/deployment.md)。
 
-## 测试与验收
+## 构建与验收
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -p no:cacheprovider backend/tests worker/tests -q
-AGROMECH_TEST_POSTGRES_URL="$AGROMECH_TEST_POSTGRES_URL" scripts/test-integration.sh
-npm run test --prefix frontend
+npm run lint --prefix frontend
 npm run build --prefix frontend
 ```
 
