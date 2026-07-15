@@ -87,6 +87,9 @@ def test_deployment_release_gate_rebuilds_and_smoke_tests_before_static_cutover(
 
     assert "scripts/rebuild-vector-index.py" in workflow
     assert "scripts/evaluate-retrieval.py" in workflow
+    assert 'RETRIEVAL_BASELINE_PATH:?RETRIEVAL_BASELINE_PATH must be configured' in workflow
+    assert 'test -r "$RETRIEVAL_BASELINE_PATH"' in workflow
+    assert '--baseline "$RETRIEVAL_BASELINE_PATH"' in workflow
     assert "curl --fail --retry" in workflow
     assert "/health/ready" in workflow
     assert "/qa/text" in workflow
@@ -95,6 +98,18 @@ def test_deployment_release_gate_rebuilds_and_smoke_tests_before_static_cutover(
     assert workflow.index("scripts/rebuild-vector-index.py") < workflow.index("Upload frontend static files")
     assert workflow.index("scripts/evaluate-retrieval.py") < workflow.index("Upload frontend static files")
     assert workflow.index("/health/ready") < workflow.index("sudo systemctl reload nginx")
+
+
+def test_production_baseline_is_required_and_documented() -> None:
+    root = Path(__file__).parents[2]
+    deployment = (root / "docs/deployment.md").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    production_env = (root / "deploy/env.prod.example").read_text(encoding="utf-8")
+
+    assert "RETRIEVAL_BASELINE_PATH=" in production_env
+    assert "RETRIEVAL_BASELINE_PATH" in deployment
+    assert "--baseline \"$RETRIEVAL_BASELINE_PATH\"" in deployment
+    assert "RETRIEVAL_BASELINE_PATH" in readme
 
 
 def test_first_deployment_checks_extensions_before_migration_and_bm25_after_rebuild() -> None:

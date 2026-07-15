@@ -116,7 +116,14 @@ jobs:
           docker compose pull
           docker compose run --rm api python -m alembic upgrade head
           docker compose run --rm api python scripts/rebuild-vector-index.py
-          docker compose run --rm api python scripts/evaluate-retrieval.py
+          docker compose run --rm api sh -ceu '
+            : "${RETRIEVAL_BASELINE_PATH:?RETRIEVAL_BASELINE_PATH must be configured for release evaluation}"
+            test -r "$RETRIEVAL_BASELINE_PATH" || {
+              echo "Retrieval baseline is not readable: $RETRIEVAL_BASELINE_PATH" >&2
+              exit 1
+            }
+            exec python scripts/evaluate-retrieval.py --baseline "$RETRIEVAL_BASELINE_PATH"
+          '
           docker compose up -d api worker
           curl --fail --retry 12 --retry-delay 2 --retry-connrefused \
             http://127.0.0.1:8000/health/ready

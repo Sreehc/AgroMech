@@ -17,7 +17,7 @@
   _next/
 ```
 
-`/opt/agromech/.env` 可参考 `deploy/env.prod.example`，必须填真实的 `DATABASE_URL`、`RABBITMQ_URL`、`AUTH_TOKEN_SECRET`、百炼配置和存储配置。Postgres 容器必须同时安装 pgvector 和 ParadeDB `pg_search`；Alembic 会创建 `vector`、`pg_search` 扩展及 `ix_chunk_search_index_bm25`。使用 Docker PostgreSQL 时，镜像必须提供这两项扩展。
+`/opt/agromech/.env` 可参考 `deploy/env.prod.example`，必须填真实的 `DATABASE_URL`、`RABBITMQ_URL`、`AUTH_TOKEN_SECRET`、百炼配置、存储配置和 `RETRIEVAL_BASELINE_PATH`。Postgres 容器必须同时安装 pgvector 和 ParadeDB `pg_search`；Alembic 会创建 `vector`、`pg_search` 扩展及 `ix_chunk_search_index_bm25`。使用 Docker PostgreSQL 时，镜像必须提供这两项扩展。
 
 ## 2. Nginx
 
@@ -50,6 +50,30 @@ cp deploy/docker-compose.prod.yml /opt/agromech/docker-compose.yml
 ```
 
 编辑 `/opt/agromech/.env` 后，先记录当前检索评估基线并完成数据库备份。
+
+### 发布评测基线
+
+`RETRIEVAL_BASELINE_PATH` 是生产发布的必填配置，必须指向容器内可读、版本化的基线 JSON。`docker-compose.prod.yml` 会将宿主 `/opt/agromech/data` 挂载为容器 `/app/.agromech-data`，因此推荐在 `.env` 中使用如下路径，并在宿主保留同名文件：
+
+```dotenv
+RETRIEVAL_BASELINE_PATH=/app/.agromech-data/release-evidence/curated-mvp-2026-07.json
+```
+
+基线必须来自上一版已验收的真实 `curated-mvp` 运行结果，包含 `recall_at_20`、`ndcg_at_10` 和 `retrieval_p95_ms`。不要将生产数据或环境测量结果提交到 Git、写入镜像，或用合成开发数据替代。通过受控的发布证据存储或加密制品通道分发到服务器后，限制宿主文件权限：
+
+```bash
+install -d -m 700 /opt/agromech/data/release-evidence
+install -m 600 /secure-release-evidence/curated-mvp-2026-07.json \
+  /opt/agromech/data/release-evidence/curated-mvp-2026-07.json
+```
+
+发布 workflow 会在 `api` 容器内验证 `RETRIEVAL_BASELINE_PATH` 已配置且文件可读，然后执行：
+
+```bash
+python scripts/evaluate-retrieval.py --baseline "$RETRIEVAL_BASELINE_PATH"
+```
+
+路径或文件缺失、评测结果低于基线、两项质量指标均未提升、或 P95 超过基线 1.5 倍时，workflow 会在切换 API、同步前端和 reload Nginx 前失败。尚未取得真实 `curated-mvp` 基线时，不得触发生产切换，也不得用合成结果伪造基线。
 
 ### 升级前数据库检查
 
@@ -139,7 +163,7 @@ workflow 会在部署期间让服务器登录 GHCR。默认使用本次 Actions 
 2. 构建后端镜像并推送到 GHCR。
 3. 上传 compose 文件。
 4. 在服务器执行 `docker login ghcr.io`。
-5. 执行 Alembic 迁移和重建检索索引，再用 `EVALUATION_DEFAULT_DATASET` 指定的生产评测题实际运行 Dense/BM25/RRF 与 QA/Citation 冒烟；两条门禁使用同一数据集。任一项失败即停止，不同步前端、不 reload Nginx。
+5. 执行 Alembic 迁移和重建检索索引，然后要求 `RETRIEVAL_BASELINE_PATH` 指向可读的版本化真实生产基线，并用 `EVALUATION_DEFAULT_DATASET` 指定的生产评测题实际运行 `scripts/evaluate-retrieval.py --baseline "$RETRIEVAL_BASELINE_PATH"`。Dense/BM25/RRF 评测与 QA/Citation 冒烟使用同一数据集；任一项失败即停止，不同步前端、不 reload Nginx。
 6. 重启 `api` 和 `worker`，确认 `/health/ready` 为 `200`，并以同一评测题调用 `/qa/text`；响应必须带 Citation，trace 必须记录 Dense、BM25、RRF 与 Citation 成功状态。
 7. 以上门禁通过后才同步 `frontend/out/` 到服务器静态目录并 reload 宿主 Nginx，随后持续监控。
 
