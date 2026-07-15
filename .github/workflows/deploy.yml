@@ -97,26 +97,76 @@ jobs:
           rsync -az -e "ssh -i ~/.ssh/deploy_key" \
             deploy/docker-compose.prod.yml \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_APP_PATH }}/docker-compose.yml"
+          rsync -az -e "ssh -i ~/.ssh/deploy_key" \
+            deploy/nginx.agromech.conf \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_APP_PATH }}/nginx.agromech.conf"
 
       - name: Run retrieval release gates and restart backend
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME || github.actor }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+          DEPLOY_NGINX_SITE_PATH: ${{ secrets.DEPLOY_NGINX_SITE_PATH }}
         run: |
           remote_ghcr_username="$(printf '%q' "${GHCR_USERNAME:-}")"
           remote_ghcr_token="$(printf '%q' "${GHCR_TOKEN:-}")"
+          remote_nginx_site_path="$(printf '%q' "${DEPLOY_NGINX_SITE_PATH:-}")"
           ssh -i ~/.ssh/deploy_key "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "GHCR_USERNAME=${remote_ghcr_username} GHCR_TOKEN=${remote_ghcr_token} bash -se" <<'EOF'
+            "GHCR_USERNAME=${remote_ghcr_username} GHCR_TOKEN=${remote_ghcr_token} NGINX_SITE_PATH=${remote_nginx_site_path} bash -se" <<'EOF'
           set -euo pipefail
           cd "${{ secrets.DEPLOY_APP_PATH }}"
+          nginx_upstream_path=/etc/nginx/conf.d/agromech-backend-upstream.conf
+          active_project_file=.active-backend-project
+          : "${NGINX_SITE_PATH:?DEPLOY_NGINX_SITE_PATH must point to the active Agromech Nginx site config}"
+          test -r "$NGINX_SITE_PATH" || {
+            echo "Nginx site config is not readable: $NGINX_SITE_PATH" >&2
+            exit 1
+          }
+          test -r "$nginx_upstream_path" || {
+            echo "Nginx upstream file is not readable: $nginx_upstream_path" >&2
+            exit 1
+          }
+          sudo nginx -t
+          active_port="$(sed -nE 's@^[[:space:]]*proxy_pass http://127\\.0\\.0\\.1:([0-9]+)/;[[:space:]]*$@\\1@p' "$nginx_upstream_path")"
+          case "$active_port" in
+            8000)
+              candidate_project=agromech-green
+              candidate_port=8001
+              ;;
+            8001)
+              candidate_project=agromech-blue
+              candidate_port=8000
+              ;;
+            *)
+              echo "Nginx upstream must contain exactly one loopback backend port (8000 or 8001)" >&2
+              exit 1
+              ;;
+          esac
+          active_project="$(cat "$active_project_file" 2>/dev/null || printf '%s' agromech)"
+          case "$active_project" in
+            agromech|agromech-blue|agromech-green) ;;
+            *)
+              echo "Unexpected active compose project: $active_project" >&2
+              exit 1
+              ;;
+          esac
+          candidate_compose=(docker compose --project-name "$candidate_project")
+          candidate_promoted=false
+          cleanup_release() {
+            if [ "$candidate_promoted" != true ]; then
+              "${candidate_compose[@]}" down --remove-orphans || true
+            fi
+            rm -f "${upstream_tmp:-}" "${site_backup:-}" "${upstream_backup:-}"
+          }
+          trap cleanup_release EXIT
           if [ -n "$GHCR_USERNAME" ] && [ -n "$GHCR_TOKEN" ]; then
             printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
           fi
           export AGROMECH_BACKEND_IMAGE="${{ steps.image.outputs.name }}:${{ github.sha }}"
-          docker compose pull
-          docker compose run --rm api python -m alembic upgrade head
-          docker compose run --rm api python scripts/rebuild-vector-index.py
-          docker compose run --rm api sh -ceu '
+          "${candidate_compose[@]}" down --remove-orphans
+          "${candidate_compose[@]}" pull
+          "${candidate_compose[@]}" run --rm api python -m alembic upgrade head
+          "${candidate_compose[@]}" run --rm api python scripts/rebuild-vector-index.py
+          "${candidate_compose[@]}" run --rm api sh -ceu '
             : "${RETRIEVAL_BASELINE_PATH:?RETRIEVAL_BASELINE_PATH must be configured for release evaluation}"
             test -r "$RETRIEVAL_BASELINE_PATH" || {
               echo "Retrieval baseline is not readable: $RETRIEVAL_BASELINE_PATH" >&2
@@ -124,11 +174,11 @@ jobs:
             }
             exec python scripts/evaluate-retrieval.py --baseline "$RETRIEVAL_BASELINE_PATH"
           '
-          docker compose up -d api worker
+          AGROMECH_API_BIND="127.0.0.1:${candidate_port}" "${candidate_compose[@]}" up -d api
           curl --fail --retry 12 --retry-delay 2 --retry-connrefused \
-            http://127.0.0.1:8000/health/ready
+            "http://127.0.0.1:${candidate_port}/health/ready"
           qa_smoke_request="$({
-            docker compose exec -T api python -c '
+            "${candidate_compose[@]}" exec -T api python -c '
           import json
           from sqlalchemy import select
           from agromech_api.core.config import get_settings
@@ -151,8 +201,8 @@ jobs:
           qa_smoke_response="$(curl --fail --retry 3 --retry-delay 2 \
             -H 'Content-Type: application/json' \
             --data "$qa_smoke_request" \
-            http://127.0.0.1:8000/qa/text)"
-          trace_id="$(printf '%s' "$qa_smoke_response" | docker compose exec -T api python -c '
+            "http://127.0.0.1:${candidate_port}/qa/text")"
+          trace_id="$(printf '%s' "$qa_smoke_response" | "${candidate_compose[@]}" exec -T api python -c '
           import json
           import sys
 
@@ -164,7 +214,7 @@ jobs:
               raise SystemExit("QA smoke returned no retrieval trace")
           print(trace_id)
           ')"
-          docker compose exec -T -e TRACE_ID="$trace_id" api python -c '
+          "${candidate_compose[@]}" exec -T -e TRACE_ID="$trace_id" api python -c '
           import os
           from sqlalchemy import select
           from agromech_api.core.database import get_engine
@@ -185,6 +235,32 @@ jobs:
           if trace["citation_status"] != "completed" or channels.get("citation", {}).get("status") != "ok":
               raise SystemExit("retrieval smoke Citation trace is not ready")
           '
+          "${candidate_compose[@]}" up -d worker
+          "${candidate_compose[@]}" ps --status running --services | grep -Fx worker
+          upstream_tmp="$(mktemp)"
+          site_backup="$(mktemp)"
+          upstream_backup="$(mktemp)"
+          cp "$NGINX_SITE_PATH" "$site_backup"
+          cp "$nginx_upstream_path" "$upstream_backup"
+          printf 'proxy_pass http://127.0.0.1:%s/;\n' "$candidate_port" > "$upstream_tmp"
+          rollback_nginx() {
+            sudo install -m 644 "$site_backup" "$NGINX_SITE_PATH"
+            sudo install -m 644 "$upstream_backup" "$nginx_upstream_path"
+            sudo nginx -t && sudo systemctl reload nginx
+          }
+          if ! sudo install -m 644 nginx.agromech.conf "$NGINX_SITE_PATH" || \
+             ! sudo install -m 644 "$upstream_tmp" "$nginx_upstream_path" || \
+             ! sudo nginx -t || ! sudo systemctl reload nginx; then
+            rollback_nginx || true
+            echo "Nginx cutover failed; restored previous backend upstream" >&2
+            exit 1
+          fi
+          candidate_promoted=true
+          printf '%s\n' "$candidate_project" > "${active_project_file}.tmp"
+          mv "${active_project_file}.tmp" "$active_project_file"
+          if [ "$active_project" != "$candidate_project" ]; then
+            docker compose --project-name "$active_project" stop api worker || true
+          fi
           EOF
 
       - name: Upload frontend static files
@@ -192,8 +268,3 @@ jobs:
           rsync -az --delete -e "ssh -i ~/.ssh/deploy_key" \
             frontend/out/ \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_FRONTEND_PATH }}/"
-
-      - name: Reload Nginx after release gates
-        run: |
-          ssh -i ~/.ssh/deploy_key "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "sudo nginx -t && sudo systemctl reload nginx"

@@ -94,10 +94,33 @@ def test_deployment_release_gate_rebuilds_and_smoke_tests_before_static_cutover(
     assert "/health/ready" in workflow
     assert "/qa/text" in workflow
     assert 'payload.get("citations")' in workflow
-    assert 'docker compose exec -T -e TRACE_ID="$trace_id" api' in workflow
+    assert '"${candidate_compose[@]}" exec -T -e TRACE_ID="$trace_id" api' in workflow
     assert workflow.index("scripts/rebuild-vector-index.py") < workflow.index("Upload frontend static files")
     assert workflow.index("scripts/evaluate-retrieval.py") < workflow.index("Upload frontend static files")
     assert workflow.index("/health/ready") < workflow.index("sudo systemctl reload nginx")
+
+
+def test_deployment_verifies_a_candidate_api_before_switching_nginx_upstream() -> None:
+    root = Path(__file__).parents[2]
+    workflow = (root / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    compose = (root / "deploy/docker-compose.prod.yml").read_text(encoding="utf-8")
+    nginx = (root / "deploy/nginx.agromech.conf").read_text(encoding="utf-8")
+    deployment = (root / "docs/deployment.md").read_text(encoding="utf-8")
+
+    assert 'candidate_compose=(docker compose --project-name "$candidate_project")' in workflow
+    assert 'AGROMECH_API_BIND="127.0.0.1:${candidate_port}"' in workflow
+    assert '"http://127.0.0.1:${candidate_port}/health/ready"' in workflow
+    assert '"http://127.0.0.1:${candidate_port}/qa/text"' in workflow
+    assert "DEPLOY_NGINX_SITE_PATH" in workflow
+    assert "rollback_nginx" in workflow
+    assert "cleanup_release" in workflow
+    assert workflow.index("candidate_promoted=true") < workflow.index('printf \'%s\\n\' "$candidate_project"')
+    assert 'docker compose --project-name "$active_project" stop api worker' in workflow
+    assert "docker compose up -d api worker" not in workflow
+    assert "container_name:" not in compose
+    assert "include /etc/nginx/conf.d/agromech-backend-upstream.conf;" in nginx
+    assert "蓝绿" in deployment
+    assert "DEPLOY_NGINX_SITE_PATH" in deployment
 
 
 def test_production_baseline_is_required_and_documented() -> None:

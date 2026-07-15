@@ -29,15 +29,24 @@
 certbot --nginx -d agromech.wandcheers.xyz --redirect
 ```
 
-服务器已有 `certbot-renew.timer` 时会自动续期。宿主 Nginx 需要把 `/backend/` 反代到后端容器：
+服务器已有 `certbot-renew.timer` 时会自动续期。宿主 Nginx 通过独立 upstream 文件把 `/backend/` 反代到当前后端槽位：
 
 ```nginx
 location /backend/ {
-    proxy_pass http://127.0.0.1:8000/;
+    include /etc/nginx/conf.d/agromech-backend-upstream.conf;
 }
 ```
 
-完整示例见 `deploy/nginx.agromech.conf`。如果上传大文件，保留 `client_max_body_size 120m` 或更高。
+完整站点示例见 `deploy/nginx.agromech.conf`。首次部署时先由运维安装站点配置和初始 `blue` 槽位 upstream（端口 `8000`）：
+
+```bash
+sudo install -m 644 deploy/nginx.agromech.conf /etc/nginx/sites-available/agromech
+printf 'proxy_pass http://127.0.0.1:8000/;\n' | \
+  sudo tee /etc/nginx/conf.d/agromech-backend-upstream.conf >/dev/null
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+将站点路径保存为 GitHub Secret `DEPLOY_NGINX_SITE_PATH`，例如 `/etc/nginx/sites-available/agromech`。workflow 在候选 API 验证通过后才会替换此文件和 upstream 文件；它不能替代首次安装 Nginx 站点配置。如果上传大文件，保留 `client_max_body_size 120m` 或更高。
 
 ## 3. 首次部署
 
@@ -90,8 +99,8 @@ ORDER BY extname;
 
 ```bash
 cd /opt/agromech
-docker compose pull
-docker compose run --rm api python -m alembic upgrade head
+docker compose --project-name agromech pull
+docker compose --project-name agromech run --rm api python -m alembic upgrade head
 ```
 
 ### 迁移完成后重建并验证
@@ -99,7 +108,7 @@ docker compose run --rm api python -m alembic upgrade head
 迁移完成后，重建既有文档的 BM25 搜索行和 Dense 向量：
 
 ```bash
-docker compose run --rm api python scripts/rebuild-vector-index.py
+docker compose --project-name agromech run --rm api python scripts/rebuild-vector-index.py
 ```
 
 重建命令会使用当前 `.env` 中配置的文本 embedding provider 重建 `chunk_search_index` 与 `chunk_vector_embeddings`，并在 PostgreSQL 上确认 BM25 索引存在；不会迁移旧向量文件。也可额外执行：
@@ -110,27 +119,28 @@ FROM pg_indexes
 WHERE indexname = 'ix_chunk_search_index_bm25';
 ```
 
-只有完成以上验证后，才启动新版本服务：
+只有完成以上验证后，首次部署才启动初始 `blue` 服务：
 
 ```bash
 cd /opt/agromech
-docker compose up -d api worker
+docker compose --project-name agromech up -d api worker
 ```
 
-发布顺序必须为：
+已有服务升级必须使用下文的自动蓝绿发布，不能直接运行 `docker compose up -d api worker` 覆盖正在被 Nginx 代理的槽位。发布顺序必须为：
 
 ```text
 record baseline -> backup -> install extensions -> alembic upgrade
--> rebuild indexes -> Dense/BM25/RRF smoke test -> deploy app
--> /health/ready -> QA/Citation smoke test -> monitor
+-> rebuild indexes -> evaluation gate -> start inactive candidate slot
+-> /health/ready and QA/Citation smoke -> atomically switch Nginx upstream
+-> stop previous slot -> monitor
 ```
 
-任何一步失败都不得切换应用版本。`/health/ready` 返回 `503` 时，保留当前服务并排查 `vector`、`pg_search` 或 BM25 索引。
+任何数据库迁移、重建、基线评测、`/health/ready`、QA/Citation 冒烟或候选 worker 启动失败，都不得切换应用版本。`/health/ready` 返回 `503` 时，保留当前服务并排查 `vector`、`pg_search` 或 BM25 索引。
 
 创建首个管理员：
 
 ```bash
-docker compose run --rm api python scripts/create-user.py --username admin --role admin --display-name "Administrator"
+docker compose --project-name agromech run --rm api python scripts/create-user.py --username admin --role admin --display-name "Administrator"
 ```
 
 ## 4. GitHub Actions 自动部署
@@ -144,6 +154,7 @@ Workflow：`.github/workflows/deploy.yml`。
 - `DEPLOY_SSH_KEY`：SSH 私钥。
 - `DEPLOY_APP_PATH`：例如 `/opt/agromech`。
 - `DEPLOY_FRONTEND_PATH`：例如 `/var/www/agromech`。
+- `DEPLOY_NGINX_SITE_PATH`：已安装的 Agromech Nginx 站点配置，例如 `/etc/nginx/sites-available/agromech`。
 - `GHCR_USERNAME`：可选。默认使用触发 workflow 的 GitHub 用户。
 - `GHCR_TOKEN`：可选。默认使用本次 workflow 的 `github.token`。
 
@@ -163,9 +174,9 @@ workflow 会在部署期间让服务器登录 GHCR。默认使用本次 Actions 
 2. 构建后端镜像并推送到 GHCR。
 3. 上传 compose 文件。
 4. 在服务器执行 `docker login ghcr.io`。
-5. 执行 Alembic 迁移和重建检索索引，然后要求 `RETRIEVAL_BASELINE_PATH` 指向可读的版本化真实生产基线，并用 `EVALUATION_DEFAULT_DATASET` 指定的生产评测题实际运行 `scripts/evaluate-retrieval.py --baseline "$RETRIEVAL_BASELINE_PATH"`。Dense/BM25/RRF 评测与 QA/Citation 冒烟使用同一数据集；任一项失败即停止，不同步前端、不 reload Nginx。
-6. 重启 `api` 和 `worker`，确认 `/health/ready` 为 `200`，并以同一评测题调用 `/qa/text`；响应必须带 Citation，trace 必须记录 Dense、BM25、RRF 与 Citation 成功状态。
-7. 以上门禁通过后才同步 `frontend/out/` 到服务器静态目录并 reload 宿主 Nginx，随后持续监控。
+5. 读取 Nginx 当前 upstream（`blue:8000` 或 `green:8001`），在另一个 Compose project 和端口启动候选镜像。先在候选容器中执行 Alembic、重建索引，并要求 `RETRIEVAL_BASELINE_PATH` 指向可读的版本化真实生产基线，运行 `scripts/evaluate-retrieval.py --baseline "$RETRIEVAL_BASELINE_PATH"`。
+6. 仅访问候选端口执行 `/health/ready` 和同一评测题的 `/qa/text`；响应必须带 Citation，trace 必须记录 Dense、BM25、RRF 与 Citation 成功状态。任何门禁失败都会停止在候选槽位，Nginx 仍代理旧版本。
+7. 候选 API 和 worker 都通过后，workflow 先备份现有 Nginx 站点/upstream 文件，再以 `nginx -t` 和 reload 原子切换 upstream；切换失败自动恢复备份。切换成功才停止旧 Compose project、同步 `frontend/out/`，随后持续监控。
 
 ## 5. 静态前端约束
 
@@ -182,8 +193,9 @@ workflow 会在部署期间让服务器登录 GHCR。默认使用本次 Actions 
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/health/dependencies
 curl -i http://127.0.0.1:8000/health/ready
-docker logs agromech-api --tail=100
-docker logs agromech-worker --tail=100
+active_project="$(cat /opt/agromech/.active-backend-project 2>/dev/null || printf '%s' agromech)"
+docker compose --project-name "$active_project" logs api --tail=100
+docker compose --project-name "$active_project" logs worker --tail=100
 ```
 
 `/health/ready` 必须返回 `200`；其中 `pgvector` 与 `pg_search` 应为 `ok`，并确认 `pg_search` 的 target 对应当前 schema 的 `ix_chunk_search_index_bm25`。如果前端登录失败，先检查浏览器请求的 `/backend/auth/login` 是否被 Nginx 正确反代。
