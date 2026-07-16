@@ -44,18 +44,30 @@ certbot --nginx -d agromech.wandcheers.xyz --redirect
 
 ```nginx
 location /backend/ {
-    include /etc/nginx/conf.d/agromech-backend-upstream.conf;
+    include /etc/nginx/snippets/agromech-backend-upstream.conf;
 }
 ```
 
-完整站点示例见 `deploy/nginx.agromech.conf`。首次部署时先由运维安装站点配置和初始 `blue` 槽位 upstream（端口 `8000`）：
+完整站点示例见 `deploy/nginx.agromech.conf`。首次部署或从旧版 `/etc/nginx/conf.d/agromech-backend-upstream.conf` 迁移时，先由运维安装站点配置和初始 `blue` 槽位 upstream（端口 `8000`）。所有文件修改完成后再执行 `nginx -t` 和 reload：
 
 ```bash
+set -euo pipefail
 sudo install -m 644 deploy/nginx.agromech.conf /etc/nginx/sites-available/agromech
-printf 'proxy_pass http://127.0.0.1:8000/;\n' | \
-  sudo tee /etc/nginx/conf.d/agromech-backend-upstream.conf >/dev/null
+sudo install -d -m 755 /etc/nginx/snippets
+if [ -f /etc/nginx/conf.d/agromech-backend-upstream.conf ]; then
+  sudo install -m 644 /etc/nginx/conf.d/agromech-backend-upstream.conf \
+    /etc/nginx/snippets/agromech-backend-upstream.conf
+else
+  printf 'proxy_pass http://127.0.0.1:8000/;\n' | \
+    sudo tee /etc/nginx/snippets/agromech-backend-upstream.conf >/dev/null
+fi
+sudo rm -f /etc/nginx/conf.d/agromech-backend-upstream.conf
 sudo nginx -t && sudo systemctl reload nginx
 ```
+
+动态 upstream 文件不能放在 `/etc/nginx/conf.d/*.conf`：该目录通常会在 `http` 层自动加载，而裸 `proxy_pass` 只允许出现在 `location` 内。站点配置通过 `include` 读取 `/etc/nginx/snippets/agromech-backend-upstream.conf`，workflow 只原子替换这一 snippet。
+
+宿主端口 `8000` 和 `8001` 分别保留给 blue/green API 槽位，只允许绑定 loopback；不要再让 Nginx 或其他服务监听这两个端口。遗留的 IP 访问站点如果监听 `8000`，必须先停用或改到其他端口。
 
 将站点路径保存为 GitHub Secret `DEPLOY_NGINX_SITE_PATH`，例如 `/etc/nginx/sites-available/agromech`。workflow 在候选 API 验证通过后才会替换此文件和 upstream 文件；它不能替代首次安装 Nginx 站点配置。如果上传大文件，保留 `client_max_body_size 120m` 或更高。
 

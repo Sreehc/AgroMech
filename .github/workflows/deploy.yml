@@ -114,7 +114,7 @@ jobs:
             "GHCR_USERNAME=${remote_ghcr_username} GHCR_TOKEN=${remote_ghcr_token} NGINX_SITE_PATH=${remote_nginx_site_path} bash -se" <<'EOF'
           set -euo pipefail
           cd "${{ secrets.DEPLOY_APP_PATH }}"
-          nginx_upstream_path=/etc/nginx/conf.d/agromech-backend-upstream.conf
+          nginx_upstream_path=/etc/nginx/snippets/agromech-backend-upstream.conf
           active_project_file=.active-backend-project
           : "${NGINX_SITE_PATH:?DEPLOY_NGINX_SITE_PATH must point to the active Agromech Nginx site config}"
           test -r "$NGINX_SITE_PATH" || {
