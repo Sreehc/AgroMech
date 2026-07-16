@@ -111,7 +111,7 @@ jobs:
           remote_ghcr_token="$(printf '%q' "${GHCR_TOKEN:-}")"
           remote_nginx_site_path="$(printf '%q' "${DEPLOY_NGINX_SITE_PATH:-}")"
           ssh -i ~/.ssh/deploy_key "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "GHCR_USERNAME=${remote_ghcr_username} GHCR_TOKEN=${remote_ghcr_token} NGINX_SITE_PATH=${remote_nginx_site_path} bash -se" <<'EOF'
+            "GHCR_USERNAME=${remote_ghcr_username} GHCR_TOKEN=${remote_ghcr_token} NGINX_SITE_PATH=${remote_nginx_site_path} bash -c 'script=\$(mktemp) || exit; cat > \"\$script\" || exit; bash \"\$script\"; rc=\$?; rm -f \"\$script\"; exit \$rc'" <<'EOF'
           set -euo pipefail
           cd "${{ secrets.DEPLOY_APP_PATH }}"
           nginx_upstream_path=/etc/nginx/snippets/agromech-backend-upstream.conf
