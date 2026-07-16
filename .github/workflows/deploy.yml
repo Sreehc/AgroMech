@@ -126,7 +126,7 @@ jobs:
             exit 1
           }
           sudo nginx -t
-          active_port="$(sed -nE 's@^[[:space:]]*proxy_pass http://127\\.0\\.0\\.1:([0-9]+)/;[[:space:]]*$@\\1@p' "$nginx_upstream_path")"
+          active_port="$(sed -nE 's@^[[:space:]]*proxy_pass http://127\.0\.0\.1:([0-9]+)/;[[:space:]]*$@\1@p' "$nginx_upstream_path")"
           case "$active_port" in
             8000)
               candidate_project=agromech-green
