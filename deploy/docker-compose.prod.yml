@@ -6,6 +6,11 @@ services:
       - .env
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - search
+      - message_queue
+      - embedding
     ports:
       - "${AGROMECH_API_BIND:-127.0.0.1:8000}:8000"
     volumes:
@@ -29,9 +34,25 @@ services:
       - .env
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - search
+      - message_queue
+      - embedding
     volumes:
       - ./data:/app/.agromech-data
     command:
       - python
       - -c
       - "from agromech_worker.main import consume_forever; consume_forever()"
+
+networks:
+  search:
+    external: true
+    name: ${AGROMECH_SEARCH_NETWORK:-agromech-search_default}
+  message_queue:
+    external: true
+    name: ${RABBITMQ_NETWORK:-infra-mq_default}
+  embedding:
+    external: true
+    name: ${EMBEDDING_NETWORK:-bge-services_default}

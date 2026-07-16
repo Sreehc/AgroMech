@@ -17,7 +17,18 @@
   _next/
 ```
 
-`/opt/agromech/.env` 可参考 `deploy/env.prod.example`，必须填真实的 `DATABASE_URL`、`RABBITMQ_URL`、`AUTH_TOKEN_SECRET`、百炼配置和存储配置。生产库已有文档或评测题时还必须配置 `RETRIEVAL_BASELINE_PATH`；只有首次空库部署可以暂时留空。Postgres 容器必须同时安装 pgvector 和 ParadeDB `pg_search`；Alembic 会创建 `vector`、`pg_search` 扩展及 `ix_chunk_search_index_bm25`。使用 Docker PostgreSQL 时，镜像必须提供这两项扩展。
+`/opt/agromech/.env` 可参考 `deploy/env.prod.example`，必须填真实的 `DATABASE_URL`、`RABBITMQ_URL`、`AUTH_TOKEN_SECRET`、模型/Embedding 配置和存储配置。生产库已有文档或评测题时还必须配置 `RETRIEVAL_BASELINE_PATH`；只有首次空库部署可以暂时留空。Postgres 容器必须同时安装 pgvector 和 ParadeDB `pg_search`；Alembic 会创建 `vector`、`pg_search` 扩展及 `ix_chunk_search_index_bm25`。使用 Docker PostgreSQL 时，镜像必须提供这两项扩展。
+
+生产 compose 默认复用服务器已有的三个 Docker 网络：`agromech-search_default`、`infra-mq_default` 和 `bge-services_default`。它们分别提供 ParadeDB、RabbitMQ 与 BGE embedding 服务，并可通过 `AGROMECH_SEARCH_NETWORK`、`RABBITMQ_NETWORK`、`EMBEDDING_NETWORK` 覆盖。部署前确认实际配置的网络和服务存在；使用覆盖值时同步替换下列默认网络名：
+
+```bash
+docker network inspect agromech-search_default infra-mq_default bge-services_default >/dev/null
+docker inspect agromech-paradedb infra-rabbitmq bge-api >/dev/null
+```
+
+容器内连接地址使用 Docker DNS：`agromech-paradedb:5432`、`infra-rabbitmq:5672` 和 `http://bge-api:8011/v1`。不要为了容器互通把数据库或消息队列监听到公网。
+
+当前自托管配置将 `MODEL_PROVIDER` 设为 `local`，Query Rewrite 使用规则实现，rerank 使用确定性 evidence rerank；`EMBEDDING_PROVIDER=bailian` 仅复用现有 OpenAI-compatible embedding adapter，并将 `BAILIAN_BASE_URL` 指向 `http://bge-api:8011/v1`、`EMBEDDING_MODEL` 设为 `BAAI/bge-m3`。BGE 已验证返回 1024 维向量。`BAILIAN_BASE_URL` 目前由 embedding、云端问答、模型改写和模型 rerank 共用，因此指向 BGE 时不要同时把 `MODEL_PROVIDER` 设为 `bailian`；如需启用百炼模型链路，应改回百炼 URL 和真实密钥，或先为 embedding 增加独立 base URL。
 
 ## 2. Nginx
 
