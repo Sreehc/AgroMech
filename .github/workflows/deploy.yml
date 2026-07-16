@@ -200,8 +200,28 @@ jobs:
             fi
           '
           AGROMECH_API_BIND="127.0.0.1:${candidate_port}" "${candidate_compose[@]}" up -d api
-          curl --fail --retry 12 --retry-delay 2 --retry-connrefused \
-            "http://127.0.0.1:${candidate_port}/health/ready"
+          candidate_ready=false
+          candidate_ready_deadline=$((SECONDS + 60))
+          while [ "$SECONDS" -lt "$candidate_ready_deadline" ]; do
+            candidate_ready_remaining=$((candidate_ready_deadline - SECONDS))
+            if curl --fail --silent --show-error --connect-timeout 2 \
+              --max-time "$candidate_ready_remaining" \
+              "http://127.0.0.1:${candidate_port}/health/ready"; then
+              candidate_ready=true
+              break
+            fi
+            candidate_ready_remaining=$((candidate_ready_deadline - SECONDS))
+            if [ "$candidate_ready_remaining" -gt 2 ]; then
+              sleep 2
+            elif [ "$candidate_ready_remaining" -gt 0 ]; then
+              sleep "$candidate_ready_remaining"
+            fi
+          done
+          if [ "$candidate_ready" != true ]; then
+            echo "Candidate API did not become ready within 60 seconds" >&2
+            "${candidate_compose[@]}" logs --tail 100 api >&2 || true
+            exit 1
+          fi
           qa_smoke_request="$({
             "${candidate_compose[@]}" exec -T api python -c '
           import json
