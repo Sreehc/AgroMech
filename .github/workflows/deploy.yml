@@ -171,13 +171,33 @@ jobs:
           "${candidate_compose[@]}" pull
           "${candidate_compose[@]}" run --rm api python -m alembic upgrade head
           "${candidate_compose[@]}" run --rm api python scripts/rebuild-vector-index.py
-          "${candidate_compose[@]}" run --rm api sh -ceu '
-            : "${RETRIEVAL_BASELINE_PATH:?RETRIEVAL_BASELINE_PATH must be configured for release evaluation}"
-            test -r "$RETRIEVAL_BASELINE_PATH" || {
-              echo "Retrieval baseline is not readable: $RETRIEVAL_BASELINE_PATH" >&2
+          release_data_state="$("${candidate_compose[@]}" run --rm api python -c '
+          from sqlalchemy import func, select
+          from agromech_api.core.database import get_engine
+          from agromech_api.db.models import documents, evaluation_questions
+
+          with get_engine().connect() as connection:
+              document_count = connection.execute(
+                  select(func.count()).select_from(documents).where(documents.c.deleted_at.is_(None))
+              ).scalar_one()
+              evaluation_count = connection.execute(
+                  select(func.count()).select_from(evaluation_questions)
+              ).scalar_one()
+          print("empty" if document_count == 0 and evaluation_count == 0 else "populated")
+          ')"
+          "${candidate_compose[@]}" run --rm -e RELEASE_DATA_STATE="$release_data_state" api sh -ceu '
+            if [ -n "${RETRIEVAL_BASELINE_PATH:-}" ]; then
+              test -r "$RETRIEVAL_BASELINE_PATH" || {
+                echo "Retrieval baseline is not readable: $RETRIEVAL_BASELINE_PATH" >&2
+                exit 1
+              }
+              python scripts/evaluate-retrieval.py --baseline "$RETRIEVAL_BASELINE_PATH"
+            elif [ "$RELEASE_DATA_STATE" = "empty" ]; then
+              echo "Retrieval baseline is not configured; skip historical metric comparison for this empty-data deployment"
+            else
+              echo "RETRIEVAL_BASELINE_PATH must be configured when release data exists" >&2
               exit 1
-            }
-            exec python scripts/evaluate-retrieval.py --baseline "$RETRIEVAL_BASELINE_PATH"
+            fi
           '
           AGROMECH_API_BIND="127.0.0.1:${candidate_port}" "${candidate_compose[@]}" up -d api
           curl --fail --retry 12 --retry-delay 2 --retry-connrefused \
@@ -185,10 +205,12 @@ jobs:
           qa_smoke_request="$({
             "${candidate_compose[@]}" exec -T api python -c '
           import json
+          import re
           from sqlalchemy import select
           from agromech_api.core.config import get_settings
           from agromech_api.core.database import get_engine
-          from agromech_api.db.models import evaluation_questions
+          from agromech_api.db.models import document_chunks, documents, evaluation_questions
+          from agromech_api.qa.text import INJECTION_PATTERNS
 
           settings = get_settings()
           with get_engine().connect() as connection:
@@ -198,16 +220,35 @@ jobs:
                   .order_by(evaluation_questions.c.created_at.asc(), evaluation_questions.c.question_id.asc())
                   .limit(1)
               ).scalar_one_or_none()
+              if not question:
+                  content = connection.execute(
+                      select(document_chunks.c.content)
+                      .select_from(document_chunks.join(documents, document_chunks.c.document_id == documents.c.id))
+                      .where(documents.c.status == "indexed")
+                      .where(documents.c.deleted_at.is_(None))
+                      .where(documents.c.visibility == "public")
+                      .order_by(document_chunks.c.created_at.asc(), document_chunks.c.id.asc())
+                      .limit(1)
+                  ).scalar_one_or_none()
+                  if content:
+                      passage = " ".join(content.strip()[:1000].split())
+                      for pattern in INJECTION_PATTERNS:
+                          passage = re.sub(re.escape(pattern), " ", passage, flags=re.IGNORECASE)
+                      passage = " ".join(passage.split())
+                      question = f"Explain this indexed document passage: {passage}" if passage else (
+                          "What information is provided in this indexed document?"
+                      )
           if not question:
-              raise SystemExit("QA smoke requires an evaluation question")
+              raise SystemExit(0)
           print(json.dumps({"question": question}))
           '
           })"
-          qa_smoke_response="$(curl --fail --retry 3 --retry-delay 2 \
-            -H 'Content-Type: application/json' \
-            --data "$qa_smoke_request" \
-            "http://127.0.0.1:${candidate_port}/qa/text")"
-          trace_id="$(printf '%s' "$qa_smoke_response" | "${candidate_compose[@]}" exec -T api python -c '
+          if [ -n "$qa_smoke_request" ]; then
+            qa_smoke_response="$(curl --fail --retry 3 --retry-delay 2 \
+              -H 'Content-Type: application/json' \
+              --data "$qa_smoke_request" \
+              "http://127.0.0.1:${candidate_port}/qa/text")"
+            trace_id="$(printf '%s' "$qa_smoke_response" | "${candidate_compose[@]}" exec -T api python -c '
           import json
           import sys
 
@@ -219,7 +260,7 @@ jobs:
               raise SystemExit("QA smoke returned no retrieval trace")
           print(trace_id)
           ')"
-          "${candidate_compose[@]}" exec -T -e TRACE_ID="$trace_id" api python -c '
+            "${candidate_compose[@]}" exec -T -e TRACE_ID="$trace_id" api python -c '
           import os
           from sqlalchemy import select
           from agromech_api.core.database import get_engine
@@ -240,6 +281,9 @@ jobs:
           if trace["citation_status"] != "completed" or channels.get("citation", {}).get("status") != "ok":
               raise SystemExit("retrieval smoke Citation trace is not ready")
           '
+          else
+            echo "No evaluation question or public indexed document is available; skip QA/Citation smoke for this empty-data deployment"
+          fi
           "${candidate_compose[@]}" run --rm worker python -c '
           from agromech_worker.main import preflight_dependencies; preflight_dependencies()
           '

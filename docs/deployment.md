@@ -17,7 +17,7 @@
   _next/
 ```
 
-`/opt/agromech/.env` 可参考 `deploy/env.prod.example`，必须填真实的 `DATABASE_URL`、`RABBITMQ_URL`、`AUTH_TOKEN_SECRET`、百炼配置、存储配置和 `RETRIEVAL_BASELINE_PATH`。Postgres 容器必须同时安装 pgvector 和 ParadeDB `pg_search`；Alembic 会创建 `vector`、`pg_search` 扩展及 `ix_chunk_search_index_bm25`。使用 Docker PostgreSQL 时，镜像必须提供这两项扩展。
+`/opt/agromech/.env` 可参考 `deploy/env.prod.example`，必须填真实的 `DATABASE_URL`、`RABBITMQ_URL`、`AUTH_TOKEN_SECRET`、百炼配置和存储配置。生产库已有文档或评测题时还必须配置 `RETRIEVAL_BASELINE_PATH`；只有首次空库部署可以暂时留空。Postgres 容器必须同时安装 pgvector 和 ParadeDB `pg_search`；Alembic 会创建 `vector`、`pg_search` 扩展及 `ix_chunk_search_index_bm25`。使用 Docker PostgreSQL 时，镜像必须提供这两项扩展。
 
 ## 2. Nginx
 
@@ -62,7 +62,7 @@ cp deploy/docker-compose.prod.yml /opt/agromech/docker-compose.yml
 
 ### 发布评测基线
 
-`RETRIEVAL_BASELINE_PATH` 是生产发布的必填配置，必须指向容器内可读、版本化的基线 JSON。`docker-compose.prod.yml` 会将宿主 `/opt/agromech/data` 挂载为容器 `/app/.agromech-data`，因此推荐在 `.env` 中使用如下路径，并在宿主保留同名文件：
+生产库已有文档或评测题时，`RETRIEVAL_BASELINE_PATH` 是必填配置，必须指向容器内可读、版本化的基线 JSON。`docker-compose.prod.yml` 会将宿主 `/opt/agromech/data` 挂载为容器 `/app/.agromech-data`，因此推荐在 `.env` 中使用如下路径，并在宿主保留同名文件：
 
 ```dotenv
 RETRIEVAL_BASELINE_PATH=/app/.agromech-data/release-evidence/curated-mvp-2026-07.json
@@ -76,13 +76,13 @@ install -m 600 /secure-release-evidence/curated-mvp-2026-07.json \
   /opt/agromech/data/release-evidence/curated-mvp-2026-07.json
 ```
 
-发布 workflow 会在 `api` 容器内验证 `RETRIEVAL_BASELINE_PATH` 已配置且文件可读，然后执行：
+发布 workflow 会先检查数据库是否存在未删除文档或评测题。有数据时会验证 `RETRIEVAL_BASELINE_PATH` 已配置且文件可读，然后执行：
 
 ```bash
 python scripts/evaluate-retrieval.py --baseline "$RETRIEVAL_BASELINE_PATH"
 ```
 
-路径或文件缺失、评测结果低于基线、两项质量指标均未提升、或 P95 超过基线 1.5 倍时，workflow 会在切换 API、同步前端和 reload Nginx 前失败。尚未取得真实 `curated-mvp` 基线时，不得触发生产切换，也不得用合成结果伪造基线。
+路径或文件缺失、评测结果低于基线、两项质量指标均未提升、或 P95 超过基线 1.5 倍时，workflow 会在切换 API、同步前端和 reload Nginx 前失败。只有既无文档也无评测题的首次空库部署可以暂时不配置基线；该分支只跳过历史指标比较和无数据可执行的 QA/Citation smoke，迁移、BM25 索引重建、API readiness 与 Worker 依赖预检仍会执行。尚未取得真实 `curated-mvp` 基线时，不得在已有数据的生产库触发切换，也不得用合成结果伪造基线。
 
 ### 升级前数据库检查
 
@@ -166,16 +166,16 @@ Workflow：`.github/workflows/deploy.yml`。
 
 workflow 会在部署期间让服务器登录 GHCR。默认使用本次 Actions job 的 `github.token`；只有需要改用固定 PAT 或专用机器账号时，才需要配置 `GHCR_USERNAME`/`GHCR_TOKEN`。
 
-前端测试的既有基线仅剩 `src/lib/agromech-chat.test.ts`：该测试期望匿名文本问答被拒绝，而当前产品配置明确允许匿名文本问答。该失败与本次检索改造无关，不应通过回退匿名问答行为来绕过。
+当前仓库不跟踪测试源码；`scripts/test-all.sh` 只执行前端 lint 和生产构建。生产发布的运行时门禁由候选环境中的迁移、索引重建、readiness、QA/Citation smoke 和 Worker 依赖预检承担。
 
 推送 `main` 或手动触发 workflow 后会执行：
 
-1. Python/前端测试和构建。
+1. 执行前端 lint 和生产构建。
 2. 构建后端镜像并推送到 GHCR。
 3. 上传 compose 文件。
 4. 在服务器执行 `docker login ghcr.io`。
-5. 读取 Nginx 当前 upstream（`blue:8000` 或 `green:8001`），在另一个 Compose project 和端口启动候选镜像。先在候选容器中执行 Alembic、重建索引，并要求 `RETRIEVAL_BASELINE_PATH` 指向可读的版本化真实生产基线，运行 `scripts/evaluate-retrieval.py --baseline "$RETRIEVAL_BASELINE_PATH"`。
-6. 仅访问候选端口执行 `/health/ready` 和同一评测题的 `/qa/text`；响应必须带 Citation，trace 必须记录 Dense、BM25、RRF 与 Citation 成功状态。任何门禁失败都会停止在候选槽位，Nginx 仍代理旧版本。
+5. 读取 Nginx 当前 upstream（`blue:8000` 或 `green:8001`），在另一个 Compose project 和端口启动候选镜像。先在候选容器中执行 Alembic 和索引重建；已有文档或评测题时，要求 `RETRIEVAL_BASELINE_PATH` 指向可读的版本化真实生产基线，并运行 `scripts/evaluate-retrieval.py --baseline "$RETRIEVAL_BASELINE_PATH"`。首次空库部署只跳过该历史指标比较。
+6. 仅访问候选端口执行 `/health/ready`。QA smoke 优先使用当前数据集的首个评测题，没有评测题时使用首个公开、已索引文档的受限长度片段构造查询；响应必须带 Citation，trace 必须记录 Dense、BM25、RRF 与 Citation 成功状态。严格空库没有可用查询时只跳过 QA/Citation smoke。任何已执行门禁的失败都会停止在候选槽位，Nginx 仍代理旧版本。
 7. 候选 API 的验证通过后，workflow 在候选 Worker 容器中完成数据库/RabbitMQ 连通性与队列声明预检，不注册 consumer。随后备份现有 Nginx 站点/upstream 文件，再以 `nginx -t` 和 reload 原子切换 upstream；切换成功后才停止并确认旧 Worker 已退出，再启动候选 Worker。旧 Worker 停止失败或候选 Worker 启动失败时，workflow 会恢复 upstream 并重启、确认旧 Worker；只有所有恢复步骤成功才清理候选槽位。站点/upstream 恢复、配置测试、reload 或旧 Worker 重启/运行检查失败时，workflow 显式失败并保留候选槽位，避免 Nginx 指向已清理的候选 API；最后停止旧 API、同步 `frontend/out/`，随后持续监控。
 
 ## 5. 静态前端约束
